@@ -66,6 +66,7 @@ KINDS: dict[str, list[str]] = {
         "chapters",
         "chat",
         "emotes",
+        "censor_check",
         "censor",
         "split",
         "upload",
@@ -79,6 +80,7 @@ KINDS: dict[str, list[str]] = {
         "fetch_vod",
         "finalize",
         "chapters",
+        "censor_check",
         "censor",
         "split",
         "upload",
@@ -90,6 +92,7 @@ KINDS: dict[str, list[str]] = {
         "ensure_source",
         "fetch_vod",
         "finalize",
+        "censor_check",
         "censor",
         "split",
         "upload",
@@ -106,6 +109,7 @@ KINDS: dict[str, list[str]] = {
         "chapters",
         "chat",
         "emotes",
+        "censor_check",
         "censor",
         "split",
         "upload",
@@ -114,12 +118,13 @@ KINDS: dict[str, list[str]] = {
         "cleanup",
     ],
     # /v2/live callback from an external recorder.
-    "live_file": ["ensure_source", "chapters", "censor", "split", "upload", "describe", "previews"],
+    "live_file": ["ensure_source", "chapters", "censor_check", "censor", "split", "upload", "describe", "previews"],
     "dmca": [
         "ensure_source",
         "fetch_vod",
         "finalize",
         "dmca_edit",
+        "censor_check",
         "censor",
         "split",
         "upload",
@@ -131,6 +136,7 @@ KINDS: dict[str, list[str]] = {
         "ensure_source",
         "fetch_vod",
         "finalize",
+        "censor_check",
         "censor",
         "split",
         "dmca_edit",
@@ -139,6 +145,8 @@ KINDS: dict[str, list[str]] = {
         "previews",
         "cleanup",
     ],
+    # A synthetic VOD as one file, uploaded as type "compiled" with compile_youtube_upload on (steps/compile.py).
+    "compile": ["compile_sources", "compile", "split", "upload", "compiled", "describe", "cleanup"],
     "chat": ["chat"],
     "logs_manual": ["logs_manual"],
     "chapters": ["chapters"],
@@ -150,6 +158,8 @@ KINDS: dict[str, list[str]] = {
     # One-off: the ad breaks (gaps) of live uploads made before they were saved, from their live jobs.
     "live_gaps_backfill": ["live_gaps_backfill"],
     "describe": ["describe"],
+    # A pipeline's cleanup, queued by its own cleanup step to run keep_files_days later.
+    "cleanup": ["cleanup"],
     # Chat from doomtp-bot into bot_logs, beside the archive job of the same VOD.
     "bot_chat": ["bot_chat"],
     # Queues a bot_chat run per VOD without bot chat (or per given VOD), newest first; they run one at a time.

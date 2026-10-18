@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import shutil
 from pathlib import Path
 from typing import Any
 
 from archive_common.timeutil import format_hhmmss, parse_helix_duration
+from vex_platform.actor import Actor
+from vex_platform.jobs import JobRun, SkipTo
 
 from .. import ffmpeg, planning
 from ..context import JobContext, StepError
+from ..job_rows import ACTIVE, vod_of
 from ..vods import upsert_vod, vod_id_for_stream
 from .capture import capture
 from .metadata import file_chapters, vod_duration
@@ -112,7 +116,11 @@ async def split(ctx: JobContext) -> None:
     duration = await vod_duration(ctx, vod)
     all_parts = planning.plan_parts(duration, file_chapters(ctx, vod), s.restricted_games, s.split_duration)
     if not all_parts:
-        raise StepError("nothing to upload (VOD is empty or entirely restricted)")
+        from ..jobs import KINDS  # jobs imports the steps
+
+        # Not a failure: nothing to do but clean up (a kind without cleanup just ends).
+        then = "cleanup" if "cleanup" in KINDS[ctx.kind] else None
+        raise SkipTo("nothing to upload (VOD is empty or entirely restricted)", then)
     parts = planning.select_parts(all_parts, ctx.payload.get("start_part"), ctx.payload.get("end_part"))
     if not parts:
         raise StepError(f"no parts in range (VOD has {len(all_parts)})")
@@ -210,10 +218,55 @@ async def censor(ctx: JobContext) -> None:
     ctx.payload.pop("parts", None)  # cut from the uncensored file
 
 
+def _work_dir_of(ctx: JobContext, run: JobRun) -> Path | None:
+    try:
+        return JobContext(run.id, run.kind, vod_of(run.subject), run.payload, ctx.deps).work_dir
+    except (StepError, KeyError):  # no VOD id or stream id yet
+        return None
+
+
+async def _newer_owner(ctx: JobContext) -> int | None:
+    """A run that still needs this delayed cleanup's files: one that is active, or one that failed
+    since the run that queued the cleanup (a retry needs its files)."""
+    if ctx.run is None:
+        return None
+    me = ctx.run.run
+    since = me.parent_id or me.id
+    # shortcut: the newest 500 such runs, plenty while failed runs get retried or cancelled.
+    for run in await ctx.run.runtime.list(states=[*ACTIVE, "failed"], limit=500):
+        # Only a pipeline that ends in its own cleanup step takes the files over.
+        if run.kind == "cleanup" or "cleanup" not in run.steps or (run.state == "failed" and run.id < since):
+            continue
+        if _work_dir_of(ctx, run) == ctx.work_dir:
+            return int(run.id)
+    return None
+
+
+async def _cancel_waiting_cleanups(ctx: JobContext) -> None:
+    if ctx.run is None:
+        return
+    actor = Actor("job", str(ctx.job_id), ctx.kind, "job")
+    for run in await ctx.run.runtime.list(states=["queued"], kind="cleanup", limit=500):
+        if run.queued_key == str(ctx.work_dir):
+            await ctx.run.runtime.cancel(run.id, actor=actor)
+            ctx.log.info("cancelled cleanup job %d of the same files", run.id)
+
+
 async def cleanup(ctx: JobContext) -> None:
+    """Remove the job's files, or with ``keep_files_days`` queue a ``cleanup`` run that does it then."""
     s = ctx.settings
     if s.dry_run:
         ctx.log.info("dry run: keeping files in %s", ctx.work_dir)
+        return
+    if ctx.kind == "cleanup" and (owner := await _newer_owner(ctx)):
+        ctx.log.info("keeping files in %s: job %d uses them and queues its own cleanup", ctx.work_dir, owner)
+        return
+    if ctx.kind != "cleanup" and s.keep_files_days > 0:
+        at = dt.datetime.now(dt.UTC) + dt.timedelta(days=s.keep_files_days)
+        keep: dict[str, Any] = {k: ctx.payload[k] for k in ("type", "stream_id") if k in ctx.payload}
+        await _cancel_waiting_cleanups(ctx)  # an earlier run's, so the files are kept from now on
+        child = await ctx.enqueue("cleanup", ctx.vod_id, keep, not_before=at, queued_key=str(ctx.work_dir))
+        ctx.log.info("keeping files in %s until %s (cleanup job %d)", ctx.work_dir, f"{at:%Y-%m-%d %H:%M} UTC", child)
         return
     removed: list[Path] = []
     for d in (ctx.parts_dir, ctx.work_dir / "dmca", ctx.work_dir / "censor"):

@@ -17,6 +17,9 @@ log = logging.getLogger(__name__)
 
 HELIX = "https://api.twitch.tv/helix"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+IGDB = "https://api.igdb.com/v4"
+# What the censor check reads of an IGDB game: its age ratings' content descriptors and its themes.
+IGDB_FIELDS = "name,themes.name,age_ratings.rating_content_descriptions.description"
 
 
 class Helix:
@@ -26,6 +29,7 @@ class Helix:
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
         self._games: TTLCache[str, dict[str, Any] | None] = TTLCache(maxsize=1000, ttl=24 * 3600)
+        self._igdb: TTLCache[int, dict[str, Any] | None] = TTLCache(maxsize=1000, ttl=24 * 3600)
 
     @property
     def configured(self) -> bool:
@@ -52,19 +56,23 @@ class Helix:
             return self._token
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._send("GET", f"{HELIX}{path}", params=params)  # type: ignore[no-any-return]
+
+    async def _send(self, method: str, url: str, **kwargs: Any) -> Any:
+        """A request with the app token (Helix and IGDB both take it), refreshed once on a 401."""
         for force in (False, True):
             token = await self._get_token(force=force)
             try:
                 resp = await http.request(
-                    "GET",
-                    f"{HELIX}{path}",
-                    params=params,
+                    method,
+                    url,
                     headers={"Authorization": f"Bearer {token}", "Client-Id": self.settings.twitch_client_id},
+                    **kwargs,
                 )
-                return resp.json()  # type: ignore[no-any-return]
+                return resp.json()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 401 and not force:
-                    log.info("Helix returned 401, refreshing app token")
+                    log.info("%s returned 401, refreshing app token", url)
                     continue
                 raise
         raise AssertionError("unreachable")
@@ -116,6 +124,16 @@ class Helix:
         game = items[0] if items else None
         self._games[game_id] = game
         return game
+
+    async def igdb_games(self, igdb_ids: list[int]) -> dict[int, dict[str, Any] | None]:
+        """IGDB's games (``IGDB_FIELDS``) by id, cached a day; None for an id IGDB does not know."""
+        missing = sorted({i for i in igdb_ids if i not in self._igdb})
+        if missing:
+            body = f"fields {IGDB_FIELDS}; where id = ({','.join(map(str, missing))}); limit {len(missing)};"
+            found = {g["id"]: g for g in await self._send("POST", f"{IGDB}/games", content=body)}
+            for i in missing:
+                self._igdb[i] = found.get(i)
+        return {i: self._igdb[i] for i in igdb_ids}
 
     async def search_categories(self, query: str, first: int = 20) -> list[dict[str, Any]]:
         data = await self.get("/search/categories", {"query": query, "first": first})

@@ -42,6 +42,10 @@ class Monitor:
                 except Exception:
                     log.exception("monitor tick failed")
             try:
+                await synthetic.refresh_auto()
+            except Exception:
+                log.exception("refreshing auto playthroughs failed")
+            try:
                 await synthetic.recompose_stale()
             except Exception:
                 log.exception("recomposing synthetic VODs failed")

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from archive_common.config import TITLE_FIELDS, check_title
 from archive_common.serialize import box_art_image
 from archive_common.timeutil import format_hhmmss
 
@@ -120,6 +122,21 @@ def is_restricted(chapter: dict[str, Any], restricted_games: list[str]) -> bool:
 # stretch recorded without a gap. The VOD's own time is wall-clock time since ``vods.created_at``.
 
 TIMELINE_TOLERANCE = 1.0  # seconds of clock jitter between segments that are not a gap
+
+
+COMPILE_MAX = (1920, 1080, 60)
+
+
+def video_target(sources: list[tuple[int, int, str]]) -> tuple[int, int, str]:
+    """What a compile's windows are all converted to: the largest resolution (by pixels) and the highest
+    frame rate among its sources (``(width, height, ffprobe rate)`` each), but no more than 1080p60 (scaled
+    down to fit, aspect ratio kept), even sizes for H.264."""
+    w, h, _ = max(sources, key=lambda s: (s[0] * s[1], s[1]))
+    rate = max((s[2] for s in sources), key=Fraction)
+    max_w, max_h, max_rate = COMPILE_MAX
+    f = min(1.0, max_w / w, max_h / h)
+    w, h = int(w * f), int(h * f)
+    return w + w % 2, h + h % 2, rate if Fraction(rate) <= max_rate else f"{max_rate}/1"
 
 
 def recording_timeline(segments: list[tuple[float, float | None]]) -> list[list[float]]:
@@ -302,9 +319,23 @@ def local_date(created_at: dt.datetime, tz: str) -> str:
     return created_at.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
 
 
-def video_title(channel: str, kind: str, created_at: dt.datetime, tz: str, part: int, total_parts: int) -> str:
+__all__ = ["TITLE_FIELDS", "check_title"]  # also used from here (runtime_settings, tests)
+
+
+def video_title(
+    template: str,
+    channel: str,
+    kind: str,
+    created_at: dt.datetime,
+    tz: str,
+    part: int,
+    total_parts: int,
+    vod_title: str | None = None,
+) -> str:
+    """``template`` filled in (TITLE_FIELDS; ``title`` is the VOD's own), and " PART n" when there are several."""
     label = "Live VOD" if kind == "live" else "VOD"
-    title = f"{channel} Twitch {label} - {local_date(created_at, tz)}"
+    date = local_date(created_at, tz)
+    title = template.format(channel=channel, label=label, date=date, title=(vod_title or "").strip()).strip()
     if total_parts > 1:
         title += f" PART {part}"
     return title[:100]
@@ -348,9 +379,12 @@ def full_description(
     return text[:5000]
 
 
-def privacy(kind: str, public: bool, live_record: bool) -> str:
+def privacy(kind: str, public: bool, live_record: bool, compiled_public: bool = False) -> str:
     """``public`` applies to the main copy only: the live copy when live_record is on, the VOD
-    copy otherwise. multi_track only adds the VOD copy as an unlisted second upload."""
+    copy otherwise. multi_track only adds the VOD copy as an unlisted second upload. A compiled
+    synthetic VOD has its own setting (``compiled_public``)."""
+    if kind == "compiled":
+        return "public" if compiled_public else "unlisted"
     main = "live" if live_record else "vod"
     return "public" if public and kind == main else "unlisted"
 
@@ -402,6 +436,20 @@ def plan_dmca(claims: list[dict[str, Any]]) -> DmcaPlan:
         if kind in ("CLAIM_TYPE_VISUAL", "CLAIM_TYPE_AUDIOVISUAL"):
             black.append(rng)
     return DmcaPlan(_merge(mute), _merge(black))
+
+
+def split_by_windows(
+    ranges: list[tuple[float, float]], offset: float | None, windows: list[tuple[float, float]]
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """``ranges`` (seconds of a file starting ``offset`` seconds into its VOD) split into those that overlap
+    one of ``windows`` (the VOD's time) and the rest, each unchanged. ``offset`` None (where the file sits
+    is unknown) counts every range as overlapping."""
+    inside: list[tuple[float, float]] = []
+    outside: list[tuple[float, float]] = []
+    for a, b in ranges:
+        hit = offset is None or any(a + offset < end and b + offset > start for start, end in windows)
+        (inside if hit else outside).append((a, b))
+    return inside, outside
 
 
 def _merge(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
