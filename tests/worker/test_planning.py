@@ -1,6 +1,8 @@
 import datetime as dt
 from typing import Any
 
+import pytest
+from archive_common.config import Settings
 from archive_worker import planning
 from archive_worker.planning import Part
 
@@ -92,12 +94,26 @@ def test_select_parts():
 
 def test_titles_use_local_date():
     created = dt.datetime(2026, 2, 21, 1, 30, tzinfo=dt.UTC)  # 20th in Sao Paulo
-    assert planning.video_title("vexouluna", "vod", created, "America/Sao_Paulo", 1, 1) == (
+    default = Settings().youtube_title
+    assert planning.video_title(default, "vexouluna", "vod", created, "America/Sao_Paulo", 1, 1) == (
         "vexouluna Twitch VOD - 2026-02-20"
     )
-    assert planning.video_title("vexouluna", "live", created, "America/Sao_Paulo", 2, 3) == (
+    assert planning.video_title(default, "vexouluna", "live", created, "America/Sao_Paulo", 2, 3) == (
         "vexouluna Twitch Live VOD - 2026-02-20 PART 2"
     )
+
+
+def test_title_templates():
+    created = dt.datetime(2026, 2, 21, 12, tzinfo=dt.UTC)
+    compiled = Settings().youtube_title_compiled
+    assert planning.video_title(compiled, "v", "compiled", created, "UTC", 1, 2, " Celeste ") == "Celeste PART 1"
+    assert planning.video_title("{date}: {title}", "v", "vod", created, "UTC", 1, 1, "Hi") == "2026-02-21: Hi"
+    planning.check_title("{channel} {label} {date} {title}")
+    for bad in ("{game}", "{0}", "{title"):
+        with pytest.raises(ValueError, match="only"):
+            planning.check_title(bad)
+    with pytest.raises(ValueError, match="only"):  # an env value is checked when the config loads
+        Settings(youtube_title_compiled="{game}")
 
 
 def test_descriptions_are_rebuilt():
@@ -118,6 +134,34 @@ def test_descriptions_are_rebuilt():
     assert planning.full_description(base, 2, siblings, lines) == text
 
 
+def test_video_target_is_the_largest_size_and_fastest_rate():
+    # 720p60 and 1080p30 sources: 1080p, at 60 fps.
+    assert planning.video_target([(1280, 720, "60/1"), (1920, 1080, "30/1")]) == (1920, 1080, "60/1")
+    # Rates compare as fractions; one source alone is kept as it is.
+    assert planning.video_target([(1920, 1080, "30000/1001"), (1920, 1080, "30/1")])[2] == "30/1"
+    assert planning.video_target([(854, 480, "30000/1001")]) == (854, 480, "30000/1001")
+    # More pixels wins over a taller frame; odd sizes round up for H.264.
+    assert planning.video_target([(720, 1280, "30/1"), (1280, 800, "30/1")]) == (1280, 800, "30/1")
+    assert planning.video_target([(853, 479, "25/1")]) == (854, 480, "25/1")
+    # Capped at 1080p60: 1440p120 scales down to 1080p60, a vertical 1080x1920 fits 1080 high.
+    assert planning.video_target([(2560, 1440, "120/1"), (1280, 720, "30/1")]) == (1920, 1080, "60/1")
+    assert planning.video_target([(1080, 1920, "60000/1001")]) == (608, 1080, "60000/1001")
+    assert planning.video_target([(3840, 1600, "30/1")]) == (1920, 800, "30/1")  # wider than 16:9: width-bound
+    assert planning.video_target([(1920, 1080, "60/1")]) == (1920, 1080, "60/1")
+
+
+def test_claims_split_by_the_windows_played():
+    windows = [(100.0, 200.0), (500.0, 600.0)]
+    ranges = [(0.0, 10.0), (95.0, 105.0), (300.0, 400.0), (590.0, 700.0)]
+    # The whole VOD (offset 0): the 2nd and 4th overlap a window; touching one isn't overlapping.
+    assert planning.split_by_windows(ranges, 0.0, windows) == ([(95, 105), (590, 700)], [(0, 10), (300, 400)])
+    assert planning.split_by_windows([(90.0, 100.0)], 0.0, windows) == ([], [(90, 100)])
+    # A part starting at 480 s: its 10-30 s is the VOD's 490-510 s, in the second window.
+    assert planning.split_by_windows([(10.0, 30.0), (0.0, 5.0)], 480.0, windows) == ([(10, 30)], [(0, 5)])
+    # Unknown offset (a live copy): everything counts.
+    assert planning.split_by_windows([(0.0, 5.0)], None, windows) == ([(0, 5)], [])
+
+
 def test_privacy():
     assert planning.privacy("vod", public=False, live_record=False) == "unlisted"
     assert planning.privacy("vod", public=True, live_record=False) == "public"
@@ -125,6 +169,8 @@ def test_privacy():
     assert planning.privacy("vod", public=True, live_record=True) == "unlisted"
     assert planning.privacy("live", public=True, live_record=True) == "public"
     assert planning.privacy("live", public=False, live_record=True) == "unlisted"
+    assert planning.privacy("compiled", public=True, live_record=False) == "unlisted"  # its own setting
+    assert planning.privacy("compiled", public=False, live_record=True, compiled_public=True) == "public"
 
 
 def test_upsert_youtube_entry():
@@ -209,6 +255,14 @@ def test_recording_gaps_leave_out_what_a_cut_already_removes() -> None:
     timeline: list[list[float]] = [[0, 1000, 100], [100, 1200, 100]]  # hole at VOD [100, 200)
     gaps = planning.recording_gaps(300, 1000, timeline, [(150, 250)], [150])
     assert gaps == [[[100, 50]]]
+
+
+def test_a_compiled_file_plays_runs_back_to_back() -> None:
+    # A playthrough's two runs, 600 s apart on the synthetic VOD (steps/compile's timeline counts from 0).
+    timeline: list[list[float]] = [[0, 0, 1000], [1000, 1600, 400]]
+    assert planning.recording_gaps(2000, 0, timeline, [], [1400]) == [[[1000, 600]]]
+    chapters = [planning.chapter("1", "Celeste", None, 1600, 400, False)]
+    assert [(c["start"], c["end"]) for c in planning.chapters_on_recording(chapters, 0, timeline)] == [(1000, 400)]
 
 
 def test_stretches_without_a_category_become_no_category_chapters():

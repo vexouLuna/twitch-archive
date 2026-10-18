@@ -139,8 +139,12 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_MULTI_TRACK` † | `false` | With `LIVE_RECORD`, also upload the VOD copy (unlisted). Ignored when `LIVE_RECORD` is off |
 | `ARCHIVE_FORCE_UPLOAD_MANUAL` † | `false` | With `LIVE_RECORD` and without `MULTI_TRACK`, still upload the VOD copy of archives started from the dashboard (see "Which copies are uploaded") |
 | `ARCHIVE_YOUTUBE_UPLOAD` † | `true` | |
+| `ARCHIVE_COMPILE_YOUTUBE_UPLOAD` † | `false` | Upload compiled VODs to YouTube: lets a `compile` job (started from Manage, never on its own) upload |
 | `ARCHIVE_YOUTUBE_PUBLIC` † | `false` | Public instead of unlisted, for the main copy: the live copy when `LIVE_RECORD` is on, the VOD copy otherwise (§5) |
+| `ARCHIVE_COMPILE_YOUTUBE_PUBLIC` † | `false` | Compiled uploads public instead of unlisted; `ARCHIVE_YOUTUBE_PUBLIC` doesn't apply to them |
 | `ARCHIVE_YOUTUBE_DESCRIPTION` † | `VOD` | Last line of every description |
+| `ARCHIVE_YOUTUBE_TITLE` † | `{channel} Twitch {label} - {date}` | Upload title: `{channel}`, `{label}` (`VOD` or `Live VOD`), `{date}` (local), `{title}` (the stream's); ` PART n` is added when there are several |
+| `ARCHIVE_YOUTUBE_TITLE_COMPILED` † | `{title}` | A compiled upload's title, the same fields; `{title}` is the synthetic VOD's. Both are checked at startup |
 | `ARCHIVE_YOUTUBE_KEEPALIVE_HOURS` † | `24` | How often the worker refreshes the YouTube token; see [§3](#3-youtube-oauth-setup) |
 | `ARCHIVE_RESTRICTED_GAMES` † | `[]` | Chapters of these games are left out of uploads ("No category": chapters without one, including the stretches Twitch's chapters leave out, which the chapters step fills with one) |
 | `ARCHIVE_CENSOR_DESCRIPTORS` † | `["Sexual Content","Nudity"]` | A game whose IGDB content descriptors or themes contain one of these (case-insensitive) pauses the job for a censor review before upload; `[]` turns the check off. See "Censor check" below |
@@ -317,13 +321,14 @@ Job kinds and their steps:
 | `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
 | `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
-| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later |
+| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later; a newer pipeline on the same folder cancels it, and it leaves files a run still needs (active, or failed since) |
 | `global_emotes_backfill` | one step | `/admin/emotes/backfill` |
 | `live_gaps_backfill` | one step | `/admin/live-gaps/backfill` |
 | `bot_chat` | one step | monitor (stream ended, `DOOMTP_URL` set; separate from `archive`), `/admin/bot-chat` |
 | `bot_chat_backfill` | one step: queues a `bot_chat` job per VOD | `/admin/bot-chat/backfill` |
 | `previews_fetch` | one step | `/admin/previews` |
 | `previews_backfill` | one step: queues a `previews_fetch` job per VOD | `/admin/previews/backfill` |
+| `compile` | compile_sources → compile → split → upload → describe → cleanup | `POST /api/v2/jobs` with `{"kind": "compile", "subject": "vod:<synthetic id>", "payload": {"type": "compiled"}}` (the synthetic page's Compile button) |
 
 When `split` finds nothing to upload (an empty VOD, or every chapter restricted), the job skips to `cleanup` and succeeds.
 
@@ -355,14 +360,28 @@ curl -s "${H[@]}" -X PUT "$A/admin/site/tags/speedrun/shape" -H 'Content-Type: i
 curl -s "${H[@]}" -X DELETE "$A/admin/site/tags/speedrun/shape"
 ```
 
-- A tag is `{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize}`. `name`: `^[a-z0-9][a-z0-9-]{0,31}$`, unique. `label`: 1–40 characters. `drawn`: `true`/`false`. `width`/`height`: `null` or a whole number of px, 8–200. `rotate`: `null` (the site's default tilt) or a whole number of degrees, −180 to 180, turning the drawn tag clockwise.
+- A tag is `{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize, page, pageLabel, homeCard}`. `name`: `^[a-z0-9][a-z0-9-]{0,31}$`, unique. `label`: 1–40 characters. `drawn`: `true`/`false`. `width`/`height`: `null` or a whole number of px, 8–200. `rotate`: `null` (the site's default tilt) or a whole number of degrees, −180 to 180, turning the drawn tag clockwise.
 - `color`, `textColor`, `patternColor`: `null` or a color of at most 160 characters, made only of letters, digits, spaces and `#.,%/()*+-`: a hex (`#` and 3–8 hex digits), a color name (3–20 letters), a theme token `var(--…)` (`--`, a letter, then `[a-z0-9-]*`, no fallback: any site's, `--vx-ok` or keeki's `--k-ok`), or one color function (`rgb rgba hsl hsla hwb lab lch oklab oklch color color-mix`) around the whole value. Inside it: theme tokens, color functions and `calc min max clamp`, at most 4 deep; no other function, `var()` or `--`. So `oklch(from var(--vx-accent) calc(l - 0.15) c h)` and `color-mix(in oklch, var(--vx-ok) 60%, white)` pass and `url()` doesn't. This is the sites' `isTagColor` (vods-core `src/app/lib/vodTags.ts`).
 - Text drawn on the tag: `text` is `null` or 1–24 characters (trimmed). `textSize` is `null` or 6–48 px, `textX`/`textY` `null` or −100 to 100 px, and `textRotate` `null` or −180 to 180 degrees (clockwise), all whole numbers. With `text` `null`, all five of the others are stored as `null`.
 - The pattern: `pattern` is `null`, `"stripes"` or `"checks"`, and `patternSize` is `null` or a whole number of px, 2–40. With `pattern` `null`, `patternColor` and `patternSize` are stored as `null`. A list saved before these fields existed reads them as `null`. `shape` is `v1/site/tags/{name}.svg?v=<hash>` or `null`; it is ignored in a `PUT` (the shape routes set it). Unknown fields are dropped.
+- The type: `page` is `null` or a slug like `name` (not `vods`, `live`, `youtube`, `games`, `manage`, `admin` or `playthrough`, and no two tags the same): the tag's own menu entry and list page at `/{page}`. `pageLabel` is that page's title, 1–40 characters, required with a page and `null` without one. `homeCard`: `true`/`false`, whether the tag can feed a "latest" card on the homepage. Migration 0020 gives `compilation` the `playthroughs` page and a home card on a list saved before types.
 - At most 32 tags, and `new`, `updated` and `compilation` (set automatically) must stay in the list. A refused list changes nothing: `400 {error, msg, tag, field}` names the first refused tag and field. A tag no longer in the list loses its shape.
 - **A VOD's `tags`** (`PATCH /admin/vods/:id`, `PATCH /api/v2/vods/:id`, synthetic VODs) take the names in this list, less `new` and `updated` (the site works those out from dates). Until the list is saved, only `compilation`. A tag the list drops stays allowed on a VOD that already has it.
 - **Shapes:** the raw SVG, at most 64 KB (`413`), as `Content-Type: image/svg+xml` (`415`), for a tag of the saved list (`404`). It is parsed with [defusedxml](https://pypi.org/project/defusedxml/) and rebuilt from an allow-list of shape elements and attributes. A `400` refuses `<script>`, `<foreignObject>`, `<iframe>`, `<image>` (embedded or linked rasters), `<a>`, animations, `on*` handlers, DOCTYPE and entities, an `href` that isn't `#id`, `url()` that isn't `url(#id)`, `@import` and `javascript:`. Editor metadata, other namespaces and comments are dropped. Colors stay as they are (`currentColor` too, in attributes, `style` and `<style>`): the site recolors only the `currentColor` parts, or the black ones in a file without any.
 - Every route answers like `GET`. Changes are audited with `{before, after}` (the tag list, or the tag with its `shape` path; never the SVG) on target `site:tags` or `site-tag:<name>`.
+
+### Site options
+
+The site's own options: the homepage's cards (its `/manage/home` page edits them; archive-api serves them at `GET /v1/site/options`). Kept in `site_settings` (row `options`).
+
+```bash
+curl -s "${H[@]}" "$A/admin/site/options"                # {homeCards, playDefault, updatedAt, updatedBy}; never saved: the defaults and nulls
+curl -s "${H[@]}" -X PUT "$A/admin/site/options" -d '{"homeCards": [{"kind": "latest"}, {"kind": "tag", "tag": "compilation"}, {"kind": "games"}]}'
+```
+
+- `homeCards`: the homepage's cards in order, at most 12. `{"kind": "latest"}` is the newest VOD (the stream while live), `{"kind": "tag", "tag": name}` the newest VODs with a tag whose type has `homeCard` (any name until the tag list is saved), `{"kind": "games"}` the most played games. One of each. The default is the three above.
+- `playDefault`: what a synthetic VOD's watch page plays first: `"segments"` (the default; its sources' uploads, as composed) or `"compiled"` (its own uploads from a `compile` job, where it has them). The page offers the other too.
+- A `PUT` takes any of the options; the others keep their value. A refused one changes nothing (`400 {error, msg}`). Audited as `site.options.update` with `{before, after}` on target `site:options`.
 
 ### Storage
 
@@ -538,6 +557,10 @@ curl -s "${H[@]}" "$A/api/v2/playthrough-candidates?game_id=512953"             
 ```
 
 A segment's `start` defaults to 0, `end` to its VOD's end, and `at` to right after the segment before. Changes are audited as `synthetic.create`, `synthetic.update` and `synthetic.delete`.
+
+A playthrough can keep itself up to date: send `"auto": {"game_id": "512953"}` (on create, instead of `segments`, or on a PUT) and its segments become every window of that game. Each monitor round writes them again when they differ, so a new stream of the game or a source's edited chapters reach it; that change is audited as `synthetic.update` by `system`. Sending `segments` without `auto` is a hand edit and stops it, as does `"auto": null`. The view says what it follows in `auto` (`null`: nothing).
+
+A synthetic VOD can also be made into one file and uploaded as its own video: a `compile` job cuts each window from its source's kept MP4 (`ARCHIVE_KEEP_MP4`, at `<vod_dir>/<id>/<id>.mp4`), joins them, then splits, uploads and describes it like a VOD. Its uploads go on the synthetic VOD's row as `type: "compiled"` (unlisted unless `ARCHIVE_COMPILE_YOUTUBE_PUBLIC`), and only with `ARCHIVE_COMPILE_YOUTUBE_UPLOAD` on (off by default; `youtube_upload` must be on too); with it off the job runs but uploads nothing (the file stays only with `ARCHIVE_KEEP_MP4`). The segments stay what the VOD is: changing them later (by hand, or a playthrough following its game) doesn't change the compiled uploads, but marks them outdated (`compiled.outdated` in `GET /api/v2/synthetic/{id}`, from `synthetic.compiledFrom`); Manage then offers Recompile (`"replace": true` replaces the old ones). A gap in the timeline (a playthrough's time between runs) is left out of the file: the windows play back to back and each upload's `gaps` records what it skips, so the player maps the file onto the VOD's time as it does a live recording's ad breaks. Refused: a source without a kept MP4 and a source with censor ranges (its kept MP4 is uncensored). A source with DMCA claims (its done `dmca` / `part_dmca` jobs, listed by `GET /api/v2/synthetic/{id}/dmca` as `overlapping`, the ranges in a window it plays, and `other`; a live copy's claims count as overlapping) compiles only with `"accept_dmca": true`, which Manage sends after a warning listing them. Each window is re-encoded (H.264 + AAC) so it cuts on the exact frame, slower than a stream copy; each window's measured length is used.
 
 ### Browser access (dashboard)
 
@@ -735,7 +758,8 @@ This is what the frontend uses. The output is compatible with the old Feathers A
 | `GET /v1/status` | `{live, stream, vod}`. Live: `stream` is `{id, started_at, title, game: {name, gameId, image, imageTemplate} \| null}` and `vod` is the VOD row of that stream (`null` until the worker has created it). Offline: `stream` is `null` and `vod` is the latest VOD. `vod` has the usual `/vods` fields. Live state comes from `streams.is_live`; title and category from Helix when credentials are set, else from the VOD's title and last chapter. Cached for 45 s. |
 | `GET /v1/emotes/third-party` | `{"7tv": [...], "bttv": [...], "ffz": [...], "failed": [...]}`, each item `{id, code, provider}`: global plus channel emotes for `ARCHIVE_TWITCH_ID` from the providers' APIs (a channel emote replaces a global one with the same code). Build image URLs from the CDNs: `cdn.7tv.app/emote/{id}/1x.webp`, `cdn.betterttv.net/emote/{id}/1x`, `cdn.frankerfacez.com/emote/{id}/1`. A provider that failed is named in `failed` (its list holds whatever part loaded). Cached for 6 h, or 5 min when something failed. |
 | `GET /v1/previews/:youtubeId/:k.jpg` | Sheet `k` of an upload's seek-bar previews (see [Seek-bar previews](#seek-bar-previews); the layout is in the upload's `youtube[].preview`). 404 unless a VOD the API shows lists that upload. `Cache-Control: public, max-age=31536000, immutable`. Not rate limited. The api container reads the sheets from the data dir, mounted read-only. |
-| `GET /v1/site/tags` | `{tags: [{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize}]}`: how the site shows each VOD tag, in order (see [Site tags](#site-tags)); 404 until it was saved once (the site then uses its defaults). `Cache-Control: public, max-age=60`. |
+| `GET /v1/site/tags` | `{tags: [{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize, page, pageLabel, homeCard}]}`: how the site shows each VOD tag, in order (see [Site tags](#site-tags)); 404 until it was saved once (the site then uses its defaults). `Cache-Control: public, max-age=60`. |
+| `GET /v1/site/options` | `{homeCards}`: the site's own options (see [Site options](#site-options)); the defaults while never saved. `Cache-Control: public, max-age=60`. |
 | `GET /v1/site/tags/:name.svg` | A tag's shape: the cleaned SVG as `image/svg+xml`, with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`. `Cache-Control: public, max-age=31536000, immutable` when `?v=` is the current hash (as in the list's `shape`), `max-age=60` otherwise. 404 when the tag has no shape. Not rate limited. |
 | `youtube[].preview` | On uploads that have seek-bar previews: `{v, interval, w, h, cols, rows, count}`; absent otherwise. |
 | `youtube[].gaps` | On `live` uploads whose recording missed part of the VOD (ad breaks, an early end): `[[at, seconds], ...]`, sorted, `at` in seconds into that upload. VOD time jumps `seconds` ahead at `at`. Absent otherwise. The upload's delay is `duration − Σ part durations − Σ gaps − Σ cuts`. See "Ad breaks in live recordings" under [Recipes](#recipes). |

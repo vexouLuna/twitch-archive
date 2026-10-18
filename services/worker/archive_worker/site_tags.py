@@ -29,6 +29,8 @@ TEXT_ROTATE = (-180, 180)
 ROTATE = (-180, 180)  # the drawn tag itself
 PATTERNS = ("stripes", "checks")
 PATTERN_SIZE = (2, 40)
+PAGE_LABEL_MAX = 40
+RESERVED_PAGES = ("vods", "live", "youtube", "games", "manage", "admin", "playthrough")  # the site's own paths
 COMPUTED = ("new", "updated")  # the site works these out (from dates): never stored on a VOD
 
 # The site's isTagColor (vods-core src/app/lib/tagRules.ts): it goes into CSS custom properties, so
@@ -125,6 +127,18 @@ def _fields(i: int, name: str, tag: dict[str, Any]) -> dict[str, Any]:
     for gate, fields in (("text", site_tags.TEXT_FIELDS), ("pattern", site_tags.PATTERN_FIELDS)):
         if out[gate] is None:
             out.update(dict.fromkeys(fields))
+    page, page_label = tag.get("page"), tag.get("pageLabel")
+    if page is not None:
+        if not isinstance(page, str) or not NAME.fullmatch(page) or page in RESERVED_PAGES:
+            raise _refuse(i, name, "page", f"null or a slug like a name, not one of {', '.join(RESERVED_PAGES)}")
+        if not isinstance(page_label, str) or not 1 <= len(page_label.strip()) <= PAGE_LABEL_MAX:
+            raise _refuse(i, name, "pageLabel", f"1-{PAGE_LABEL_MAX} characters with a page")
+        page_label = page_label.strip()
+    else:
+        page_label = None
+    if tag.get("homeCard") is not None and not isinstance(tag["homeCard"], bool):
+        raise _refuse(i, name, "homeCard", "null, true or false")
+    out.update(page=page, pageLabel=page_label, homeCard=bool(tag.get("homeCard")))
     return out
 
 
@@ -137,6 +151,7 @@ def validate(body: Any) -> list[dict[str, Any]]:
         raise SiteTagError(400, f"at most {site_tags.MAX_TAGS} tags", field="tags")
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    pages: set[str] = set()
     for i, tag in enumerate(tags):
         if not isinstance(tag, dict):
             raise SiteTagError(400, f"tags[{i}] must be an object", field="tags")
@@ -152,6 +167,10 @@ def validate(body: Any) -> list[dict[str, Any]]:
         if not isinstance(tag.get("drawn"), bool):
             raise _refuse(i, name, "drawn", "must be true or false")
         checked = {"name": name, "label": label, "drawn": tag["drawn"], **_fields(i, name, tag)}
+        if checked["page"] is not None:
+            if checked["page"] in pages:
+                raise _refuse(i, name, "page", "another tag has this page")
+            pages.add(checked["page"])
         out.append({k: checked[k] for k in site_tags.FIELDS})
     for auto in site_tags.AUTO_TAGS:
         if auto not in seen:
