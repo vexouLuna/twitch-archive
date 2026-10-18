@@ -292,6 +292,10 @@ async def test_vod_fields_and_the_admin_list(vod, app):
         assert got["createdAt"] == "2026-01-02T01:04:05.000Z"
         r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"thumbnailUrl": None})
         assert r.json()["thumbnail_url"] is None
+        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"cutReason": " Music claim "})
+        assert r.json()["cut_reason"] == "Music claim"
+        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"cutReason": ""})
+        assert r.json()["cut_reason"] is None
 
         for bad in (
             {"thumbnailUrl": "javascript:alert(1)"},

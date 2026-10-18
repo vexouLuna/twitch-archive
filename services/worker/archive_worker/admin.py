@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from archive_common import http
+from archive_common import site_options as site_options_common
 from archive_common import site_tags as site_tags_common
 from archive_common.audit import AUDIT_LOG, actor_of, legacy_actor, route_entry
 from archive_common.audit import write as write_audit
@@ -45,6 +46,7 @@ from . import (
     api_v2,
     api_v2_routes,
     jobs,
+    site_options,
     site_tags,
     splices,
     svg_clean,
@@ -851,6 +853,25 @@ def create_admin_app(
         request.state.audit_detail, view = await site_tags_change(site_tags.set_shape(tag, None))
         return view
 
+    # ── Site options (the homepage's cards; archive-api serves them) ──
+
+    @app.get("/admin/site/options", dependencies=auth)
+    async def get_site_options() -> dict[str, Any]:
+        """``{homeCards, playDefault, updatedAt, updatedBy}``; an option never saved reads as its default."""
+        async with get_sessionmaker()() as s:
+            return site_options.view(await site_options_common.load(s))
+
+    @app.put("/admin/site/options", dependencies=auth)
+    async def put_site_options(request: Request, body: Any = Body(...)) -> dict[str, Any]:
+        """Any of the options; the others keep their value. All or nothing."""
+        try:
+            before, after, view = await site_options.save(body, changed_by(request))
+        except site_options.SiteOptionError as exc:
+            raise AdminError(400, exc.msg) from None
+        request.state.audit_target = "site:options"
+        request.state.audit_detail = {"before": before, "after": after}
+        return view
+
     # ── Storage ───────────────────────────────────────────────────────────
 
     @app.get("/admin/storage", dependencies=auth)
@@ -1063,6 +1084,7 @@ def create_admin_app(
             "chaptersLocked": locked,
             "botChat": bot_chat,
             "censor": censor,
+            "cut_reason": vod.get("cut_reason"),  # the public JSON leaves it out while NULL
             "jobs": recent,
             "splices": await splices.active_splices(vod_id),
         }
@@ -1094,11 +1116,12 @@ def create_admin_app(
             "hidden": vod.hidden,
             "merged_into": vod.merged_into,
             "tags": list(vod.tags or []),
+            "cut_reason": vod.cut_reason,
         }
 
     def fields_json(vod: Vod, keys) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         row = vod_row_json(vod)
-        return {k: row[{"thumbnailUrl": "thumbnail_url"}.get(k, k)] for k in keys}
+        return {k: row[{"thumbnailUrl": "thumbnail_url", "cutReason": "cut_reason"}.get(k, k)] for k in keys}
 
     @app.get("/admin/vods", dependencies=auth)
     async def list_vods(
@@ -1132,8 +1155,8 @@ def create_admin_app(
     @app.patch("/admin/vods/{vod_id}", dependencies=auth)
     async def patch_vod(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Any of ``title``, ``hidden``, ``thumbnailUrl`` (null: the default), ``duration`` (HH:MM:SS),
-        ``createdAt`` (ISO) and ``tags`` (the site's, site_tags.vod_tags). A merged VOD takes only ``hidden``
-        and ``tags``. Audited with the fields before and after."""
+        ``createdAt`` (ISO), ``tags`` (the site's, site_tags.vod_tags) and ``cutReason`` (text, null: none).
+        A merged VOD takes only ``hidden`` and ``tags``. Audited with the fields before and after."""
         vod = await require_vod(vod_id)
         values = edited(vod_edits.vod_fields, body, await known_tags(vod) if "tags" in body else ())
         if set(body) - vod_edits.MERGED_EDITABLE:

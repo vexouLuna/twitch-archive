@@ -37,28 +37,36 @@ async def twitch_vod_duration(ctx: JobContext, vod: Vod) -> float:
     return float(seconds) if seconds else await vod_duration(ctx, vod)
 
 
+def _timeline_start(ctx: JobContext, vod: Vod) -> float | None:
+    """What a ``timeline``'s wall-clock times count from: the stream's start for a live recording, the
+    synthetic VOD's own 0 for a compiled file (steps/compile). None when the job's file is the VOD's own."""
+    if not ctx.payload.get("timeline"):
+        return None
+    return {"live": vod.created_at.timestamp(), "compiled": 0.0}.get(ctx.video_type)
+
+
 def file_chapters(ctx: JobContext, vod: Vod) -> list[dict[str, Any]] | None:
-    """The VOD's chapters on the timeline of the job's file. A live recording's differs (see
-    planning.recording_timeline); one recorded before timelines were saved keeps the VOD's."""
-    timeline = ctx.payload.get("timeline")
-    if ctx.video_type != "live" or not timeline:
+    """The VOD's chapters on the timeline of the job's file. A live recording's or a compiled file's
+    differs (see planning.recording_timeline); one recorded before timelines were saved keeps the VOD's."""
+    start = _timeline_start(ctx, vod)
+    if start is None:
         return vod.chapters
-    return planning.chapters_on_recording(vod.chapters, vod.created_at.timestamp(), timeline)
+    return planning.chapters_on_recording(vod.chapters, start, ctx.payload["timeline"])
 
 
 def part_gaps(ctx: JobContext, vod: Vod, parts: list[planning.Part]) -> dict[int, list[list[float]]]:
     """Part number -> the VOD stretches a live recording missed inside that part, for its upload's
-    ``gaps`` (planning.part_gaps). Empty for a VOD download, or a recording made before timelines
-    were saved."""
-    timeline = ctx.payload.get("timeline")
-    if ctx.video_type != "live" or not timeline:
+    ``gaps`` (planning.part_gaps); for a compiled file, the gaps between its segments. Empty for a VOD
+    download, or a recording made before timelines were saved."""
+    start = _timeline_start(ctx, vod)
+    if start is None:
         return {}
     return planning.part_gaps(
         hhmmss_to_seconds(vod.duration),
-        vod.created_at.timestamp(),
+        start,
         vod.chapters,
         ctx.settings.restricted_games,
-        timeline,
+        ctx.payload["timeline"],
         parts,
     )
 
