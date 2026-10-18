@@ -124,12 +124,19 @@ def is_restricted(chapter: dict[str, Any], restricted_games: list[str]) -> bool:
 TIMELINE_TOLERANCE = 1.0  # seconds of clock jitter between segments that are not a gap
 
 
+COMPILE_MAX = (1920, 1080, 60)
+
+
 def video_target(sources: list[tuple[int, int, str]]) -> tuple[int, int, str]:
     """What a compile's windows are all converted to: the largest resolution (by pixels) and the highest
-    frame rate among its sources (``(width, height, ffprobe rate)`` each), even sizes for H.264."""
+    frame rate among its sources (``(width, height, ffprobe rate)`` each), but no more than 1080p60 (scaled
+    down to fit, aspect ratio kept), even sizes for H.264."""
     w, h, _ = max(sources, key=lambda s: (s[0] * s[1], s[1]))
     rate = max((s[2] for s in sources), key=Fraction)
-    return w + w % 2, h + h % 2, rate
+    max_w, max_h, max_rate = COMPILE_MAX
+    f = min(1.0, max_w / w, max_h / h)
+    w, h = int(w * f), int(h * f)
+    return w + w % 2, h + h % 2, rate if Fraction(rate) <= max_rate else f"{max_rate}/1"
 
 
 def recording_timeline(segments: list[tuple[float, float | None]]) -> list[list[float]]:

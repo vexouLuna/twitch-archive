@@ -141,8 +141,13 @@ def test_video_target_is_the_largest_size_and_fastest_rate():
     assert planning.video_target([(1920, 1080, "30000/1001"), (1920, 1080, "30/1")])[2] == "30/1"
     assert planning.video_target([(854, 480, "30000/1001")]) == (854, 480, "30000/1001")
     # More pixels wins over a taller frame; odd sizes round up for H.264.
-    assert planning.video_target([(1080, 1920, "30/1"), (1920, 1200, "30/1")]) == (1920, 1200, "30/1")
+    assert planning.video_target([(720, 1280, "30/1"), (1280, 800, "30/1")]) == (1280, 800, "30/1")
     assert planning.video_target([(853, 479, "25/1")]) == (854, 480, "25/1")
+    # Capped at 1080p60: 1440p120 scales down to 1080p60, a vertical 1080x1920 fits 1080 high.
+    assert planning.video_target([(2560, 1440, "120/1"), (1280, 720, "30/1")]) == (1920, 1080, "60/1")
+    assert planning.video_target([(1080, 1920, "60000/1001")]) == (608, 1080, "60000/1001")
+    assert planning.video_target([(3840, 1600, "30/1")]) == (1920, 800, "30/1")  # wider than 16:9: width-bound
+    assert planning.video_target([(1920, 1080, "60/1")]) == (1920, 1080, "60/1")
 
 
 def test_claims_split_by_the_windows_played():
