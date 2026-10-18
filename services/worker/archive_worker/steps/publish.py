@@ -39,8 +39,8 @@ def _publishing_disabled(ctx: JobContext) -> str | None:
         return "dry run"
     if not s.youtube_upload:
         return "youtube_upload is off"
-    if ctx.video_type == "compiled" and not s.compile_upload:
-        return "compile_upload is off"
+    if ctx.video_type == "compiled" and not s.compile_youtube_upload:
+        return "compile_youtube_upload is off"
     if ctx.video_type == "vod" and s.live_record and not s.multi_track and not _forced(ctx):
         return "live_record is on without multi_track: only the live copy is uploaded"
     return None
@@ -113,7 +113,10 @@ async def upload(ctx: JobContext) -> None:
         if key in uploaded:
             continue
         path = Path(part["path"])
-        title = planning.video_title(s.channel, ctx.video_type, vod.created_at, s.timezone, part["number"], total)
+        template = s.youtube_title_compiled if ctx.video_type == "compiled" else s.youtube_title
+        title = planning.video_title(
+            template, s.channel, ctx.video_type, vod.created_at, s.timezone, part["number"], total, vod.title
+        )
         ctx.log.info("uploading %s as %r (%s)", path.name, title, status)
 
         def progress(pct: int, number=part["number"]) -> None:  # type: ignore[no-untyped-def]

@@ -1,6 +1,8 @@
 import datetime as dt
 from typing import Any
 
+import pytest
+from archive_common.config import Settings
 from archive_worker import planning
 from archive_worker.planning import Part
 
@@ -92,12 +94,24 @@ def test_select_parts():
 
 def test_titles_use_local_date():
     created = dt.datetime(2026, 2, 21, 1, 30, tzinfo=dt.UTC)  # 20th in Sao Paulo
-    assert planning.video_title("vexouluna", "vod", created, "America/Sao_Paulo", 1, 1) == (
+    default = Settings().youtube_title
+    assert planning.video_title(default, "vexouluna", "vod", created, "America/Sao_Paulo", 1, 1) == (
         "vexouluna Twitch VOD - 2026-02-20"
     )
-    assert planning.video_title("vexouluna", "live", created, "America/Sao_Paulo", 2, 3) == (
+    assert planning.video_title(default, "vexouluna", "live", created, "America/Sao_Paulo", 2, 3) == (
         "vexouluna Twitch Live VOD - 2026-02-20 PART 2"
     )
+
+
+def test_title_templates():
+    created = dt.datetime(2026, 2, 21, 12, tzinfo=dt.UTC)
+    compiled = Settings().youtube_title_compiled
+    assert planning.video_title(compiled, "v", "compiled", created, "UTC", 1, 2, " Celeste ") == "Celeste PART 1"
+    assert planning.video_title("{date}: {title}", "v", "vod", created, "UTC", 1, 1, "Hi") == "2026-02-21: Hi"
+    planning.check_title("{channel} {label} {date} {title}")
+    for bad in ("{game}", "{0}", "{title"):
+        with pytest.raises(ValueError, match="only"):
+            planning.check_title(bad)
 
 
 def test_descriptions_are_rebuilt():
@@ -209,6 +223,14 @@ def test_recording_gaps_leave_out_what_a_cut_already_removes() -> None:
     timeline: list[list[float]] = [[0, 1000, 100], [100, 1200, 100]]  # hole at VOD [100, 200)
     gaps = planning.recording_gaps(300, 1000, timeline, [(150, 250)], [150])
     assert gaps == [[[100, 50]]]
+
+
+def test_a_compiled_file_plays_runs_back_to_back() -> None:
+    # A playthrough's two runs, 600 s apart on the synthetic VOD (steps/compile's timeline counts from 0).
+    timeline: list[list[float]] = [[0, 0, 1000], [1000, 1600, 400]]
+    assert planning.recording_gaps(2000, 0, timeline, [], [1400]) == [[[1000, 600]]]
+    chapters = [planning.chapter("1", "Celeste", None, 1600, 400, False)]
+    assert [(c["start"], c["end"]) for c in planning.chapters_on_recording(chapters, 0, timeline)] == [(1000, 400)]
 
 
 def test_stretches_without_a_category_become_no_category_chapters():

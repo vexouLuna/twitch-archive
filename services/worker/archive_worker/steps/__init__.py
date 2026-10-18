@@ -30,6 +30,7 @@ STEPS: dict[str, Step] = {
     "logs_manual": logs_manual,
     "compile_sources": compile.compile_sources,
     "compile": compile.compile,
+    "compiled": compile.compiled,
     "split": split,
     "dmca_edit": dmca_edit,
     "censor_check": content_check.censor_check,

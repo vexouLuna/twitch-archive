@@ -1,7 +1,11 @@
 """A synthetic VOD as one file of its own (job kind ``compile``): each of its windows cut from its source's
 kept MP4 and joined, then split, uploaded and described like a VOD, as uploads of type ``compiled`` on the
-synthetic VOD's row. Uploading needs ``compile_upload`` on. The segments stay what the VOD is; the compiled
-uploads are another way to play it (``play_default``, and the watch page's switcher)."""
+synthetic VOD's row. Uploading needs ``compile_youtube_upload`` on. The segments stay what the VOD is; the
+compiled uploads are another way to play it (``play_default``, and the watch page's switcher).
+
+A gap in the synthetic timeline (a playthrough's time between runs) isn't in the file: the windows play back
+to back and each upload's ``gaps`` says what it skips, as for a live recording's missed stretches. That needs
+no player work; an intermission card in the file would need file time that maps to no VOD time."""
 
 from __future__ import annotations
 
@@ -18,8 +22,6 @@ from sqlalchemy import select
 from .. import ffmpeg
 from ..context import JobContext, StepRefused
 
-GAP = 1.0  # seconds of the synthetic timeline that may play nothing between two windows
-
 
 def source_mp4(ctx: JobContext, vod_id: str) -> Path:
     """Where the archive job of ``vod_id`` keeps its MP4 (``keep_mp4``)."""
@@ -27,8 +29,9 @@ def source_mp4(ctx: JobContext, vod_id: str) -> Path:
 
 
 async def compile_sources(ctx: JobContext) -> None:
-    """The windows to cut (``payload.clips``), each from a kept MP4 of a real VOD. Refused when a source has
-    no kept MP4, has censor ranges (its MP4 is the uncensored one), or the timeline has a gap."""
+    """The windows to cut (``payload.clips``), each from a kept MP4 of a real VOD, with where each plays
+    on the synthetic timeline (``at``). Refused when a source has no kept MP4 or has censor ranges (its MP4
+    is the uncensored one)."""
     if ctx.payload.get("clips"):
         return
     vod = await ctx.get_vod()
@@ -38,14 +41,6 @@ async def compile_sources(ctx: JobContext) -> None:
         segs = [x for x in (await flat_segments(conn, [vod.id])).get(vod.id, []) if x.length > 0]
     if not segs:
         raise StepRefused(f"{vod.id} has no segments to compile")
-    end = 0.0
-    for x in segs:
-        # shortcut: a gap is refused, not filled with black; render a filler clip once merges with gaps need it.
-        if x.at - end > GAP:
-            raise StepRefused(
-                f"{format_hhmmss(end)}-{format_hhmmss(x.at)} plays nothing; a compiled file can't hold a gap"
-            )
-        end = x.at + x.length
     ids = sorted({x.source_id for x in segs})
     async with get_sessionmaker()() as s:
         censored = (await s.execute(select(Vod.id).where(Vod.id.in_(ids), Vod.censor != []))).scalars().all()
@@ -54,31 +49,48 @@ async def compile_sources(ctx: JobContext) -> None:
     missing = [i for i in ids if not source_mp4(ctx, i).exists()]
     if missing:
         raise StepRefused(f"no kept MP4 of source(s) {', '.join(missing)} (keep_mp4 on, then archive them again)")
+    ctx.payload["compiled_from"] = (vod.synthetic or {}).get("changedAt")  # see compiled()
     ctx.payload["clips"] = [
-        {"vod_id": x.source_id, "start": x.start, "end": x.end, "path": str(source_mp4(ctx, x.source_id))} for x in segs
+        {"vod_id": x.source_id, "start": x.start, "end": x.end, "at": x.at, "path": str(source_mp4(ctx, x.source_id))}
+        for x in segs
     ]
     await ctx.save()
 
 
 async def compile(ctx: JobContext) -> None:
-    """Cut each clip and join them into the job's MP4 (kept if already done). Stream copy cuts at keyframes,
-    so each join can move what follows by up to a keyframe interval (2 s on Twitch)."""
+    """Cut each clip and join them into the job's MP4 (kept if already done), and save where each clip is in
+    the file (``payload.timeline``, planning.recording_timeline's shape on the synthetic VOD's time) for the
+    chapters and each upload's ``gaps``. Stream copy cuts at keyframes, so each cut's measured length is used."""
     out = ctx.default_mp4
     if out.exists() and ctx.payload.get("duration"):
         return
     clips = ctx.payload["clips"]
     work = ctx.work_dir / "compile"
-    paths = []
+    paths, timeline, rec = [], [], 0.0
     for i, c in enumerate(clips):
         path = work / f"{i:04d}.mp4"
         if not path.exists():  # a finished cut survives a crash part-way through
             await ffmpeg.cut(Path(c["path"]), path, c["start"], c["end"] - c["start"], faststart=False)
         paths.append(path)
+        length = await ffmpeg.probe_duration(path)
+        timeline.append([round(rec, 3), round(float(c["at"]), 3), round(length, 3)])
+        rec += length
         ctx.progress(i + 1, len(clips), "parts", f"cut {i + 1}/{len(clips)} windows")
     ctx.log.info("joining %d windows into %s", len(paths), out)
     await ffmpeg.concat(paths, out)
     await asyncio.to_thread(shutil.rmtree, work, True)
     ctx.payload["duration"] = await ffmpeg.probe_duration(out)
+    ctx.payload["timeline"] = timeline
     ctx.payload.pop("parts", None)  # split cuts the new file
     await ctx.save()
     ctx.log.info("compiled %s (%s)", out, format_hhmmss(ctx.payload["duration"]))
+
+
+async def compiled(ctx: JobContext) -> None:
+    """Once uploaded, note which version of the segments they are (``synthetic.compiledFrom``, the
+    ``changedAt`` compile_sources saw): when the segments change after, Manage shows them outdated."""
+    if not ctx.payload.get("uploaded"):
+        return
+    async with get_sessionmaker()() as s, s.begin():
+        vod = (await s.execute(select(Vod).where(Vod.id == ctx.vod_id).with_for_update())).scalar_one()
+        vod.synthetic = {**(vod.synthetic or {}), "compiledFrom": ctx.payload.get("compiled_from")}

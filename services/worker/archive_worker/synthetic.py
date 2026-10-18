@@ -8,7 +8,8 @@ synthetic VODs it is in (``superseded_by``, ``appears_in``).
 
 Besides ``supersedes``, the ``synthetic`` column keeps ``madeAt`` (when it was created) and
 ``changedAt`` (when what it plays last changed: its segments, or its length as a source grew), so
-the site can tell a viewer who finished it that there is more now.
+the site can tell a viewer who finished it that there is more now. ``compiledFrom`` is the
+``changedAt`` its compiled uploads were made from (steps/compile): when they differ, those are outdated.
 
 ``recompose`` writes a synthetic VOD's cached columns from its sources again. The monitor runs
 ``recompose_stale`` every round, which picks the ones with a source updated since: that is how a
@@ -175,6 +176,11 @@ def synthetic_json(vod: Vod, segments: list[Segment]) -> dict[str, Any]:
         "changedAt": meta.get("changedAt"),
         "auto": meta.get("auto"),
         "segments": [seg.json() for seg in segments],
+        "compiled": (
+            {"outdated": meta.get("compiledFrom") != meta.get("changedAt")}
+            if any(e.get("type") == "compiled" for e in vod.youtube or [])
+            else None
+        ),
     }
 
 

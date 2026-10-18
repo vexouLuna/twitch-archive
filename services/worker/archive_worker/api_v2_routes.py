@@ -595,6 +595,7 @@ class SyntheticView(ApiModel):
     changed_at: UtcDatetime | None = None
     auto: dict[str, Any] | None = None  # {"game_id"}: it follows that game
     segments: list[dict[str, Any]]
+    compiled: dict[str, Any] | None = None  # {"outdated"} when it has compiled uploads (steps/compile)
 
 
 class MergeBody(ApiModel):

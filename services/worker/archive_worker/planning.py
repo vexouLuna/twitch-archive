@@ -302,9 +302,31 @@ def local_date(created_at: dt.datetime, tz: str) -> str:
     return created_at.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
 
 
-def video_title(channel: str, kind: str, created_at: dt.datetime, tz: str, part: int, total_parts: int) -> str:
+TITLE_FIELDS = ("channel", "label", "date", "title")  # what a title template (youtube_title*) may use
+
+
+def check_title(template: str) -> None:
+    """ValueError unless ``template`` formats with TITLE_FIELDS only."""
+    try:
+        template.format(**dict.fromkeys(TITLE_FIELDS, ""))
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(f"a title can use only {{{'}, {'.join(TITLE_FIELDS)}}} ({exc})") from None
+
+
+def video_title(
+    template: str,
+    channel: str,
+    kind: str,
+    created_at: dt.datetime,
+    tz: str,
+    part: int,
+    total_parts: int,
+    vod_title: str | None = None,
+) -> str:
+    """``template`` filled in (TITLE_FIELDS; ``title`` is the VOD's own), and " PART n" when there are several."""
     label = "Live VOD" if kind == "live" else "VOD"
-    title = f"{channel} Twitch {label} - {local_date(created_at, tz)}"
+    date = local_date(created_at, tz)
+    title = template.format(channel=channel, label=label, date=date, title=(vod_title or "").strip()).strip()
     if total_parts > 1:
         title += f" PART {part}"
     return title[:100]

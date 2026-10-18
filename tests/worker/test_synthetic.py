@@ -504,12 +504,31 @@ async def test_compile_sources(admin, make_ctx):
         (vod_dir / v / f"{v}.mp4").touch()
     assert [(c["vod_id"], c["start"], c["end"]) for c in await sources(P)] == [(A, 3600, 7200), (B, 0, 3600)]
 
-    # The merge has a gap, and a censored source's kept MP4 isn't what its uploads show.
+    # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
+    # becomes its uploads' ``gaps``). A censored source's kept MP4 isn't what its uploads show.
     assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
-    with pytest.raises(StepRefused, match="plays nothing"):
-        await sources(AB)
+    first, second = await sources(AB)
+    assert second["at"] > first["at"] + first["end"] - first["start"] + 1
     async with get_sessionmaker()() as s:
         await s.execute(update(Vod).where(Vod.id == B).values(censor=[{"start": 0, "end": 5, "mode": "blur"}]))
         await s.commit()
     with pytest.raises(StepRefused, match=f"{B} have censor ranges"):
         await sources(P)
+
+
+async def test_compiled_uploads_go_outdated_when_the_segments_change(admin, make_ctx):
+    from archive_worker.steps import compile as comp
+
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201 and r.json()["compiled"] is None  # nothing compiled yet
+    async with get_sessionmaker()() as s:
+        await s.execute(update(Vod).where(Vod.id == P).values(youtube=[{"id": "yt", "type": "compiled", "part": 1}]))
+        await s.commit()
+        made = (await s.execute(select(Vod.synthetic).where(Vod.id == P))).scalar_one()["changedAt"]
+    ctx = make_ctx("compile", P, {"type": "compiled", "uploaded": {"1": {}}, "compiled_from": made})
+    await comp.compiled(ctx)
+    assert (await admin.get(f"/api/v2/synthetic/{P}", headers=KEY)).json()["compiled"] == {"outdated": False}
+    r = await admin.put(
+        f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
+    )
+    assert r.json()["compiled"] == {"outdated": True}
