@@ -72,6 +72,8 @@ class Vod(Base):
     )
     # Alembic 0019: ranges blurred, blacked out or muted in the uploads (vod_edits.censor); [] = none.
     censor: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list)
+    # Alembic 0021: why the VOD was cut, shown on the site's page for a VOD cut in full; NULL = none given.
+    cut_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = _created()
     updated_at: Mapped[dt.datetime] = _updated()
 
