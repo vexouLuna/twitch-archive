@@ -321,7 +321,7 @@ Job kinds and their steps:
 | `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
 | `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
-| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later |
+| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later; a newer pipeline on the same folder cancels it, and it leaves files a run still needs (active, or failed since) |
 | `global_emotes_backfill` | one step | `/admin/emotes/backfill` |
 | `live_gaps_backfill` | one step | `/admin/live-gaps/backfill` |
 | `bot_chat` | one step | monitor (stream ended, `DOOMTP_URL` set; separate from `archive`), `/admin/bot-chat` |
