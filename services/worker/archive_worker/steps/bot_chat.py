@@ -193,7 +193,8 @@ def annotate(rows: list[dict[str, Any]]) -> None:
     """Fold notices and moderation into the messages they concern (rows in time order).
 
     A redeem's message has only the reward id; its redemption notice has the title and
-    cost. A moderation action (only keyed reads have these) flags what it removed.
+    cost, and is marked `merged_into` that message so replay shows the redeem once. A
+    moderation action (only keyed reads have these) flags what it removed.
     """
     messages = [r for r in rows if r["kind"] == "message"]
     by_id = {r["id"]: r for r in messages}
@@ -215,6 +216,8 @@ def annotate(rows: list[dict[str, Any]]) -> None:
             for m in by_user.get(user_id or "", []) if reward.get("id") else []:
                 if m["data"].get("reward_id") == reward["id"] and abs(m["at"] - r["at"]) <= slack:
                     m["data"] = {**m["data"], "reward": info}
+                    # The message now shows the reward: the notice is hidden from chat replay, not dropped.
+                    r["data"] = {**r["data"], "merged_into": m["id"]}
         elif r["kind"] == "moderation":
             typ, at = e.get("type"), r["at"]
             if typ == "delete":
