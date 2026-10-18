@@ -146,6 +146,7 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_MANUAL_STEPS` † | `{}` | Steps a job pauses before until you resume it, per job kind, e.g. `{"archive":["upload"]}`; see [Manual steps](#manual-steps) |
 | `ARCHIVE_SPLIT_DURATION` † | `10800` | Maximum YouTube part length in seconds |
 | `ARCHIVE_KEEP_HLS` / `ARCHIVE_KEEP_MP4` † | `false` | Keep files after upload |
+| `ARCHIVE_KEEP_FILES_DAYS` † | `0` | Days to keep a job's files after upload: its cleanup step queues a `cleanup` job for then (0: clean up at once) |
 | `ARCHIVE_PREVIEWS` † | `true` | Make seek-bar previews of each uploaded part; see [Seek-bar previews](#seek-bar-previews) |
 | `ARCHIVE_PREVIEWS_FETCH_PAUSE_SECONDS` † | `60` | Pause between two YouTube downloads of the previews backfill |
 | `ARCHIVE_PREVIEWS_YTDLP_ARGS` | `[]` | Extra yt-dlp arguments for those downloads, e.g. `["--cookies","/secrets/yt.txt"]` |
@@ -314,12 +315,15 @@ Job kinds and their steps:
 | `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
 | `part_dmca` | ensure_source → fetch_vod → finalize → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
+| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later |
 | `global_emotes_backfill` | one step | `/admin/emotes/backfill` |
 | `live_gaps_backfill` | one step | `/admin/live-gaps/backfill` |
 | `bot_chat` | one step | monitor (stream ended, `DOOMTP_URL` set; separate from `archive`), `/admin/bot-chat` |
 | `bot_chat_backfill` | one step: queues a `bot_chat` job per VOD | `/admin/bot-chat/backfill` |
 | `previews_fetch` | one step | `/admin/previews` |
 | `previews_backfill` | one step: queues a `previews_fetch` job per VOD | `/admin/previews/backfill` |
+
+When `split` finds nothing to upload (an empty VOD, or every chapter restricted), the job skips to `cleanup` and succeeds.
 
 `ensure_source` uses `path` if one was given, otherwise the MP4 already on disk. With neither, `fetch_vod` downloads the whole VOD from Twitch again (only while Twitch still has it) and `finalize` converts it; both do nothing when there is a source already.
 
@@ -360,7 +364,7 @@ curl -s "${H[@]}" -X DELETE "$A/admin/site/tags/speedrun/shape"
 
 ### Storage
 
-Every job works in one folder of the data directory: `vods/<vodId>`, or `live/<streamId>` for a live recording. Files are normally deleted after upload; what is left is what `ARCHIVE_KEEP_HLS`/`KEEP_MP4` keep, jobs still in progress, and leftovers of failed jobs or deleted VODs.
+Every job works in one folder of the data directory: `vods/<vodId>`, or `live/<streamId>` for a live recording. Files are normally deleted after upload (or `ARCHIVE_KEEP_FILES_DAYS` later); what is left is what `ARCHIVE_KEEP_HLS`/`KEEP_MP4` keep, jobs still in progress, and leftovers of failed jobs or deleted VODs.
 
 ```bash
 curl -s "${H[@]}" "$A/admin/storage"                    # the disk, and each folder; ?refresh=true to scan again now

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import shutil
 from pathlib import Path
 from typing import Any
 
 from archive_common.timeutil import format_hhmmss, parse_helix_duration
+from vex_platform.jobs import SkipTo
 
 from .. import ffmpeg, planning
 from ..context import JobContext, StepError
@@ -112,7 +114,11 @@ async def split(ctx: JobContext) -> None:
     duration = await vod_duration(ctx, vod)
     all_parts = planning.plan_parts(duration, file_chapters(ctx, vod), s.restricted_games, s.split_duration)
     if not all_parts:
-        raise StepError("nothing to upload (VOD is empty or entirely restricted)")
+        from ..jobs import KINDS  # jobs imports the steps
+
+        # Not a failure: nothing to do but clean up (a kind without cleanup just ends).
+        then = "cleanup" if "cleanup" in KINDS[ctx.kind] else None
+        raise SkipTo("nothing to upload (VOD is empty or entirely restricted)", then)
     parts = planning.select_parts(all_parts, ctx.payload.get("start_part"), ctx.payload.get("end_part"))
     if not parts:
         raise StepError(f"no parts in range (VOD has {len(all_parts)})")
@@ -211,9 +217,16 @@ async def censor(ctx: JobContext) -> None:
 
 
 async def cleanup(ctx: JobContext) -> None:
+    """Remove the job's files, or with ``keep_files_days`` queue a ``cleanup`` run that does it then."""
     s = ctx.settings
     if s.dry_run:
         ctx.log.info("dry run: keeping files in %s", ctx.work_dir)
+        return
+    if ctx.kind != "cleanup" and s.keep_files_days > 0:
+        at = dt.datetime.now(dt.UTC) + dt.timedelta(days=s.keep_files_days)
+        keep: dict[str, Any] = {k: ctx.payload[k] for k in ("type", "stream_id") if k in ctx.payload}
+        child = await ctx.enqueue("cleanup", ctx.vod_id, keep, not_before=at, queued_key=str(ctx.work_dir))
+        ctx.log.info("keeping files in %s until %s (cleanup job %d)", ctx.work_dir, f"{at:%Y-%m-%d %H:%M} UTC", child)
         return
     removed: list[Path] = []
     for d in (ctx.parts_dir, ctx.work_dir / "dmca", ctx.work_dir / "censor"):

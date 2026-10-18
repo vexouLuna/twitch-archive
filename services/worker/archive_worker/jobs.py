@@ -150,6 +150,8 @@ KINDS: dict[str, list[str]] = {
     # One-off: the ad breaks (gaps) of live uploads made before they were saved, from their live jobs.
     "live_gaps_backfill": ["live_gaps_backfill"],
     "describe": ["describe"],
+    # A pipeline's cleanup, queued by its own cleanup step to run keep_files_days later.
+    "cleanup": ["cleanup"],
     # Chat from doomtp-bot into bot_logs, beside the archive job of the same VOD.
     "bot_chat": ["bot_chat"],
     # Queues a bot_chat run per VOD without bot chat (or per given VOD), newest first; they run one at a time.

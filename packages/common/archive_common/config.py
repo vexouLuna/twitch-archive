@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     split_duration: int = 10800
     keep_hls: bool = False
     keep_mp4: bool = False
+    keep_files_days: float = 0  # days a pipeline's files stay before a scheduled cleanup job removes them
     dry_run: bool = False
     runner_concurrency: int = 3  # jobs run at once
     max_attempts: int = 3  # tries of a failing step before its job fails
