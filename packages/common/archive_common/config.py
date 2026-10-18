@@ -17,10 +17,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRETS_DIR = Path(os.environ.get("ARCHIVE_SECRETS_DIR", "/run/secrets"))
+
+
+TITLE_FIELDS = ("channel", "label", "date", "title")  # what a title template (youtube_title*) may use
+
+
+def check_title(template: str) -> None:
+    """ValueError unless ``template`` formats with TITLE_FIELDS only."""
+    try:
+        template.format(**dict.fromkeys(TITLE_FIELDS, ""))
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(f"a title can use only {{{'}, {'.join(TITLE_FIELDS)}}} ({exc})") from None
 
 
 class Settings(BaseSettings):
@@ -78,7 +89,11 @@ class Settings(BaseSettings):
     force_upload_manual: bool = False
     youtube_upload: bool = True
     youtube_public: bool = False
+    compile_youtube_upload: bool = False  # the compile job may upload to YouTube; off: it only makes the file
+    compile_youtube_public: bool = False  # compiled uploads public instead of unlisted (youtube_public doesn't apply)
     youtube_description: str = "VOD"
+    youtube_title: str = "{channel} Twitch {label} - {date}"  # planning.TITLE_FIELDS; " PART n" is added
+    youtube_title_compiled: str = "{title}"  # a compiled synthetic VOD's uploads (its own title)
     youtube_keepalive_hours: float = 24.0  # periodic token refresh; see README "YouTube OAuth"
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count
     youtube_check_hours: float = 24.0  # how often the uploads are checked on YouTube; 0 = only by hand
@@ -159,6 +174,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
     google_redirect_url: str = "http://localhost:3031/admin/refreshtoken"
+
+    @field_validator("youtube_title", "youtube_title_compiled")
+    @classmethod
+    def _title(cls, v: str) -> str:
+        check_title(v)  # a bad env template fails at startup, not at the first upload
+        return v
 
     @property
     def vod_dir(self) -> Path:
