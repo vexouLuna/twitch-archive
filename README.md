@@ -552,6 +552,8 @@ curl -s "${H[@]}" "$A/api/v2/playthrough-candidates?game_id=512953"             
 
 A segment's `start` defaults to 0, `end` to its VOD's end, and `at` to right after the segment before. Changes are audited as `synthetic.create`, `synthetic.update` and `synthetic.delete`.
 
+A playthrough can keep itself up to date: send `"auto": {"game_id": "512953"}` (on create, instead of `segments`, or on a PUT) and its segments become every window of that game. Each monitor round writes them again when they differ, so a new stream of the game or a source's edited chapters reach it; that change is audited as `synthetic.update` by `system`. Sending `segments` without `auto` is a hand edit and stops it, as does `"auto": null`. The view says what it follows in `auto` (`null`: nothing).
+
 ### Browser access (dashboard)
 
 A web dashboard logs in instead of carrying the API key: with Twitch through [vex-auth](https://github.com/vexouLuna/vex-auth) (the sign-in shared by the vexoul.net sites), or with `ARCHIVE_ADMIN_PASSWORD` from the local network. The key keeps working for scripts; every `/admin/*` route accepts any of them. The audit log records the actor as `api-key`, `password` or `twitch:<id>`.

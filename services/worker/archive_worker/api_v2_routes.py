@@ -33,7 +33,7 @@ from archive_common import audit
 from archive_common.db import get_sessionmaker
 from archive_common.models import Game, Vod
 from archive_common.segments import Segment
-from archive_common.serialize import duration_seconds, not_hidden, not_merged_away, real, tagged
+from archive_common.serialize import duration_seconds, real, tagged
 from archive_common.timeutil import hhmmss_to_seconds
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import Field
@@ -443,15 +443,17 @@ def vods_router(auth: Auth) -> APIRouter:
     async def create_synthetic(request: Request, body: SyntheticCreate) -> SyntheticView:
         """A synthetic VOD of ``segments``: windows ``[start, end)`` of real VODs placed at ``at`` (a
         missing ``at`` follows the segment before). ``supersedes``: the real VODs leave the public lists
-        and redirect into it (a merge, a split); untagged, it is listed as a regular VOD. Audited as
-        ``synthetic.create``."""
+        and redirect into it (a merge, a split); untagged, it is listed as a regular VOD. With ``auto``
+        (a playthrough that keeps itself up to date) the segments are every window of that game, kept so
+        by the monitor, and ``segments`` is not needed. Audited as ``synthetic.create``."""
         view = await _synthetic(  # type: ignore[no-untyped-call]
             synthetic.create,
             body.id,
-            _segments(body.segments),
+            [] if body.auto else _segments(body.segments),
             title=body.title,
             supersedes=body.supersedes,
             tags=body.tags,
+            auto=_auto(body.auto),
         )
         await _audit(request, "synthetic.create", body.id, after=view)
         return SyntheticView(**view)
@@ -462,14 +464,21 @@ def vods_router(auth: Auth) -> APIRouter:
 
     @router.put("/synthetic/{vod_id}")
     async def change_synthetic(request: Request, vod_id: str, body: SyntheticChange) -> SyntheticView:
-        """Only the fields sent change. Audited as ``synthetic.update``, before and after."""
+        """Only the fields sent change; ``auto`` follows a game (its windows replace the segments) or,
+        null, stops. Segments sent without ``auto`` are a hand edit, which stops it too. Audited as
+        ``synthetic.update``, before and after."""
+        if "auto" in body.model_fields_set:
+            auto: dict[str, Any] | str | None = _auto(body.auto)
+        else:
+            auto = synthetic.KEEP if body.segments is None else None
         before, after = await _synthetic(  # type: ignore[no-untyped-call]
             synthetic.change,
             vod_id,
-            segments=None if body.segments is None else _segments(body.segments),
+            segments=None if body.segments is None or body.auto else _segments(body.segments),
             title=body.title,
             supersedes=body.supersedes,
             tags=body.tags,
+            auto=auto,
         )
         before, after = _snake(before), _snake(after)
         await _audit(request, "synthetic.update", vod_id, before=before, after=after)
@@ -522,31 +531,19 @@ def vods_router(auth: Auth) -> APIRouter:
         joined), oldest first: trim them, then POST them to /synthetic as a playthrough (``tags:
         ["compilation"]``, ``supersedes: false``); a window's ``segment`` is ready to send."""
         async with get_sessionmaker()() as s:
-            vods = (
-                (
-                    await s.execute(
-                        select(Vod)
-                        .where(real(), not_merged_away(), not_hidden(), Vod.chapters.contains([{"gameId": game_id}]))
-                        .order_by(Vod.created_at, Vod.id)
-                    )
-                )
-                .scalars()
-                .all()
+            windows = await synthetic.game_windows(s, game_id)
+        items = [
+            PlaythroughWindow(
+                vod_id=vod.id,
+                title=vod.title,
+                created_at=vod.created_at,
+                start=start,
+                end=end,
+                length=end - start,
+                segment=_snake(synthetic.window_segment(vod, start, end)),
             )
-        items = []
-        for vod in vods:
-            for start, end in compose.game_windows(vod.chapters, game_id):
-                items.append(
-                    PlaythroughWindow(
-                        vod_id=vod.id,
-                        title=vod.title,
-                        created_at=vod.created_at,
-                        start=start,
-                        end=end,
-                        length=end - start,
-                        segment={"vod_id": vod.id, "start": start, "end": end, "label": f"{vod.created_at:%d %b %Y}"},
-                    )
-                )
+            for vod, start, end in windows
+        ]
         return Page[PlaythroughWindow](items=items)
 
     return router
@@ -560,12 +557,22 @@ class SegmentIn(ApiModel):
     label: str | None = None
 
 
+class AutoIn(ApiModel):
+    game_id: str = Field(min_length=1)
+
+
+def _auto(auto: AutoIn | None) -> dict[str, Any] | None:
+    """As ``synthetic.auto`` stores it."""
+    return None if auto is None else {"gameId": auto.game_id}
+
+
 class SyntheticCreate(ApiModel):
     id: str  # not only digits (those are Twitch's)
     title: str | None = None  # default: the first source's
     supersedes: bool = False
     tags: list[str] = Field(default_factory=list)
-    segments: list[SegmentIn]
+    segments: list[SegmentIn] = Field(default_factory=list)  # not needed with ``auto``
+    auto: AutoIn | None = None
 
 
 class SyntheticChange(ApiModel):
@@ -573,6 +580,7 @@ class SyntheticChange(ApiModel):
     supersedes: bool | None = None
     tags: list[str] | None = None
     segments: list[SegmentIn] | None = None
+    auto: AutoIn | None = None
 
 
 class SyntheticView(ApiModel):
@@ -585,6 +593,7 @@ class SyntheticView(ApiModel):
     created_at: UtcDatetime | None = None
     made_at: UtcDatetime | None = None
     changed_at: UtcDatetime | None = None
+    auto: dict[str, Any] | None = None  # {"game_id"}: it follows that game
     segments: list[dict[str, Any]]
 
 

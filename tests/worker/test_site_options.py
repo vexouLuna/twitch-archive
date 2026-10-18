@@ -23,7 +23,11 @@ def card(tag: str) -> dict[str, Any]:
     return {"kind": "tag", "tag": tag}
 
 
-TAGS: list[dict[str, Any]] = [{"name": "compilation", "homeCard": True}, {"name": "highlight", "homeCard": True}, {"name": "x"}]
+TAGS: list[dict[str, Any]] = [
+    {"name": "compilation", "homeCard": True},
+    {"name": "highlight", "homeCard": True},
+    {"name": "x"},
+]
 
 
 def test_cards_kept_in_order():

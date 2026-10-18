@@ -433,3 +433,51 @@ def test_live_span_without_a_start():
     assert P in str(clause.compile(compile_kwargs={"literal_binds": True})) and AB not in str(
         clause.compile(compile_kwargs={"literal_binds": True})
     )
+
+
+async def test_auto_playthrough(admin):
+    bad = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": "test-syn-none"}})
+    assert bad.status_code == 422
+    r = await admin.post(
+        "/api/v2/synthetic", headers=KEY, json={"id": P, "tags": ["compilation"], "auto": {"game_id": GAME}}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["auto"] == {"game_id": GAME}
+    assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
+        (A, 3600, 7200, 0),
+        (B, 0, 3600, 3600),
+    ]
+    assert P not in await synthetic.refresh_auto()  # nothing changed
+
+    # B plays less of the game now: the next round follows, audited as the system.
+    async with get_sessionmaker()() as s:
+        await s.execute(
+            update(Vod)
+            .where(Vod.id == B)
+            .values(chapters=[_ch(0, 1800, "Test Game", GAME), _ch(1800, 1800, "Other")], updated_at=func.now())
+        )
+        await s.commit()
+    assert P in await synthetic.refresh_auto()
+    view = (await admin.get(f"/api/v2/synthetic/{P}", headers=KEY)).json()
+    assert [(x["vod_id"], x["end"]) for x in view["segments"]] == [(A, 7200), (B, 1800)]
+    assert view["duration"] == "01:30:00"
+    async with get_sessionmaker()() as s:
+        [row] = (
+            await s.execute(
+                select(AUDIT_LOG).where(AUDIT_LOG.c.target == f"vod:{P}", AUDIT_LOG.c.action == "synthetic.update")
+            )
+        ).all()
+    assert (row.actor_kind, row.detail) == ("system", {"auto": {"gameId": GAME}})
+
+    # Other changes keep it; segments by hand stop it; it can follow again, or stop outright.
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"title": "renamed"})
+    assert r.json()["auto"] == {"game_id": GAME}
+    r = await admin.put(
+        f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
+    )
+    assert r.status_code == 200 and r.json()["auto"] is None
+    assert P not in await synthetic.refresh_auto()
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": {"game_id": GAME}})
+    assert r.json()["auto"] == {"game_id": GAME} and len(r.json()["segments"]) == 2
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": None})
+    assert r.json()["auto"] is None and len(r.json()["segments"]) == 2
