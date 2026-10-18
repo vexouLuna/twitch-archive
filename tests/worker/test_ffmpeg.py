@@ -119,3 +119,22 @@ async def test_preview_sheets(clip, tmp_path):
         text=True,
     ).stdout.strip()
     assert size == "1600,900"  # 10×10 tiles of 160×90
+
+
+async def test_encode_cuts_exactly(clip, tmp_path):
+    a = await ffmpeg.encode(clip, tmp_path / "a.mp4", 1.3, 2.5)
+    assert abs(await ffmpeg.probe_duration(a) - 2.5) < 0.1  # a stream copy would start at a keyframe
+
+
+async def test_encode_converts_to_the_target(clip, tmp_path):
+    assert await ffmpeg.probe_video(clip) == (160, 90, "10/1")
+    a = await ffmpeg.encode(clip, tmp_path / "a.mp4", 1.0, 2.0, (320, 240, "25/1"))  # 16:9 into 4:3: padded
+    assert await ffmpeg.probe_video(a) == (320, 240, "25/1")
+
+
+async def test_concat(clip, tmp_path):
+    a = await ffmpeg.cut(clip, tmp_path / "a.mp4", 0, 4, faststart=False)
+    b = await ffmpeg.cut(clip, tmp_path / "b.mp4", 6, 4, faststart=False)
+    joined = await ffmpeg.concat([a, b], tmp_path / "ab.mp4")
+    assert abs(await ffmpeg.probe_duration(joined) - 8) < 2.2
+    assert not (tmp_path / "ab.mp4.txt").exists()
