@@ -120,9 +120,33 @@ ENTRIES = (
         "next job",
         'Chapters of these games are left out of uploads ("No category": chapters without one)',
     ),
+    Entry(
+        "censor_descriptors",
+        "list",
+        "Pipeline",
+        "next job",
+        "A game whose IGDB content descriptors or themes contain one of these pauses the job for a censor review"
+        " before upload (empty: no check)",
+    ),
+    Entry(
+        "censor_allow_games",
+        "list",
+        "Pipeline",
+        "next job",
+        "Games uploaded without the IGDB check (restricted games are still cut)",
+    ),
     Entry("split_duration", "int", "Pipeline", "next job", "Maximum YouTube part length in seconds", 600, 43200),
     Entry("keep_hls", "bool", "Pipeline", "next job", "Keep the HLS segments after upload"),
     Entry("keep_mp4", "bool", "Pipeline", "next job", "Keep the MP4 after upload"),
+    Entry(
+        "keep_files_days",
+        "float",
+        "Pipeline",
+        "next job",
+        "Days to keep a job's files after upload; a cleanup job removes them then (0: at once)",
+        0,
+        365,
+    ),
     Entry("previews", "bool", "Pipeline", "next job", "Make seek-bar previews of each uploaded part"),
     Entry(
         "previews_fetch_pause_seconds",

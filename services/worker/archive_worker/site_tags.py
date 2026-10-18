@@ -26,6 +26,7 @@ TEXT_MAX = 24
 TEXT_SIZE = (6, 48)
 TEXT_NUDGE = (-100, 100)
 TEXT_ROTATE = (-180, 180)
+ROTATE = (-180, 180)  # the drawn tag itself
 PATTERNS = ("stripes", "checks")
 PATTERN_SIZE = (2, 40)
 COMPUTED = ("new", "updated")  # the site works these out (from dates): never stored on a VOD
@@ -91,6 +92,7 @@ COLOR_RULE = "null or a color: a hex, a color name, var(--…), or a color funct
 NUMBERS = {
     "width": (SIZE, "px"),
     "height": (SIZE, "px"),
+    "rotate": (ROTATE, "degrees"),
     "textSize": (TEXT_SIZE, "px"),
     "textX": (TEXT_NUDGE, "px"),
     "textY": (TEXT_NUDGE, "px"),

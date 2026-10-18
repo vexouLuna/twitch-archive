@@ -64,6 +64,7 @@ ROUTE_ACTIONS: dict[str, str] = {
     "POST /admin/jobs/{job_id}/retry": "job.retry",
     "POST /admin/jobs/{job_id}/cancel": "job.cancel",
     "PATCH /admin/jobs/{job_id}": "job.update",
+    "POST /admin/jobs/{job_id}/censor-review": "job.censor_review",
     "POST /admin/generate/vod": "vod.generate",
     "POST /admin/create": "vod.create",
     "DELETE /admin/delete": "vod.delete",

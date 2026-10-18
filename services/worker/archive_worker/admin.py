@@ -83,6 +83,7 @@ from .context import Deps
 from .events import iso_utc
 from .job_rows import ALL_JOBS
 from .runtime_settings import RuntimeSettings
+from .steps import content_check
 from .storage import Storage, StorageError
 from .vods import drop_youtube_entries, notify_rows_moved, splice_reason, upsert_vod
 
@@ -1227,6 +1228,29 @@ def create_admin_app(
         await save_vod(vod.id, censor=ranges)
         request.state.audit_detail = {"before": before, "after": ranges}
         return await admin_vod(vod.id)
+
+    @app.post("/admin/jobs/{job_id}/censor-review", dependencies=auth)
+    async def censor_review(job_id: int, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Answer a job the ``censor_check`` step paused: ``{"decision": "upload"}`` resumes it (with whatever
+        censor ranges are set by now), ``"cut"`` first marks the flagged games' chapters restricted (and locks
+        the chapters) so ``split`` leaves them out of the uploads."""
+        decision = body.get("decision")
+        if decision not in ("upload", "cut"):
+            raise AdminError(400, 'decision must be "upload" or "cut"')
+        job = await jobs.get(job_id)
+        review = (job.payload or {}).get("censor_review") or {}
+        if job.state != "paused" or not review.get("games"):
+            raise AdminError(409, f"Job {job_id} is not paused for a censor review")
+        if decision == "cut":
+            ids = {str(g["gameId"]) for g in review["games"] if g.get("gameId")}
+            if not ids:
+                raise AdminError(409, "IGDB could not be checked, so there are no games to cut; set censor ranges")
+            vod = await require_vod(str(job.vod_id))
+            chapters = content_check.cut_games(vod.chapters, ids)
+            await save_vod(vod.id, chapters=chapters, chapters_locked=True)
+            request.state.audit_detail = {"vod": vod.id, "cut": sorted(ids)}
+        job = await service.resume(job_id, actor=_actor.get())
+        return job_action(f"Job {job_id} resumed at step {job.step} ({decision})", job)
 
     @app.post("/admin/vods/{vod_id}/youtube/delete", dependencies=auth)
     async def delete_uploads(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
