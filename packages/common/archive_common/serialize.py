@@ -131,6 +131,8 @@ def vod_additions(vod: dict[str, Any]) -> None:
         del vod["merged_into"]  # only on VODs merged into another: {"id", "offset"}
     if "synthetic" in vod and vod["synthetic"] is None:
         del vod["synthetic"]  # only on synthetic VODs; attach_segments completes it
+    if "cut_reason" in vod and vod["cut_reason"] is None:
+        del vod["cut_reason"]  # only when an admin gave one
     if isinstance(vod.get("chapters"), list):
         vod["chapters"] = [chapter_additions(c) for c in vod["chapters"]]
     if "duration" in vod:
@@ -162,6 +164,7 @@ VODS = Resource(
         Field("merged_into", _vt.c.merged_into),
         Field("tags", _vt.c.tags),
         Field("synthetic", _vt.c.synthetic),
+        Field("cut_reason", _vt.c.cut_reason),
     ),
     "id",
     {},

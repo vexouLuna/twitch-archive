@@ -1084,6 +1084,7 @@ def create_admin_app(
             "chaptersLocked": locked,
             "botChat": bot_chat,
             "censor": censor,
+            "cut_reason": vod.get("cut_reason"),  # the public JSON leaves it out while NULL
             "jobs": recent,
             "splices": await splices.active_splices(vod_id),
         }
@@ -1115,11 +1116,12 @@ def create_admin_app(
             "hidden": vod.hidden,
             "merged_into": vod.merged_into,
             "tags": list(vod.tags or []),
+            "cut_reason": vod.cut_reason,
         }
 
     def fields_json(vod: Vod, keys) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         row = vod_row_json(vod)
-        return {k: row[{"thumbnailUrl": "thumbnail_url"}.get(k, k)] for k in keys}
+        return {k: row[{"thumbnailUrl": "thumbnail_url", "cutReason": "cut_reason"}.get(k, k)] for k in keys}
 
     @app.get("/admin/vods", dependencies=auth)
     async def list_vods(
@@ -1153,8 +1155,8 @@ def create_admin_app(
     @app.patch("/admin/vods/{vod_id}", dependencies=auth)
     async def patch_vod(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Any of ``title``, ``hidden``, ``thumbnailUrl`` (null: the default), ``duration`` (HH:MM:SS),
-        ``createdAt`` (ISO) and ``tags`` (the site's, site_tags.vod_tags). A merged VOD takes only ``hidden``
-        and ``tags``. Audited with the fields before and after."""
+        ``createdAt`` (ISO), ``tags`` (the site's, site_tags.vod_tags) and ``cutReason`` (text, null: none).
+        A merged VOD takes only ``hidden`` and ``tags``. Audited with the fields before and after."""
         vod = await require_vod(vod_id)
         values = edited(vod_edits.vod_fields, body, await known_tags(vod) if "tags" in body else ())
         if set(body) - vod_edits.MERGED_EDITABLE:
