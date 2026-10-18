@@ -317,3 +317,32 @@ def test_merge_keeps_each_uploads_gaps():
         ("h1", [[400, 90]]),
     ]
     assert plan.detail["types"]["live"]["drift"] == 0
+
+
+def test_merge_into_a_vod_with_no_uploads_counts_its_time_as_missing_footage():
+    # The stream's first VOD was lost (no uploads); its 2 h still count on the merged timeline.
+    lost = side("a", 7200, [ch(0, 7200)], [])
+    plan = timeline.plan_merge(lost, B, OFFSET)
+    m = merged(plan)
+    assert plan.duration == OFFSET + B.duration
+    assert [p["id"] for p in plan.youtube] == ["b1"]
+    assert plan.detail["playedType"] == "vod"
+    assert site_delay(m) == 7200  # the lost VOD, before the uploads start
+    assert site_vod_time(m, 0) == OFFSET + site_delay(B)  # the gap chapter skips to B's first frame
+    assert m.chapters[0] == lost.chapters[0]
+
+
+def test_merge_a_vod_with_no_uploads_counts_its_time_as_trailing_missing_footage():
+    # The stream's last VOD was lost (no uploads); its 1 h still counts, under the gap chapter.
+    lost = side("b", 3600, [ch(0, 3600)], [])
+    plan = timeline.plan_merge(A, lost, OFFSET)
+    m = merged(plan)
+    assert plan.duration == OFFSET + 3600
+    assert plan.youtube == timeline.renumber(A.youtube)
+    assert site_delay(m) == site_delay(A)  # A's frames stay where they were
+    assert plan.detail["gapChapter"] == {"start": A.duration, "end": OFFSET + 3600}
+
+
+def test_merge_refuses_two_vods_with_no_uploads():
+    with pytest.raises(timeline.PlanError, match="no uploads"):
+        timeline.plan_merge(side("a", 100, [], []), side("b", 100, [], []), 100)

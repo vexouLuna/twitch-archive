@@ -32,6 +32,7 @@ ADDED_VOD_FIELDS = {
     "synthetic",
     "superseded_by",
     "appears_in",  # only on synthetic VODs and the VODs they are made of
+    "cut_reason",  # only when an admin gave one
 }
 ADDED_CHAPTER_FIELDS = {"imageTemplate", "length"}
 # Global emote sets saved with each VOD (emotes rows are the dicts with "7tv_emotes").

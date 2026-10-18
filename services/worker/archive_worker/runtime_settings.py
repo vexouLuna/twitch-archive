@@ -30,7 +30,7 @@ from sqlalchemy.dialects.postgresql import insert
 from vex_platform.audit import AuditEntry
 from vex_platform.audit.sqlalchemy import record
 
-from . import jobs
+from . import jobs, planning
 from .events import iso_utc
 
 log = logging.getLogger(__name__)
@@ -79,6 +79,22 @@ ENTRIES = (
     ),
     Entry("youtube_upload", "bool", "YouTube", "next job", "Upload to YouTube"),
     Entry(
+        "compile_youtube_upload",
+        "bool",
+        "YouTube",
+        "next job",
+        "Upload compiled VODs to YouTube (a compile job, started from Manage; nothing compiles on its own)",
+        requires="youtube_upload",
+    ),
+    Entry(
+        "compile_youtube_public",
+        "bool",
+        "YouTube",
+        "next job",
+        "Compiled uploads public instead of unlisted (Public uploads doesn't apply to them)",
+        requires="compile_youtube_upload",
+    ),
+    Entry(
         "youtube_public",
         "bool",
         "YouTube",
@@ -86,6 +102,21 @@ ENTRIES = (
         "Public instead of unlisted (the main copy: the live one when live_record is on)",
     ),
     Entry("youtube_description", "text", "YouTube", "next job", "Last line of every description"),
+    Entry(
+        "youtube_title",
+        "text",
+        "YouTube",
+        "next job",
+        "Upload title: {channel}, {label} (VOD or Live VOD), {date}, {title} (the stream's); PART n is added",
+    ),
+    Entry(
+        "youtube_title_compiled",
+        "text",
+        "YouTube",
+        "next job",
+        "Compiled upload title, the same fields; {title} is the synthetic VOD's",
+        requires="compile_youtube_upload",
+    ),
     Entry(
         "youtube_keepalive_hours",
         "float",
@@ -120,9 +151,33 @@ ENTRIES = (
         "next job",
         'Chapters of these games are left out of uploads ("No category": chapters without one)',
     ),
+    Entry(
+        "censor_descriptors",
+        "list",
+        "Pipeline",
+        "next job",
+        "A game whose IGDB content descriptors or themes contain one of these pauses the job for a censor review"
+        " before upload (empty: no check)",
+    ),
+    Entry(
+        "censor_allow_games",
+        "list",
+        "Pipeline",
+        "next job",
+        "Games uploaded without the IGDB check (restricted games are still cut)",
+    ),
     Entry("split_duration", "int", "Pipeline", "next job", "Maximum YouTube part length in seconds", 600, 43200),
     Entry("keep_hls", "bool", "Pipeline", "next job", "Keep the HLS segments after upload"),
     Entry("keep_mp4", "bool", "Pipeline", "next job", "Keep the MP4 after upload"),
+    Entry(
+        "keep_files_days",
+        "float",
+        "Pipeline",
+        "next job",
+        "Days to keep a job's files after upload; a cleanup job removes them then (0: at once)",
+        0,
+        365,
+    ),
     Entry("previews", "bool", "Pipeline", "next job", "Make seek-bar previews of each uploaded part"),
     Entry(
         "previews_fetch_pause_seconds",
@@ -168,6 +223,11 @@ def validate(key: str, value: Any) -> Any:
     if t == "text":
         if not isinstance(value, str) or len(value) > TEXT_MAX:
             raise ValueError(f"{key} must be text of at most {TEXT_MAX} characters")
+        if key.startswith("youtube_title"):
+            try:
+                planning.check_title(value)
+            except ValueError as exc:
+                raise ValueError(f"{key}: {exc}") from None
         return value
     if t == "list":
         if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):

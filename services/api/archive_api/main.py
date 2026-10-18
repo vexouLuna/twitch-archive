@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from archive_common import logs, site_tags
+from archive_common import logs, site_options, site_tags
 from archive_common import previews as pv
 from archive_common.config import Settings, get_settings
 from archive_common.db import get_engine
@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     status_cache = ResponseCache(45, maxsize=1)
     # A complete emote list is kept for hours; one with a failed provider is retried sooner.
     site_tags_cache = ResponseCache(SITE_TAGS_TTL if settings.cache_ttl_seconds else 0, maxsize=1)
+    site_options_cache = ResponseCache(SITE_TAGS_TTL if settings.cache_ttl_seconds else 0, maxsize=1)
     emotes_cache, emotes_partial_cache = ResponseCache(6 * 3600, maxsize=1), ResponseCache(300, maxsize=1)
     limiter = RateLimiter(settings.rate_limit_points, settings.rate_limit_window_seconds)
     helix = Helix(settings)
@@ -234,6 +235,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"tags": loaded["tags"]}
 
         response = (await site_tags_cache.get_or_render("tags", fetch)).response(request)
+        response.headers["Cache-Control"] = f"public, max-age={SITE_TAGS_TTL}"
+        return response
+
+    @app.get("/v1/site/options")
+    async def site_option_list(request: Request):  # type: ignore[no-untyped-def]
+        async def fetch() -> dict[str, Any]:
+            async with engine.connect() as conn:
+                loaded = await site_options.load(conn)
+            return {k: loaded[k] for k in site_options.DEFAULTS}
+
+        response = (await site_options_cache.get_or_render("options", fetch)).response(request)
         response.headers["Cache-Control"] = f"public, max-age={SITE_TAGS_TTL}"
         return response
 

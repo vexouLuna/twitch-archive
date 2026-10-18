@@ -26,7 +26,7 @@ from pydantic import SecretStr
 from sqlalchemy import delete, select, text, update
 
 BOT = "https://bot.test"
-LOG_URL = f"{BOT}/api/v2/channels/vexoulz/log"
+LOG_URL = f"{BOT}/api/v2/channels/vexouluna/log"
 START = dt.datetime(2001, 3, 4, 20, 0, tzinfo=dt.UTC)
 START_MS = int(START.timestamp() * 1000)
 VOD, VOD2 = "test-bot-chat", "test-bot-chat-2"
@@ -376,6 +376,7 @@ async def test_one_shot_stores_merges_and_annotates(vod, make_ctx):
     rows = {r.id: r for r in await _rows()}
     assert set(rows) == {"m1", "n1", "m2", "mod:5"}
     assert rows["m1"].data["reward"] == {"id": "r1", "title": "Hydrate", "cost": 500, "input": "first"}
+    assert rows["n1"].data["merged_into"] == "m1" and "merged_into" not in rows["m1"].data
     assert rows["m2"].cleared_at == START + dt.timedelta(seconds=12)
     assert rows["m2"].data["removal"]["type"] == "timeout"
     assert rows["m1"].cleared_at is None

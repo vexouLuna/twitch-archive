@@ -206,13 +206,15 @@ FIELDS = {
     "duration": "duration",
     "createdAt": "created_at",
     "tags": "tags",
+    "cutReason": "cut_reason",
 }
 MERGED_EDITABLE = {"hidden", "tags"}
 # A synthetic VOD's duration, chapters, thumbnail and date are composed from its segments.
-SYNTHETIC_EDITABLE = {"title", "hidden", "tags"}
+SYNTHETIC_EDITABLE = {"title", "hidden", "tags", "cutReason"}
 # vods.tags: an untagged VOD is a regular one; a tagged one is listed apart (the site gives each known
 # tag its own tab). The known tags are the site's list (site_tags.vod_tags); these until it is saved.
 KNOWN_TAGS = ("compilation",)
+CUT_REASON_MAX = 500
 _HHMMSS = re.compile(r"^(\d{1,3}):([0-5]\d):([0-5]\d)$")
 
 
@@ -269,7 +271,21 @@ def vod_fields(body: dict[str, Any], known_tags: Collection[str] = KNOWN_TAGS) -
         out["created_at"] = created_at(body["createdAt"])
     if "tags" in body:
         out["tags"] = tags(body["tags"], known_tags)
+    if "cutReason" in body:
+        out["cut_reason"] = cut_reason(body["cutReason"])
     return out
+
+
+def cut_reason(value: Any) -> str | None:
+    """Free text up to CUT_REASON_MAX characters, trimmed; None for null / blank."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("cutReason must be text or null")
+    text = value.strip()
+    if len(text) > CUT_REASON_MAX:
+        raise ValueError(f"cutReason must be at most {CUT_REASON_MAX} characters")
+    return text or None
 
 
 def tags(value: Any, known: Collection[str] = KNOWN_TAGS) -> list[str]:
