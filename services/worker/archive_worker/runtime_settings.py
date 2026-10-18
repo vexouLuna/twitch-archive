@@ -87,6 +87,14 @@ ENTRIES = (
         requires="youtube_upload",
     ),
     Entry(
+        "compile_youtube_public",
+        "bool",
+        "YouTube",
+        "next job",
+        "Compiled uploads public instead of unlisted (Public uploads doesn't apply to them)",
+        requires="compile_youtube_upload",
+    ),
+    Entry(
         "youtube_public",
         "bool",
         "YouTube",

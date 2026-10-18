@@ -15,7 +15,7 @@ from archive_api.main import create_app
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
 from archive_common.db import get_engine, get_sessionmaker
-from archive_common.models import Game, Vod, VodSegment
+from archive_common.models import Game, Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
 from archive_worker.vods import splice_reason
@@ -47,6 +47,7 @@ async def _clean():
         mine = or_(Vod.id.like("test-syn-%"))
         synthetic_ids = select(Vod.id).where(mine, Vod.synthetic.is_not(None))
         await s.execute(delete(AUDIT_LOG).where(AUDIT_LOG.c.target.like("vod:test-syn-%")))
+        await s.execute(delete(Job).where(Job.vod_id.like("test-syn-%")))
         await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_(synthetic_ids)))
         await s.execute(delete(Vod).where(mine, Vod.synthetic.is_not(None)))
         await s.execute(delete(Game).where(Game.vod_id.in_((A, B))))
@@ -504,6 +505,26 @@ async def test_compile_sources(admin, make_ctx):
         (vod_dir / v / f"{v}.mp4").touch()
     assert [(c["vod_id"], c["start"], c["end"]) for c in await sources(P)] == [(A, 3600, 7200), (B, 0, 3600)]
 
+    # A source's DMCA claims: listed for Manage's warning, and the compile needs them accepted.
+    claim = {
+        "type": "CLAIM_TYPE_AUDIO",
+        "claimPolicy": {"primaryPolicy": {"policyType": "POLICY_TYPE_BLOCK"}},
+        "matchDetails": {"longestMatchStartTimeSeconds": 10, "longestMatchDurationSeconds": 20},
+    }
+    async with get_sessionmaker()() as s:
+        s.add(Job(kind="part_dmca", vod_id=B, state="done", payload={"claims": [claim], "start_part": 2}))
+        await s.commit()
+    r = await admin.get(f"/api/v2/synthetic/{P}/dmca", headers=KEY)
+    assert r.json() == [{"vod_id": B, "part": 2, "mute": [[10, 30]], "blackout": []}], r.text
+    with pytest.raises(StepRefused, match=f"{B} have DMCA claims"):
+        await sources(P)
+    ctx = make_ctx("compile", P, {"type": "compiled", "accept_dmca": True})
+    await comp.compile_sources(ctx)
+    assert len(ctx.payload["clips"]) == 2
+    async with get_sessionmaker()() as s:
+        await s.execute(delete(Job).where(Job.vod_id == B))
+        await s.commit()
+
     # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
     # becomes its uploads' ``gaps``). A censored source's kept MP4 isn't what its uploads show.
     assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
@@ -514,6 +535,7 @@ async def test_compile_sources(admin, make_ctx):
         await s.commit()
     with pytest.raises(StepRefused, match=f"{B} have censor ranges"):
         await sources(P)
+    assert (await admin.get("/api/v2/synthetic/test-syn-none/dmca", headers=KEY)).status_code == 404
 
 
 async def test_compiled_uploads_go_outdated_when_the_segments_change(admin, make_ctx):

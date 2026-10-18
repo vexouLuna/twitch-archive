@@ -17,6 +17,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     GET    /api/v2/synthetic/{vod_id}
     PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
     DELETE /api/v2/synthetic/{vod_id}  the whole undo: its sources were never changed
+    GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources, which a compile copies
     POST   /api/v2/vods/{vod_id}/merge {source, gap?}: a synthetic VOD of both, superseding them
     POST   /api/v2/vods/{vod_id}/split {at}: two synthetic VODs, superseding it
     GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
@@ -462,6 +463,12 @@ def vods_router(auth: Auth) -> APIRouter:
     async def get_synthetic(vod_id: str) -> SyntheticView:
         return SyntheticView(**await _synthetic(synthetic.get, vod_id))  # type: ignore[no-untyped-call]
 
+    @router.get("/synthetic/{vod_id}/dmca")
+    async def synthetic_dmca(vod_id: str) -> list[DmcaClaim]:
+        """Manage shows these before a compile, which then needs ``accept_dmca`` (steps/compile)."""
+        await _synthetic(synthetic.get, vod_id)  # type: ignore[no-untyped-call]  # its 404
+        return [DmcaClaim(**c) for c in await synthetic.dmca_claims(vod_id)]
+
     @router.put("/synthetic/{vod_id}")
     async def change_synthetic(request: Request, vod_id: str, body: SyntheticChange) -> SyntheticView:
         """Only the fields sent change; ``auto`` follows a game (its windows replace the segments) or,
@@ -596,6 +603,13 @@ class SyntheticView(ApiModel):
     auto: dict[str, Any] | None = None  # {"game_id"}: it follows that game
     segments: list[dict[str, Any]]
     compiled: dict[str, Any] | None = None  # {"outdated"} when it has compiled uploads (steps/compile)
+
+
+class DmcaClaim(ApiModel):
+    vod_id: str
+    part: int | None = None  # None: the whole VOD's claims
+    mute: list[tuple[float, float]]
+    blackout: list[tuple[float, float]]
 
 
 class MergeBody(ApiModel):

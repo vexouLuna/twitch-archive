@@ -89,7 +89,9 @@ async def upload(ctx: JobContext) -> None:
     description = planning.base_description(s.domain_name, vod.id, vod.title, s.youtube_description)
     # A forced VOD copy is the main one while the VOD has no live upload (the recording missed the stream).
     has_live = any(e.get("type") == "live" for e in vod.youtube or [])
-    status = planning.privacy(ctx.video_type, s.youtube_public, s.live_record and (has_live or not _forced(ctx)))
+    status = planning.privacy(
+        ctx.video_type, s.youtube_public, s.live_record and (has_live or not _forced(ctx)), s.compile_youtube_public
+    )
     if _forced(ctx):
         ctx.log.info("force_upload_manual: uploading the VOD copy of an archive started from the dashboard")
     uploaded: dict[str, dict[str, Any]] = ctx.payload.setdefault("uploaded", {})

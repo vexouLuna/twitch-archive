@@ -289,6 +289,39 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
             p.unlink(missing_ok=True)
 
 
+@_one_at_a_time("encode")
+async def encode(src: Path, out: Path, start: float, duration: float) -> Path:
+    """Re-encode ``duration`` seconds from ``start``, cut on the exact frame (stream copy cuts at keyframes).
+    H.264 + AAC, the first video and audio stream only, so clips of the same source settings concat as copies.
+    shortcut: no scaling or frame rate change, so windows of streams with different resolutions or frame
+    rates don't join cleanly; add a common -vf scale/fps once a compile mixes them."""
+    return await _ffmpeg_to(
+        out,
+        [
+            "-ss",
+            f"{start:.3f}",
+            "-i",
+            str(src),
+            "-t",
+            f"{duration:.3f}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+        ],
+    )
+
+
 @_one_at_a_time("concat")
 async def concat(parts: list[Path], out: Path) -> Path:
     """Join stream-copied clips of the same encoding end to end (the concat demuxer), index in front."""

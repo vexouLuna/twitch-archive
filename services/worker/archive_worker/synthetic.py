@@ -29,10 +29,10 @@ import logging
 from typing import Any
 
 from archive_common import audit
-from archive_common.db import VOD_CHANGED, get_sessionmaker
-from archive_common.models import Vod, VodSegment
+from archive_common.db import VOD_CHANGED, get_engine, get_sessionmaker
+from archive_common.models import Job, Vod, VodSegment
 from archive_common.segments import EPS, MAX_DEPTH, Segment, resolve
-from archive_common.serialize import js_iso, nested_segments, not_hidden, not_merged_away, real
+from archive_common.serialize import flat_segments, js_iso, nested_segments, not_hidden, not_merged_away, real
 from archive_common.timeutil import hhmmss_to_seconds
 from sqlalchemy import ARRAY, Text, cast, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vex_platform.actor import SYSTEM
 from vex_platform.audit import AuditEntry
 
-from . import compose
+from . import compose, planning
 from .compose import ComposeError, Source
 from .site_tags import vod_tags
 from .vod_edits import tags as check_tags
@@ -320,6 +320,29 @@ async def get(vod_id: str) -> dict[str, Any]:
     async with get_sessionmaker()() as s:
         vod = await _locked(s, vod_id, lock=False)
         return synthetic_json(vod, await _segments(s, vod_id))
+
+
+async def dmca_claims(vod_id: str) -> list[dict[str, Any]]:
+    """The DMCA claims on the VODs a synthetic VOD plays (done ``dmca`` / ``part_dmca`` jobs), oldest first:
+    ``{vod_id, part, mute, blackout}``, ``part`` None for the whole VOD, ranges in seconds of that VOD or
+    part. A compile copies the claimed content, so Manage warns with these first.
+    shortcut: every claim of a source, also outside the windows it plays; match them to the windows (part
+    offsets) if that warns about too much."""
+    async with get_engine().connect() as conn:
+        ids = sorted({x.source_id for x in (await flat_segments(conn, [vod_id])).get(vod_id, [])})
+    async with get_sessionmaker()() as s:
+        rows = await s.execute(
+            select(Job.vod_id, Job.kind, Job.payload)
+            .where(Job.kind.in_(("dmca", "part_dmca")), Job.state == "done", Job.vod_id.in_(ids))
+            .order_by(Job.created_at)
+        )
+    out = []
+    for source, kind, payload in rows:
+        plan = planning.plan_dmca(payload.get("claims") or [])
+        if not plan.empty:
+            part = payload.get("start_part") if kind == "part_dmca" else None
+            out.append({"vod_id": source, "part": part, "mute": plan.mute, "blackout": plan.blackout})
+    return out
 
 
 async def containing(source_id: str) -> list[dict[str, Any]]:

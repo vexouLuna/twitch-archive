@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from archive_common.config import TITLE_FIELDS, check_title
 from archive_common.serialize import box_art_image
 from archive_common.timeutil import format_hhmmss
 
@@ -302,15 +303,7 @@ def local_date(created_at: dt.datetime, tz: str) -> str:
     return created_at.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
 
 
-TITLE_FIELDS = ("channel", "label", "date", "title")  # what a title template (youtube_title*) may use
-
-
-def check_title(template: str) -> None:
-    """ValueError unless ``template`` formats with TITLE_FIELDS only."""
-    try:
-        template.format(**dict.fromkeys(TITLE_FIELDS, ""))
-    except (KeyError, IndexError, ValueError) as exc:
-        raise ValueError(f"a title can use only {{{'}, {'.join(TITLE_FIELDS)}}} ({exc})") from None
+__all__ = ["TITLE_FIELDS", "check_title"]  # also used from here (runtime_settings, tests)
 
 
 def video_title(
@@ -370,9 +363,12 @@ def full_description(
     return text[:5000]
 
 
-def privacy(kind: str, public: bool, live_record: bool) -> str:
+def privacy(kind: str, public: bool, live_record: bool, compiled_public: bool = False) -> str:
     """``public`` applies to the main copy only: the live copy when live_record is on, the VOD
-    copy otherwise. multi_track only adds the VOD copy as an unlisted second upload."""
+    copy otherwise. multi_track only adds the VOD copy as an unlisted second upload. A compiled
+    synthetic VOD has its own setting (``compiled_public``)."""
+    if kind == "compiled":
+        return "public" if compiled_public else "unlisted"
     main = "live" if live_record else "vod"
     return "public" if public and kind == main else "unlisted"
 

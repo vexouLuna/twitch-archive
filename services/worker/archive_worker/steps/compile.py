@@ -19,7 +19,7 @@ from archive_common.serialize import flat_segments
 from archive_common.timeutil import format_hhmmss
 from sqlalchemy import select
 
-from .. import ffmpeg
+from .. import ffmpeg, synthetic
 from ..context import JobContext, StepRefused
 
 
@@ -31,7 +31,8 @@ def source_mp4(ctx: JobContext, vod_id: str) -> Path:
 async def compile_sources(ctx: JobContext) -> None:
     """The windows to cut (``payload.clips``), each from a kept MP4 of a real VOD, with where each plays
     on the synthetic timeline (``at``). Refused when a source has no kept MP4 or has censor ranges (its MP4
-    is the uncensored one)."""
+    is the uncensored one), and when a source has DMCA claims, unless ``payload.accept_dmca`` (Manage asks
+    first, listing them: synthetic.dmca_claims)."""
     if ctx.payload.get("clips"):
         return
     vod = await ctx.get_vod()
@@ -49,6 +50,10 @@ async def compile_sources(ctx: JobContext) -> None:
     missing = [i for i in ids if not source_mp4(ctx, i).exists()]
     if missing:
         raise StepRefused(f"no kept MP4 of source(s) {', '.join(missing)} (keep_mp4 on, then archive them again)")
+    claims = await synthetic.dmca_claims(vod.id)
+    if claims and not ctx.payload.get("accept_dmca"):
+        listed = ", ".join(sorted({c["vod_id"] for c in claims}))
+        raise StepRefused(f"source(s) {listed} have DMCA claims; compile from Manage and accept the risks")
     ctx.payload["compiled_from"] = (vod.synthetic or {}).get("changedAt")  # see compiled()
     ctx.payload["clips"] = [
         {"vod_id": x.source_id, "start": x.start, "end": x.end, "at": x.at, "path": str(source_mp4(ctx, x.source_id))}
@@ -60,7 +65,8 @@ async def compile_sources(ctx: JobContext) -> None:
 async def compile(ctx: JobContext) -> None:
     """Cut each clip and join them into the job's MP4 (kept if already done), and save where each clip is in
     the file (``payload.timeline``, planning.recording_timeline's shape on the synthetic VOD's time) for the
-    chapters and each upload's ``gaps``. Stream copy cuts at keyframes, so each cut's measured length is used."""
+    chapters and each upload's ``gaps``. Each window is re-encoded, so it starts and ends on the exact
+    frame; its measured length is still used."""
     out = ctx.default_mp4
     if out.exists() and ctx.payload.get("duration"):
         return
@@ -70,7 +76,7 @@ async def compile(ctx: JobContext) -> None:
     for i, c in enumerate(clips):
         path = work / f"{i:04d}.mp4"
         if not path.exists():  # a finished cut survives a crash part-way through
-            await ffmpeg.cut(Path(c["path"]), path, c["start"], c["end"] - c["start"], faststart=False)
+            await ffmpeg.encode(Path(c["path"]), path, c["start"], c["end"] - c["start"])
         paths.append(path)
         length = await ffmpeg.probe_duration(path)
         timeline.append([round(rec, 3), round(float(c["at"]), 3), round(length, 3)])

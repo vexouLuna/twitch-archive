@@ -112,6 +112,8 @@ def test_title_templates():
     for bad in ("{game}", "{0}", "{title"):
         with pytest.raises(ValueError, match="only"):
             planning.check_title(bad)
+    with pytest.raises(ValueError, match="only"):  # an env value is checked when the config loads
+        Settings(youtube_title_compiled="{game}")
 
 
 def test_descriptions_are_rebuilt():
@@ -139,6 +141,8 @@ def test_privacy():
     assert planning.privacy("vod", public=True, live_record=True) == "unlisted"
     assert planning.privacy("live", public=True, live_record=True) == "public"
     assert planning.privacy("live", public=False, live_record=True) == "unlisted"
+    assert planning.privacy("compiled", public=True, live_record=False) == "unlisted"  # its own setting
+    assert planning.privacy("compiled", public=False, live_record=True, compiled_public=True) == "public"
 
 
 def test_upsert_youtube_entry():
