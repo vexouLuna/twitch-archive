@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from archive_common import http
+from archive_common import site_options as site_options_common
 from archive_common import site_tags as site_tags_common
 from archive_common.audit import AUDIT_LOG, actor_of, legacy_actor, route_entry
 from archive_common.audit import write as write_audit
@@ -45,6 +46,7 @@ from . import (
     api_v2,
     api_v2_routes,
     jobs,
+    site_options,
     site_tags,
     splices,
     svg_clean,
@@ -849,6 +851,25 @@ def create_admin_app(
         """No shape: the site draws the tag's label only."""
         request.state.audit_target = f"site-tag:{tag}"
         request.state.audit_detail, view = await site_tags_change(site_tags.set_shape(tag, None))
+        return view
+
+    # ── Site options (the homepage's cards; archive-api serves them) ──
+
+    @app.get("/admin/site/options", dependencies=auth)
+    async def get_site_options() -> dict[str, Any]:
+        """``{homeCards, updatedAt, updatedBy}``; an option never saved reads as its default."""
+        async with get_sessionmaker()() as s:
+            return site_options.view(await site_options_common.load(s))
+
+    @app.put("/admin/site/options", dependencies=auth)
+    async def put_site_options(request: Request, body: Any = Body(...)) -> dict[str, Any]:
+        """Any of the options; the others keep their value. All or nothing."""
+        try:
+            before, after, view = await site_options.save(body, changed_by(request))
+        except site_options.SiteOptionError as exc:
+            raise AdminError(400, exc.msg) from None
+        request.state.audit_target = "site:options"
+        request.state.audit_detail = {"before": before, "after": after}
         return view
 
     # ── Storage ───────────────────────────────────────────────────────────

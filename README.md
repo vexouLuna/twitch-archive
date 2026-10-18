@@ -365,6 +365,18 @@ curl -s "${H[@]}" -X DELETE "$A/admin/site/tags/speedrun/shape"
 - **Shapes:** the raw SVG, at most 64 KB (`413`), as `Content-Type: image/svg+xml` (`415`), for a tag of the saved list (`404`). It is parsed with [defusedxml](https://pypi.org/project/defusedxml/) and rebuilt from an allow-list of shape elements and attributes. A `400` refuses `<script>`, `<foreignObject>`, `<iframe>`, `<image>` (embedded or linked rasters), `<a>`, animations, `on*` handlers, DOCTYPE and entities, an `href` that isn't `#id`, `url()` that isn't `url(#id)`, `@import` and `javascript:`. Editor metadata, other namespaces and comments are dropped. Colors stay as they are (`currentColor` too, in attributes, `style` and `<style>`): the site recolors only the `currentColor` parts, or the black ones in a file without any.
 - Every route answers like `GET`. Changes are audited with `{before, after}` (the tag list, or the tag with its `shape` path; never the SVG) on target `site:tags` or `site-tag:<name>`.
 
+### Site options
+
+The site's own options: the homepage's cards (its `/manage/home` page edits them; archive-api serves them at `GET /v1/site/options`). Kept in `site_settings` (row `options`).
+
+```bash
+curl -s "${H[@]}" "$A/admin/site/options"                # {homeCards, updatedAt, updatedBy}; never saved: the defaults and nulls
+curl -s "${H[@]}" -X PUT "$A/admin/site/options" -d '{"homeCards": [{"kind": "latest"}, {"kind": "tag", "tag": "compilation"}, {"kind": "games"}]}'
+```
+
+- `homeCards`: the homepage's cards in order, at most 12. `{"kind": "latest"}` is the newest VOD (the stream while live), `{"kind": "tag", "tag": name}` the newest VODs with a tag whose type has `homeCard` (any name until the tag list is saved), `{"kind": "games"}` the most played games. One of each. The default is the three above.
+- A `PUT` takes any of the options; the others keep their value. A refused one changes nothing (`400 {error, msg}`). Audited as `site.options.update` with `{before, after}` on target `site:options`.
+
 ### Storage
 
 Every job works in one folder of the data directory: `vods/<vodId>`, or `live/<streamId>` for a live recording. Files are normally deleted after upload (or `ARCHIVE_KEEP_FILES_DAYS` later); what is left is what `ARCHIVE_KEEP_HLS`/`KEEP_MP4` keep, jobs still in progress, and leftovers of failed jobs or deleted VODs.
@@ -737,6 +749,7 @@ This is what the frontend uses. The output is compatible with the old Feathers A
 | `GET /v1/emotes/third-party` | `{"7tv": [...], "bttv": [...], "ffz": [...], "failed": [...]}`, each item `{id, code, provider}`: global plus channel emotes for `ARCHIVE_TWITCH_ID` from the providers' APIs (a channel emote replaces a global one with the same code). Build image URLs from the CDNs: `cdn.7tv.app/emote/{id}/1x.webp`, `cdn.betterttv.net/emote/{id}/1x`, `cdn.frankerfacez.com/emote/{id}/1`. A provider that failed is named in `failed` (its list holds whatever part loaded). Cached for 6 h, or 5 min when something failed. |
 | `GET /v1/previews/:youtubeId/:k.jpg` | Sheet `k` of an upload's seek-bar previews (see [Seek-bar previews](#seek-bar-previews); the layout is in the upload's `youtube[].preview`). 404 unless a VOD the API shows lists that upload. `Cache-Control: public, max-age=31536000, immutable`. Not rate limited. The api container reads the sheets from the data dir, mounted read-only. |
 | `GET /v1/site/tags` | `{tags: [{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize, page, pageLabel, homeCard}]}`: how the site shows each VOD tag, in order (see [Site tags](#site-tags)); 404 until it was saved once (the site then uses its defaults). `Cache-Control: public, max-age=60`. |
+| `GET /v1/site/options` | `{homeCards}`: the site's own options (see [Site options](#site-options)); the defaults while never saved. `Cache-Control: public, max-age=60`. |
 | `GET /v1/site/tags/:name.svg` | A tag's shape: the cleaned SVG as `image/svg+xml`, with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`. `Cache-Control: public, max-age=31536000, immutable` when `?v=` is the current hash (as in the list's `shape`), `max-age=60` otherwise. 404 when the tag has no shape. Not rate limited. |
 | `youtube[].preview` | On uploads that have seek-bar previews: `{v, interval, w, h, cols, rows, count}`; absent otherwise. |
 | `youtube[].gaps` | On `live` uploads whose recording missed part of the VOD (ad breaks, an early end): `[[at, seconds], ...]`, sorted, `at` in seconds into that upload. VOD time jumps `seconds` ahead at `at`. Absent otherwise. The upload's delay is `duration − Σ part durations − Σ gaps − Σ cuts`. See "Ad breaks in live recordings" under [Recipes](#recipes). |
