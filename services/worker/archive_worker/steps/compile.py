@@ -50,7 +50,8 @@ async def compile_sources(ctx: JobContext) -> None:
     missing = [i for i in ids if not source_mp4(ctx, i).exists()]
     if missing:
         raise StepRefused(f"no kept MP4 of source(s) {', '.join(missing)} (keep_mp4 on, then archive them again)")
-    claims = await synthetic.dmca_claims(vod.id)
+    found = await synthetic.dmca_claims(vod.id)
+    claims = found["overlapping"] + found["other"]  # any claim needs accepting, also one outside the windows
     if claims and not ctx.payload.get("accept_dmca"):
         listed = ", ".join(sorted({c["vod_id"] for c in claims}))
         raise StepRefused(f"source(s) {listed} have DMCA claims; compile from Manage and accept the risks")

@@ -422,6 +422,20 @@ def plan_dmca(claims: list[dict[str, Any]]) -> DmcaPlan:
     return DmcaPlan(_merge(mute), _merge(black))
 
 
+def split_by_windows(
+    ranges: list[tuple[float, float]], offset: float | None, windows: list[tuple[float, float]]
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """``ranges`` (seconds of a file starting ``offset`` seconds into its VOD) split into those that overlap
+    one of ``windows`` (the VOD's time) and the rest, each unchanged. ``offset`` None (where the file sits
+    is unknown) counts every range as overlapping."""
+    inside: list[tuple[float, float]] = []
+    outside: list[tuple[float, float]] = []
+    for a, b in ranges:
+        hit = offset is None or any(a + offset < end and b + offset > start for start, end in windows)
+        (inside if hit else outside).append((a, b))
+    return inside, outside
+
+
 def _merge(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
     out: list[tuple[float, float]] = []
     for a, b in sorted(ranges):

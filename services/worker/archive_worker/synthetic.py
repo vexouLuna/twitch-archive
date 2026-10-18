@@ -322,26 +322,44 @@ async def get(vod_id: str) -> dict[str, Any]:
         return synthetic_json(vod, await _segments(s, vod_id))
 
 
-async def dmca_claims(vod_id: str) -> list[dict[str, Any]]:
-    """The DMCA claims on the VODs a synthetic VOD plays (done ``dmca`` / ``part_dmca`` jobs), oldest first:
-    ``{vod_id, part, mute, blackout}``, ``part`` None for the whole VOD, ranges in seconds of that VOD or
-    part. A compile copies the claimed content, so Manage warns with these first.
-    shortcut: every claim of a source, also outside the windows it plays; match them to the windows (part
-    offsets) if that warns about too much."""
+def _part_offset(kind: str, payload: dict[str, Any]) -> float | None:
+    """Where the claimed file starts on its VOD's time: 0 for the whole VOD, the cut part's start for one
+    part. None when that isn't known: a live recording's file runs on the recording's time."""
+    if payload.get("type") == "live":
+        return None
+    if kind == "dmca":
+        return 0.0
+    part = next((p for p in payload.get("parts") or [] if p.get("number") == payload.get("start_part")), None)
+    return float(part["start"]) if part and part.get("start") is not None else None
+
+
+async def dmca_claims(vod_id: str) -> dict[str, list[dict[str, Any]]]:
+    """The DMCA claims on the VODs a synthetic VOD plays (done ``dmca`` / ``part_dmca`` jobs), oldest first,
+    as ``{overlapping, other}``: the ranges that overlap a window it plays (what a compile copies), and the
+    rest of those sources' claims. Each is ``{vod_id, part, mute, blackout, placed}``: ``part`` None for the
+    whole VOD, ranges in seconds of that VOD or part, as YouTube claimed them; ``placed`` false when the
+    file couldn't be put on the VOD's time (a live copy), whose ranges all count as overlapping."""
     async with get_engine().connect() as conn:
-        ids = sorted({x.source_id for x in (await flat_segments(conn, [vod_id])).get(vod_id, [])})
+        segs = [x for x in (await flat_segments(conn, [vod_id])).get(vod_id, []) if x.length > 0]
+    windows: dict[str, list[tuple[float, float]]] = {}
+    for x in segs:
+        windows.setdefault(x.source_id, []).append((x.start, x.start + x.length))
     async with get_sessionmaker()() as s:
         rows = await s.execute(
             select(Job.vod_id, Job.kind, Job.payload)
-            .where(Job.kind.in_(("dmca", "part_dmca")), Job.state == "done", Job.vod_id.in_(ids))
+            .where(Job.kind.in_(("dmca", "part_dmca")), Job.state == "done", Job.vod_id.in_(sorted(windows)))
             .order_by(Job.created_at)
         )
-    out = []
+    out: dict[str, list[dict[str, Any]]] = {"overlapping": [], "other": []}
     for source, kind, payload in rows:
         plan = planning.plan_dmca(payload.get("claims") or [])
-        if not plan.empty:
-            part = payload.get("start_part") if kind == "part_dmca" else None
-            out.append({"vod_id": source, "part": part, "mute": plan.mute, "blackout": plan.blackout})
+        offset = _part_offset(kind, payload)
+        mute = planning.split_by_windows(plan.mute, offset, windows[source])
+        black = planning.split_by_windows(plan.blackout, offset, windows[source])
+        base = {"vod_id": source, "part": payload.get("start_part") if kind == "part_dmca" else None}
+        for i, key in enumerate(("overlapping", "other")):
+            if mute[i] or black[i]:
+                out[key].append(base | {"mute": mute[i], "blackout": black[i], "placed": offset is not None})
     return out
 
 

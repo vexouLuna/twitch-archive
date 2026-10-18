@@ -17,7 +17,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     GET    /api/v2/synthetic/{vod_id}
     PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
     DELETE /api/v2/synthetic/{vod_id}  the whole undo: its sources were never changed
-    GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources, which a compile copies
+    GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources: {overlapping, other}
     POST   /api/v2/vods/{vod_id}/merge {source, gap?}: a synthetic VOD of both, superseding them
     POST   /api/v2/vods/{vod_id}/split {at}: two synthetic VODs, superseding it
     GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
@@ -464,10 +464,11 @@ def vods_router(auth: Auth) -> APIRouter:
         return SyntheticView(**await _synthetic(synthetic.get, vod_id))  # type: ignore[no-untyped-call]
 
     @router.get("/synthetic/{vod_id}/dmca")
-    async def synthetic_dmca(vod_id: str) -> list[DmcaClaim]:
-        """Manage shows these before a compile, which then needs ``accept_dmca`` (steps/compile)."""
+    async def synthetic_dmca(vod_id: str) -> SyntheticDmca:
+        """Manage shows these before a compile, which then needs ``accept_dmca`` (steps/compile) when
+        there is any claim, overlapping or not."""
         await _synthetic(synthetic.get, vod_id)  # type: ignore[no-untyped-call]  # its 404
-        return [DmcaClaim(**c) for c in await synthetic.dmca_claims(vod_id)]
+        return SyntheticDmca(**await synthetic.dmca_claims(vod_id))
 
     @router.put("/synthetic/{vod_id}")
     async def change_synthetic(request: Request, vod_id: str, body: SyntheticChange) -> SyntheticView:
@@ -610,6 +611,12 @@ class DmcaClaim(ApiModel):
     part: int | None = None  # None: the whole VOD's claims
     mute: list[tuple[float, float]]
     blackout: list[tuple[float, float]]
+    placed: bool = True  # false: a live copy's claim, not put on the VOD's time (counted as overlapping)
+
+
+class SyntheticDmca(ApiModel):
+    overlapping: list[DmcaClaim]  # ranges in a window it plays: a compile copies them
+    other: list[DmcaClaim]  # the rest of those sources' claims
 
 
 class MergeBody(ApiModel):

@@ -134,6 +134,18 @@ def test_descriptions_are_rebuilt():
     assert planning.full_description(base, 2, siblings, lines) == text
 
 
+def test_claims_split_by_the_windows_played():
+    windows = [(100.0, 200.0), (500.0, 600.0)]
+    ranges = [(0.0, 10.0), (95.0, 105.0), (300.0, 400.0), (590.0, 700.0)]
+    # The whole VOD (offset 0): the 2nd and 4th overlap a window; touching one isn't overlapping.
+    assert planning.split_by_windows(ranges, 0.0, windows) == ([(95, 105), (590, 700)], [(0, 10), (300, 400)])
+    assert planning.split_by_windows([(90.0, 100.0)], 0.0, windows) == ([], [(90, 100)])
+    # A part starting at 480 s: its 10-30 s is the VOD's 490-510 s, in the second window.
+    assert planning.split_by_windows([(10.0, 30.0), (0.0, 5.0)], 480.0, windows) == ([(10, 30)], [(0, 5)])
+    # Unknown offset (a live copy): everything counts.
+    assert planning.split_by_windows([(0.0, 5.0)], None, windows) == ([(0, 5)], [])
+
+
 def test_privacy():
     assert planning.privacy("vod", public=False, live_record=False) == "unlisted"
     assert planning.privacy("vod", public=True, live_record=False) == "public"

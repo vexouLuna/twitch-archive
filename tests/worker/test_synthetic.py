@@ -505,24 +505,43 @@ async def test_compile_sources(admin, make_ctx):
         (vod_dir / v / f"{v}.mp4").touch()
     assert [(c["vod_id"], c["start"], c["end"]) for c in await sources(P)] == [(A, 3600, 7200), (B, 0, 3600)]
 
-    # A source's DMCA claims: listed for Manage's warning, and the compile needs them accepted.
-    claim = {
-        "type": "CLAIM_TYPE_AUDIO",
-        "claimPolicy": {"primaryPolicy": {"policyType": "POLICY_TYPE_BLOCK"}},
-        "matchDetails": {"longestMatchStartTimeSeconds": 10, "longestMatchDurationSeconds": 20},
+    # A source's DMCA claims: listed for Manage's warning, split by whether a window it plays has them, and
+    # the compile needs them accepted, any of them.
+    def claim(start, length):
+        return {
+            "type": "CLAIM_TYPE_AUDIO",
+            "claimPolicy": {"primaryPolicy": {"policyType": "POLICY_TYPE_BLOCK"}},
+            "matchDetails": {"longestMatchStartTimeSeconds": start, "longestMatchDurationSeconds": length},
+        }
+
+    async def add_job(vod_id, kind, payload):
+        async with get_sessionmaker()() as s:
+            s.add(Job(kind=kind, vod_id=vod_id, state="done", payload=payload))
+            await s.commit()
+
+    async def dmca():
+        r = await admin.get(f"/api/v2/synthetic/{P}/dmca", headers=KEY)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    # B plays 0-3600; its part 2 starts at 3600, so a claim 10-30 s into it is outside.
+    parts = [{"number": 2, "start": 3600, "end": 7200, "path": "x"}]
+    await add_job(B, "part_dmca", {"claims": [claim(10, 20)], "start_part": 2, "parts": parts})
+    b_other = {"vod_id": B, "part": 2, "mute": [[10, 30]], "blackout": [], "placed": True}
+    assert await dmca() == {"overlapping": [], "other": [b_other]}
+    # A plays 3600-7200: of its whole-VOD claims, 4000-4020 is in it and 100-120 isn't.
+    await add_job(A, "dmca", {"claims": [claim(4000, 20), claim(100, 20)]})
+    assert await dmca() == {
+        "overlapping": [{"vod_id": A, "part": None, "mute": [[4000, 4020]], "blackout": [], "placed": True}],
+        "other": [b_other, {"vod_id": A, "part": None, "mute": [[100, 120]], "blackout": [], "placed": True}],
     }
-    async with get_sessionmaker()() as s:
-        s.add(Job(kind="part_dmca", vod_id=B, state="done", payload={"claims": [claim], "start_part": 2}))
-        await s.commit()
-    r = await admin.get(f"/api/v2/synthetic/{P}/dmca", headers=KEY)
-    assert r.json() == [{"vod_id": B, "part": 2, "mute": [[10, 30]], "blackout": []}], r.text
-    with pytest.raises(StepRefused, match=f"{B} have DMCA claims"):
+    with pytest.raises(StepRefused, match=f"{A}, {B} have DMCA claims"):
         await sources(P)
     ctx = make_ctx("compile", P, {"type": "compiled", "accept_dmca": True})
     await comp.compile_sources(ctx)
     assert len(ctx.payload["clips"]) == 2
     async with get_sessionmaker()() as s:
-        await s.execute(delete(Job).where(Job.vod_id == B))
+        await s.execute(delete(Job).where(Job.vod_id.in_((A, B))))
         await s.commit()
 
     # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
