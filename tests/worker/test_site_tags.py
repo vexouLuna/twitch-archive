@@ -24,7 +24,16 @@ STAR = (
 
 
 def tag(name: str, **fields) -> dict[str, Any]:
-    return {"name": name, "label": name.title(), "drawn": False, "color": None, "width": None, "height": None, **fields}
+    return {
+        "name": name,
+        "label": name.title(),
+        "drawn": False,
+        "color": None,
+        "width": None,
+        "height": None,
+        "rotate": None,
+        **fields,
+    }
 
 
 AUTO = [tag("new"), tag("updated"), tag("compilation")]
@@ -43,6 +52,7 @@ def test_validate_keeps_order_and_known_fields():
                 color="#ff8800cc",
                 width=24,
                 height=200,
+                rotate=-30,
                 shape="v1/site/tags/speedrun.svg?v=x",
                 extra=1,
             ),
@@ -58,6 +68,7 @@ def test_validate_keeps_order_and_known_fields():
         "color": "#ff8800cc",
         "width": 24,
         "height": 200,
+        "rotate": -30,
         **dict.fromkeys(TEXT + PATTERN),
     }
 
@@ -79,7 +90,7 @@ def test_text_and_pattern_kept():
         "patternSize": 40,
     }
     [out, *_] = validate({"tags": [tag("x", **fields), *AUTO]})
-    assert list(out) == ["name", "label", "drawn", "color", "width", "height", *TEXT, *PATTERN]
+    assert list(out) == ["name", "label", "drawn", "color", "width", "height", "rotate", *TEXT, *PATTERN]
     assert out == {**tag("x", **fields), "text": "100%"}  # trimmed
     [out, *_] = validate({"tags": [tag("x", pattern="stripes", textRotate=180, textSize=48), *AUTO]})
     assert (out["pattern"], out["textRotate"]) == ("stripes", None)
@@ -202,6 +213,8 @@ def test_colors_refused(color):
         ({"width": 24.5}, "width"),
         ({"width": True}, "width"),
         ({"height": "24"}, "height"),
+        ({"rotate": 181}, "rotate"),
+        ({"rotate": -4.5}, "rotate"),
         ({"text": ""}, "text"),
         ({"text": "   "}, "text"),
         ({"text": "x" * 25}, "text"),
@@ -315,7 +328,18 @@ async def test_save_shape_and_serve(app, api, clean):
         body = r.json()
         assert [t["name"] for t in body["tags"]] == ["speedrun", "new", "updated", "compilation"]
         assert body["updatedBy"] == "api-key" and body["updatedAt"]
-        assert list(body["tags"][0]) == ["name", "label", "drawn", "color", "shape", "width", "height", *TEXT, *PATTERN]
+        assert list(body["tags"][0]) == [
+            "name",
+            "label",
+            "drawn",
+            "color",
+            "shape",
+            "width",
+            "height",
+            "rotate",
+            *TEXT,
+            *PATTERN,
+        ]
         assert body["tags"][0]["shape"] is None
         assert (await c.get("/admin/site/tags", headers=KEY)).json() == body
 
