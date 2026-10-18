@@ -39,6 +39,10 @@ def test_cards_kept_in_order():
     assert validate({"homeCards": [card("anything")]}, None) == {"homeCards": [card("anything")]}  # tags never saved
 
 
+def test_play_default():
+    assert validate({"playDefault": "compiled"}, TAGS) == {"playDefault": "compiled"}
+
+
 @pytest.mark.parametrize(
     ("body", "msg"),
     [
@@ -53,6 +57,7 @@ def test_cards_kept_in_order():
         ({"homeCards": [card("highlight"), card("highlight")]}, "already a card for"),
         ({"homeCards": [{"kind": "nope"}]}, "kind must be"),
         ({"homeCards": ["latest"]}, "kind must be"),
+        ({"playDefault": "youtube"}, "playDefault must be"),
     ],
 )
 def test_refused(body, msg):
@@ -98,8 +103,8 @@ async def test_defaults_save_and_serve(app, api, clean):
         r = await c.put("/admin/site/options", headers=KEY, json={"homeCards": [LATEST, LATEST]})
         assert r.status_code == 400 and "already" in r.json()["msg"]
     async with api:
-        assert (await api.get("/v1/site/options")).json() == {"homeCards": cards}
+        assert (await api.get("/v1/site/options")).json() == {"homeCards": cards, "playDefault": "segments"}
     async with get_sessionmaker()() as s:
         c_ = AUDIT_LOG.c
         rows = (await s.execute(select(AUDIT_LOG).where(c_.id > clean, c_.action == "site.options.update"))).all()
-    assert [(r.target, r.after) for r in rows] == [("site:options", {"homeCards": cards})]
+    assert [(r.target, r.after) for r in rows] == [("site:options", {"homeCards": cards, "playDefault": "segments"})]

@@ -78,6 +78,7 @@ ENTRIES = (
         "monitor_interval_seconds", "int", "Capture", "now", "How often Twitch is checked for a live stream", 5, 3600
     ),
     Entry("youtube_upload", "bool", "YouTube", "next job", "Upload to YouTube"),
+    Entry("compile_upload", "bool", "YouTube", "next job", "Upload compiled synthetic VODs", requires="youtube_upload"),
     Entry(
         "youtube_public",
         "bool",

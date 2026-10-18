@@ -139,6 +139,7 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_MULTI_TRACK` † | `false` | With `LIVE_RECORD`, also upload the VOD copy (unlisted). Ignored when `LIVE_RECORD` is off |
 | `ARCHIVE_FORCE_UPLOAD_MANUAL` † | `false` | With `LIVE_RECORD` and without `MULTI_TRACK`, still upload the VOD copy of archives started from the dashboard (see "Which copies are uploaded") |
 | `ARCHIVE_YOUTUBE_UPLOAD` † | `true` | |
+| `ARCHIVE_COMPILE_UPLOAD` † | `false` | Upload compiled synthetic VODs (job kind `compile`) |
 | `ARCHIVE_YOUTUBE_PUBLIC` † | `false` | Public instead of unlisted, for the main copy: the live copy when `LIVE_RECORD` is on, the VOD copy otherwise (§5) |
 | `ARCHIVE_YOUTUBE_DESCRIPTION` † | `VOD` | Last line of every description |
 | `ARCHIVE_YOUTUBE_KEEPALIVE_HOURS` † | `24` | How often the worker refreshes the YouTube token; see [§3](#3-youtube-oauth-setup) |
@@ -324,6 +325,7 @@ Job kinds and their steps:
 | `bot_chat_backfill` | one step: queues a `bot_chat` job per VOD | `/admin/bot-chat/backfill` |
 | `previews_fetch` | one step | `/admin/previews` |
 | `previews_backfill` | one step: queues a `previews_fetch` job per VOD | `/admin/previews/backfill` |
+| `compile` | compile_sources → compile → split → upload → describe → cleanup | `POST /api/v2/jobs` with `{"kind": "compile", "subject": "vod:<synthetic id>", "payload": {"type": "compiled"}}` (the synthetic page's Compile button) |
 
 When `split` finds nothing to upload (an empty VOD, or every chapter restricted), the job skips to `cleanup` and succeeds.
 
@@ -370,11 +372,12 @@ curl -s "${H[@]}" -X DELETE "$A/admin/site/tags/speedrun/shape"
 The site's own options: the homepage's cards (its `/manage/home` page edits them; archive-api serves them at `GET /v1/site/options`). Kept in `site_settings` (row `options`).
 
 ```bash
-curl -s "${H[@]}" "$A/admin/site/options"                # {homeCards, updatedAt, updatedBy}; never saved: the defaults and nulls
+curl -s "${H[@]}" "$A/admin/site/options"                # {homeCards, playDefault, updatedAt, updatedBy}; never saved: the defaults and nulls
 curl -s "${H[@]}" -X PUT "$A/admin/site/options" -d '{"homeCards": [{"kind": "latest"}, {"kind": "tag", "tag": "compilation"}, {"kind": "games"}]}'
 ```
 
 - `homeCards`: the homepage's cards in order, at most 12. `{"kind": "latest"}` is the newest VOD (the stream while live), `{"kind": "tag", "tag": name}` the newest VODs with a tag whose type has `homeCard` (any name until the tag list is saved), `{"kind": "games"}` the most played games. One of each. The default is the three above.
+- `playDefault`: what a synthetic VOD's watch page plays first: `"segments"` (the default; its sources' uploads, as composed) or `"compiled"` (its own uploads from a `compile` job, where it has them). The page offers the other too.
 - A `PUT` takes any of the options; the others keep their value. A refused one changes nothing (`400 {error, msg}`). Audited as `site.options.update` with `{before, after}` on target `site:options`.
 
 ### Storage
@@ -553,6 +556,8 @@ curl -s "${H[@]}" "$A/api/v2/playthrough-candidates?game_id=512953"             
 A segment's `start` defaults to 0, `end` to its VOD's end, and `at` to right after the segment before. Changes are audited as `synthetic.create`, `synthetic.update` and `synthetic.delete`.
 
 A playthrough can keep itself up to date: send `"auto": {"game_id": "512953"}` (on create, instead of `segments`, or on a PUT) and its segments become every window of that game. Each monitor round writes them again when they differ, so a new stream of the game or a source's edited chapters reach it; that change is audited as `synthetic.update` by `system`. Sending `segments` without `auto` is a hand edit and stops it, as does `"auto": null`. The view says what it follows in `auto` (`null`: nothing).
+
+A synthetic VOD can also be made into one file and uploaded as its own video: a `compile` job cuts each window from its source's kept MP4 (`ARCHIVE_KEEP_MP4`, at `<vod_dir>/<id>/<id>.mp4`), joins them, then splits, uploads and describes it like a VOD. Its uploads go on the synthetic VOD's row as `type: "compiled"` (always unlisted), and only with `ARCHIVE_COMPILE_UPLOAD` on (off by default; `youtube_upload` must be on too); with it off the job runs but uploads nothing (the file stays only with `ARCHIVE_KEEP_MP4`). The segments stay what the VOD is: changing them later doesn't change the compiled uploads, so compile again (`"replace": true` in the payload replaces the old ones). Refused: a source without a kept MP4, a source with censor ranges (its kept MP4 is uncensored), and a timeline with a gap (a merge's gap can't be filled yet). Stream copy cuts at keyframes, so each join can move what follows by up to 2 s.
 
 ### Browser access (dashboard)
 

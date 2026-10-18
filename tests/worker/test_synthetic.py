@@ -481,3 +481,35 @@ async def test_auto_playthrough(admin):
     assert r.json()["auto"] == {"game_id": GAME} and len(r.json()["segments"]) == 2
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": None})
     assert r.json()["auto"] is None and len(r.json()["segments"]) == 2
+
+
+async def test_compile_sources(admin, make_ctx):
+    from archive_worker.context import StepRefused
+    from archive_worker.steps import compile as comp
+
+    async def sources(vod_id):
+        ctx = make_ctx("compile", vod_id, {"type": "compiled"})
+        await comp.compile_sources(ctx)
+        return ctx.payload["clips"]
+
+    with pytest.raises(StepRefused, match="not a synthetic"):
+        await sources(A)
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201, r.text
+    with pytest.raises(StepRefused, match=f"no kept MP4 of source.s. {A}, {B}"):
+        await sources(P)
+    vod_dir = make_ctx().settings.vod_dir
+    for v in (A, B):
+        (vod_dir / v).mkdir(parents=True)
+        (vod_dir / v / f"{v}.mp4").touch()
+    assert [(c["vod_id"], c["start"], c["end"]) for c in await sources(P)] == [(A, 3600, 7200), (B, 0, 3600)]
+
+    # The merge has a gap, and a censored source's kept MP4 isn't what its uploads show.
+    assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
+    with pytest.raises(StepRefused, match="plays nothing"):
+        await sources(AB)
+    async with get_sessionmaker()() as s:
+        await s.execute(update(Vod).where(Vod.id == B).values(censor=[{"start": 0, "end": 5, "mode": "blur"}]))
+        await s.commit()
+    with pytest.raises(StepRefused, match=f"{B} have censor ranges"):
+        await sources(P)

@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     force_upload_manual: bool = False
     youtube_upload: bool = True
     youtube_public: bool = False
+    compile_upload: bool = False  # upload a compiled synthetic VOD (job kind compile); off: it is only made
     youtube_description: str = "VOD"
     youtube_keepalive_hours: float = 24.0  # periodic token refresh; see README "YouTube OAuth"
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count

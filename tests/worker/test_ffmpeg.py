@@ -119,3 +119,11 @@ async def test_preview_sheets(clip, tmp_path):
         text=True,
     ).stdout.strip()
     assert size == "1600,900"  # 10×10 tiles of 160×90
+
+
+async def test_concat(clip, tmp_path):
+    a = await ffmpeg.cut(clip, tmp_path / "a.mp4", 0, 4, faststart=False)
+    b = await ffmpeg.cut(clip, tmp_path / "b.mp4", 6, 4, faststart=False)
+    joined = await ffmpeg.concat([a, b], tmp_path / "ab.mp4")
+    assert abs(await ffmpeg.probe_duration(joined) - 8) < 2.2
+    assert not (tmp_path / "ab.mp4.txt").exists()

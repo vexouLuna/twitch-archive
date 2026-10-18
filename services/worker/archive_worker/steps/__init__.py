@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from ..context import JobContext
-from . import bot_chat, capture, content_check, previews
+from . import bot_chat, capture, compile, content_check, previews
 from .media import censor, cleanup, dmca_edit, ensure_source, fetch_vod, finalize, resolve_vod, split
 from .metadata import chapters, chat, emotes, global_emotes_backfill, logs_manual, seventv_flags_backfill
 from .publish import describe, live_gaps_backfill, upload
@@ -28,6 +28,8 @@ STEPS: dict[str, Step] = {
     "seventv_flags_backfill": seventv_flags_backfill,
     "live_gaps_backfill": live_gaps_backfill,
     "logs_manual": logs_manual,
+    "compile_sources": compile.compile_sources,
+    "compile": compile.compile,
     "split": split,
     "dmca_edit": dmca_edit,
     "censor_check": content_check.censor_check,

@@ -79,3 +79,11 @@ async def test_next_to_a_live_copy_it_stays_unlisted(vod, make_ctx, uploads, set
     await vod([{"id": "live1", "type": "live", "duration": 3600, "part": 1}])
     await publish.upload(make_ctx("download", VOD, _payload(manual=True)))
     assert uploads == ["unlisted"]
+
+
+def test_compiled_uploads_need_compile_upload(make_ctx, settings):
+    from archive_worker.steps.publish import _publishing_disabled
+
+    assert _publishing_disabled(make_ctx("compile", payload={"type": "compiled"})) == "compile_upload is off"
+    settings.compile_upload = True
+    assert _publishing_disabled(make_ctx("compile", payload={"type": "compiled"})) is None

@@ -287,3 +287,17 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
     finally:
         for p in pieces:
             p.unlink(missing_ok=True)
+
+
+@_one_at_a_time("concat")
+async def concat(parts: list[Path], out: Path) -> Path:
+    """Join stream-copied clips of the same encoding end to end (the concat demuxer), index in front."""
+    listing = out.with_name(out.name + ".txt")
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+    try:
+        return await _ffmpeg_to(
+            out,
+            ["-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0", "-c", "copy", "-movflags", "+faststart"],
+        )
+    finally:
+        listing.unlink(missing_ok=True)

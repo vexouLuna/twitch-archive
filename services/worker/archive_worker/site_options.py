@@ -17,6 +17,7 @@ from .events import iso_utc
 
 MAX_CARDS = 12
 SINGLE = ("latest", "games")  # cards there is one of
+PLAY = ("segments", "compiled")
 
 
 class SiteOptionError(Exception):
@@ -53,7 +54,12 @@ def validate(body: Any, tags: list[dict[str, Any]] | None) -> dict[str, Any]:
     if not isinstance(body, dict) or not body or set(body) - set(site_options.DEFAULTS):
         raise SiteOptionError(f"send an object with any of: {', '.join(site_options.DEFAULTS)}")
     home_tags = None if tags is None else {t["name"] for t in tags if t.get("homeCard")}
-    return {"homeCards": _cards(body["homeCards"], home_tags)} if "homeCards" in body else {}
+    out = {"homeCards": _cards(body["homeCards"], home_tags)} if "homeCards" in body else {}
+    if "playDefault" in body:
+        if body["playDefault"] not in PLAY:
+            raise SiteOptionError(f"playDefault must be one of: {', '.join(PLAY)}")
+        out["playDefault"] = body["playDefault"]
+    return out
 
 
 def view(loaded: dict[str, Any]) -> dict[str, Any]:

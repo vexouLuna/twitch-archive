@@ -857,7 +857,7 @@ def create_admin_app(
 
     @app.get("/admin/site/options", dependencies=auth)
     async def get_site_options() -> dict[str, Any]:
-        """``{homeCards, updatedAt, updatedBy}``; an option never saved reads as its default."""
+        """``{homeCards, playDefault, updatedAt, updatedBy}``; an option never saved reads as its default."""
         async with get_sessionmaker()() as s:
             return site_options.view(await site_options_common.load(s))
 

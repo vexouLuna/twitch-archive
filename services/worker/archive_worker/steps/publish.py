@@ -39,6 +39,8 @@ def _publishing_disabled(ctx: JobContext) -> str | None:
         return "dry run"
     if not s.youtube_upload:
         return "youtube_upload is off"
+    if ctx.video_type == "compiled" and not s.compile_upload:
+        return "compile_upload is off"
     if ctx.video_type == "vod" and s.live_record and not s.multi_track and not _forced(ctx):
         return "live_record is on without multi_track: only the live copy is uploaded"
     return None

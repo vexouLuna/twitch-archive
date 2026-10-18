@@ -3,7 +3,9 @@
 The worker's admin routes write them (archive_worker/site_options.py), archive-api serves them at
 ``/v1/site/options``. ``homeCards``: the homepage's cards, in order, each ``{"kind": "latest"}`` (the newest
 VOD, or the stream while live), ``{"kind": "tag", "tag": name}`` (the newest VODs with a tag whose type has
-``homeCard``; see site_tags) or ``{"kind": "games"}`` (the most played games). An option never saved
+``homeCard``; see site_tags) or ``{"kind": "games"}`` (the most played games). ``playDefault``: what a
+synthetic VOD's watch page plays first, ``"segments"`` (its sources' uploads, as composed) or ``"compiled"``
+(its own uploads from a compile job, where it has them; the page offers the other either way). An option never saved
 reads as its default.
 """
 
@@ -18,6 +20,7 @@ from .models import SiteSetting
 KEY = "options"  # the site_settings row
 DEFAULTS: dict[str, Any] = {
     "homeCards": [{"kind": "latest"}, {"kind": "tag", "tag": "compilation"}, {"kind": "games"}],
+    "playDefault": "segments",
 }
 
 

@@ -145,6 +145,8 @@ KINDS: dict[str, list[str]] = {
         "previews",
         "cleanup",
     ],
+    # A synthetic VOD as one file, uploaded as type "compiled" with compile_upload on (steps/compile.py).
+    "compile": ["compile_sources", "compile", "split", "upload", "describe", "cleanup"],
     "chat": ["chat"],
     "logs_manual": ["logs_manual"],
     "chapters": ["chapters"],
