@@ -72,6 +72,8 @@ class Vod(Base):
     )
     # Alembic 0019: ranges blurred, blacked out or muted in the uploads (vod_edits.censor); [] = none.
     censor: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list)
+    # Alembic 0021: why the VOD was cut, shown on the site's page for a VOD cut in full; NULL = none given.
+    cut_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = _created()
     updated_at: Mapped[dt.datetime] = _updated()
 
@@ -308,7 +310,7 @@ class AdminSession(Base):
     csrf: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str] = mapped_column(Text, nullable=False)  # password | twitch:<id>
     twitch_user: Mapped[Any] = mapped_column(JSONB(none_as_null=True))
-    sid: Mapped[str | None] = mapped_column(Text)  # the vexoulz-auth session behind a Twitch sign-in
+    sid: Mapped[str | None] = mapped_column(Text)  # the vex-auth session behind a Twitch sign-in
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)

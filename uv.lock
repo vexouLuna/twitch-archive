@@ -99,11 +99,11 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "cachetools", specifier = ">=5.5" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "pydantic-settings", specifier = ">=2.16.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "tenacity", specifier = ">=8.5" },
     { name = "tzdata", specifier = ">=2024.1" },
-    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vEXOULZ/vex-platform/archive/refs/tags/v0.7.0.tar.gz" },
+    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.8.0.tar.gz" },
 ]
 
 [[package]]
@@ -1399,16 +1399,17 @@ wheels = [
 
 [[package]]
 name = "pydantic-settings"
-version = "2.15.0"
+version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/ca/31c57507b13119d7d3cfa1576dad2911a4861e3be07b579395f4e9d393f9/pydantic_settings-2.15.0.tar.gz", hash = "sha256:694b793e84f766ba76a90ebdefc01d0a9a045dab0382bee70393da93712ad117", size = 261253, upload-time = "2026-08-07T09:24:57.419Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/3b/a5d2294799b53b448319978cfb5bd139d5a9d45e862af91661614f14c922/pydantic_settings-2.16.0.tar.gz", hash = "sha256:5b6c578049ede4db0e2ef3b4eaa4ad4069cfa9211f83fb38df899dfade50a614", size = 301031, upload-time = "2026-10-14T12:44:09.998Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/a4/2bffa9f8e804325a09867f0e9d30795c80ea9f8d62560bd1b6ad6220eb2f/pydantic_settings-2.15.0-py3-none-any.whl", hash = "sha256:0ba092c291c94baceb5eff768aa0d56400a457585bc0175925a5a5510303da42", size = 69413, upload-time = "2026-08-07T09:24:55.839Z" },
+    { url = "https://files.pythonhosted.org/packages/53/f4/b987bf8c51e5b19a95fa66d1ee596074141e085d9c2ddf97920803c7029b/pydantic_settings-2.16.0-py3-none-any.whl", hash = "sha256:7e73acf7f61936a15e5a3b6eedaea29f133357faf7272f2607ba479b049dd7f2", size = 80364, upload-time = "2026-10-14T12:44:08.233Z" },
 ]
 
 [[package]]
@@ -1659,7 +1660,7 @@ wheels = [
 
 [[package]]
 name = "twitch-archive"
-version = "0.21.0"
+version = "0.23.0"
 source = { virtual = "." }
 dependencies = [
     { name = "archive-api" },
@@ -1793,8 +1794,8 @@ wheels = [
 
 [[package]]
 name = "vex-platform"
-version = "0.7.0"
-source = { url = "https://github.com/vEXOULZ/vex-platform/archive/refs/tags/v0.7.0.tar.gz" }
+version = "0.8.0"
+source = { url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.8.0.tar.gz" }
 dependencies = [
     { name = "fastapi" },
     { name = "procrastinate" },
@@ -1802,7 +1803,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "structlog" },
 ]
-sdist = { hash = "sha256:b563db2653ef1614a5fd1aaf16da91228b06931c8efbe8b3d06dd4de6f77d2c4" }
+sdist = { hash = "sha256:5201465b796ec549e1925bb0f7dd5c65a01d79025441b7e92fc2a700abd520b9" }
 
 [package.optional-dependencies]
 sqlalchemy = [

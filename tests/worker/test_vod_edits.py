@@ -41,6 +41,10 @@ def test_vod_fields():
     }
     assert vod_edits.vod_fields({"duration": "1:02:03"}) == {"duration": "01:02:03"}
     assert vod_edits.vod_fields({}) == {}
+    reason = vod_edits.vod_fields({"cutReason": "  DMCA claim on the music  "})
+    assert reason == {"cut_reason": "DMCA claim on the music"}
+    assert vod_edits.vod_fields({"cutReason": "   "}) == {"cut_reason": None}
+    assert vod_edits.vod_fields({"cutReason": None}) == {"cut_reason": None}
 
 
 @pytest.mark.parametrize(
@@ -54,6 +58,8 @@ def test_vod_fields():
         ({"duration": 5400}, "duration must be HH:MM:SS"),
         ({"duration": "1:2:3"}, "duration must be HH:MM:SS"),
         ({"createdAt": "2026-09-30 18:00"}, "createdAt must be an ISO date and time with an offset"),
+        ({"cutReason": 3}, "cutReason must be text or null"),
+        ({"cutReason": "x" * 501}, "cutReason must be at most 500 characters"),
     ],
 )
 def test_vod_fields_refused(body, message):

@@ -260,12 +260,16 @@ def plan_merge(a: Side, b: Side, offset: int) -> Plan:
             targetDuration=a.duration,
             gap=gap,
         )
-    types = upload_types(a.youtube)
-    if types != upload_types(b.youtube):
+    # A VOD with no uploads (its footage was lost) takes the other's types. A lost target's whole
+    # length stays missing footage at the start (the delay); a lost source's lands under the gap
+    # chapter (it has no first frame, so the gap runs to its end). Either way the site counts it.
+    types_a, types_b = upload_types(a.youtube), upload_types(b.youtube)
+    types = types_a or types_b
+    if not types or (types_a and types_b and types_a != types_b):
         raise PlanError(
-            f"{a.id} has {'/'.join(types) or 'no'} uploads and {b.id} has "
-            f"{'/'.join(upload_types(b.youtube)) or 'no'} uploads; the site plays one type back to "
-            "back, so both VODs need uploads of the same types"
+            f"{a.id} has {'/'.join(types_a) or 'no'} uploads and {b.id} has "
+            f"{'/'.join(types_b) or 'no'} uploads; the site plays one type back to back, so both "
+            "VODs need uploads of the same types (one of them may have none)"
         )
     played = played_type(types)
     per_type: dict[str, dict[str, float]] = {}

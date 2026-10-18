@@ -139,13 +139,20 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_MULTI_TRACK` † | `false` | With `LIVE_RECORD`, also upload the VOD copy (unlisted). Ignored when `LIVE_RECORD` is off |
 | `ARCHIVE_FORCE_UPLOAD_MANUAL` † | `false` | With `LIVE_RECORD` and without `MULTI_TRACK`, still upload the VOD copy of archives started from the dashboard (see "Which copies are uploaded") |
 | `ARCHIVE_YOUTUBE_UPLOAD` † | `true` | |
+| `ARCHIVE_COMPILE_YOUTUBE_UPLOAD` † | `false` | Upload compiled VODs to YouTube: lets a `compile` job (started from Manage, never on its own) upload |
 | `ARCHIVE_YOUTUBE_PUBLIC` † | `false` | Public instead of unlisted, for the main copy: the live copy when `LIVE_RECORD` is on, the VOD copy otherwise (§5) |
+| `ARCHIVE_COMPILE_YOUTUBE_PUBLIC` † | `false` | Compiled uploads public instead of unlisted; `ARCHIVE_YOUTUBE_PUBLIC` doesn't apply to them |
 | `ARCHIVE_YOUTUBE_DESCRIPTION` † | `VOD` | Last line of every description |
+| `ARCHIVE_YOUTUBE_TITLE` † | `{channel} Twitch {label} - {date}` | Upload title: `{channel}`, `{label}` (`VOD` or `Live VOD`), `{date}` (local), `{title}` (the stream's); ` PART n` is added when there are several |
+| `ARCHIVE_YOUTUBE_TITLE_COMPILED` † | `{title}` | A compiled upload's title, the same fields; `{title}` is the synthetic VOD's. Both are checked at startup |
 | `ARCHIVE_YOUTUBE_KEEPALIVE_HOURS` † | `24` | How often the worker refreshes the YouTube token; see [§3](#3-youtube-oauth-setup) |
 | `ARCHIVE_RESTRICTED_GAMES` † | `[]` | Chapters of these games are left out of uploads ("No category": chapters without one, including the stretches Twitch's chapters leave out, which the chapters step fills with one) |
+| `ARCHIVE_CENSOR_DESCRIPTORS` † | `["Sexual Content","Nudity"]` | A game whose IGDB content descriptors or themes contain one of these (case-insensitive) pauses the job for a censor review before upload; `[]` turns the check off. See "Censor check" below |
+| `ARCHIVE_CENSOR_ALLOW_GAMES` † | `[]` | Games uploaded without the IGDB check (`RESTRICTED_GAMES` still wins: those are cut) |
 | `ARCHIVE_MANUAL_STEPS` † | `{}` | Steps a job pauses before until you resume it, per job kind, e.g. `{"archive":["upload"]}`; see [Manual steps](#manual-steps) |
 | `ARCHIVE_SPLIT_DURATION` † | `10800` | Maximum YouTube part length in seconds |
 | `ARCHIVE_KEEP_HLS` / `ARCHIVE_KEEP_MP4` † | `false` | Keep files after upload |
+| `ARCHIVE_KEEP_FILES_DAYS` † | `0` | Days to keep a job's files after upload: its cleanup step queues a `cleanup` job for then (0: clean up at once) |
 | `ARCHIVE_PREVIEWS` † | `true` | Make seek-bar previews of each uploaded part; see [Seek-bar previews](#seek-bar-previews) |
 | `ARCHIVE_PREVIEWS_FETCH_PAUSE_SECONDS` † | `60` | Pause between two YouTube downloads of the previews backfill |
 | `ARCHIVE_PREVIEWS_YTDLP_ARGS` | `[]` | Extra yt-dlp arguments for those downloads, e.g. `["--cookies","/secrets/yt.txt"]` |
@@ -164,11 +171,11 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_ADMIN_TRUSTED_PROXIES` | `[]` | Reverse proxies (addresses or CIDR ranges, JSON list) whose `X-Forwarded-For` / `X-Real-IP` is believed when rate-limiting logins and checking `ARCHIVE_ADMIN_PASSWORD_NETWORKS`, and whose `X-Forwarded-Proto` decides the password login cookie's `Secure` |
 | `ARCHIVE_ADMIN_PASSWORD_NETWORKS` | this host and the private ranges | Where the password is accepted from (JSON list of addresses or CIDR ranges; `["*"]` = anywhere). Elsewhere it gets `403` |
 | `ARCHIVE_ADMIN_TWITCH_IDS` | `[]` | Twitch user ids (JSON list) allowed in through Twitch sign-in |
-| `ARCHIVE_ADMIN_AUTH_URL` | – | [vexoulz-auth](https://github.com/vEXOULZ/vexoulz-auth) as browsers reach it. Twitch sign-in is on when this, the client secret, the redirect URL and at least one Twitch id are set |
-| `ARCHIVE_ADMIN_AUTH_INTERNAL_URL` | `ARCHIVE_ADMIN_AUTH_URL` | vexoulz-auth as the worker reaches it |
-| `ARCHIVE_ADMIN_AUTH_CLIENT_ID` / `ARCHIVE_ADMIN_AUTH_CLIENT_SECRET` | `vods-admin` / – | This worker's client registration in vexoulz-auth |
-| `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` | – | `/admin/signin/callback` as browsers reach it (through the dashboard's proxy); registered with vexoulz-auth |
-| `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL` | `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` | The client's **first** redirect URI registered with vexoulz-auth, which a code from its `POST /v1/codes` carries. Set it only if that isn't the callback above. See [Sign-in from a site's page](#sign-in-from-a-sites-page-post-adminsession-code) |
+| `ARCHIVE_ADMIN_AUTH_URL` | – | [vex-auth](https://github.com/vexouLuna/vex-auth) as browsers reach it. Twitch sign-in is on when this, the client secret, the redirect URL and at least one Twitch id are set |
+| `ARCHIVE_ADMIN_AUTH_INTERNAL_URL` | `ARCHIVE_ADMIN_AUTH_URL` | vex-auth as the worker reaches it |
+| `ARCHIVE_ADMIN_AUTH_CLIENT_ID` / `ARCHIVE_ADMIN_AUTH_CLIENT_SECRET` | `vods-admin` / – | This worker's client registration in vex-auth |
+| `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` | – | `/admin/signin/callback` as browsers reach it (through the dashboard's proxy); registered with vex-auth |
+| `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL` | `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` | The client's **first** redirect URI registered with vex-auth, which a code from its `POST /v1/codes` carries. Set it only if that isn't the callback above. See [Sign-in from a site's page](#sign-in-from-a-sites-page-post-adminsession-code) |
 | `ARCHIVE_ADMIN_SITE_ORIGINS` | `[]` | Site origins (JSON list, e.g. `["https://vods.example.net"]`) whose pages may call `/admin/session` with cookies. CORS answers only them, and `POST /admin/session {code}` refuses any other `Origin`. The origin of `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` (the site this worker serves through its proxy) is always included |
 | `ARCHIVE_API_INTERNAL_URL` | `http://127.0.0.1:<api port>`; `http://api:<api port>` in `compose.yaml` | Where `/admin/health` checks archive-api |
 | `ARCHIVE_MERGE_CANDIDATE_MINUTES` | `30` | `merge-candidates` lists VODs that started up to this long after a VOD ended; see [Merging and splitting VODs](#merging-and-splitting-vods) |
@@ -306,20 +313,24 @@ Job kinds and their steps:
 
 | Kind | Steps | Started by |
 |---|---|---|
-| `archive` | capture → finalize → chapters → chat → emotes → censor → split → upload → describe → previews → cleanup | monitor (stream went live), `/admin/hls/download` |
-| `download` | ensure_source → fetch_vod → finalize → chapters → censor → split → upload → describe → previews → cleanup | `/admin/download` |
-| `reupload` | ensure_source → fetch_vod → finalize → censor → split → upload → describe → previews → cleanup | `/admin/reupload` |
-| `live` | live_record → resolve_vod → finalize → chapters → chat → emotes → censor → split → upload → describe → previews → cleanup | monitor (when `LIVE_RECORD=true`) |
-| `live_file` | ensure_source → chapters → censor → split → upload → describe → previews | `/v2/live` |
-| `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
-| `part_dmca` | ensure_source → fetch_vod → finalize → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
+| `archive` | capture → finalize → chapters → chat → emotes → censor_check → censor → split → upload → describe → previews → cleanup | monitor (stream went live), `/admin/hls/download` |
+| `download` | ensure_source → fetch_vod → finalize → chapters → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/download` |
+| `reupload` | ensure_source → fetch_vod → finalize → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/reupload` |
+| `live` | live_record → resolve_vod → finalize → chapters → chat → emotes → censor_check → censor → split → upload → describe → previews → cleanup | monitor (when `LIVE_RECORD=true`) |
+| `live_file` | ensure_source → chapters → censor_check → censor → split → upload → describe → previews | `/v2/live` |
+| `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
+| `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
+| `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later; a newer pipeline on the same folder cancels it, and it leaves files a run still needs (active, or failed since) |
 | `global_emotes_backfill` | one step | `/admin/emotes/backfill` |
 | `live_gaps_backfill` | one step | `/admin/live-gaps/backfill` |
 | `bot_chat` | one step | monitor (stream ended, `DOOMTP_URL` set; separate from `archive`), `/admin/bot-chat` |
 | `bot_chat_backfill` | one step: queues a `bot_chat` job per VOD | `/admin/bot-chat/backfill` |
 | `previews_fetch` | one step | `/admin/previews` |
 | `previews_backfill` | one step: queues a `previews_fetch` job per VOD | `/admin/previews/backfill` |
+| `compile` | compile_sources → compile → split → upload → describe → cleanup | `POST /api/v2/jobs` with `{"kind": "compile", "subject": "vod:<synthetic id>", "payload": {"type": "compiled"}}` (the synthetic page's Compile button) |
+
+When `split` finds nothing to upload (an empty VOD, or every chapter restricted), the job skips to `cleanup` and succeeds.
 
 `ensure_source` uses `path` if one was given, otherwise the MP4 already on disk. With neither, `fetch_vod` downloads the whole VOD from Twitch again (only while Twitch still has it) and `finalize` converts it; both do nothing when there is a source already.
 
@@ -349,18 +360,32 @@ curl -s "${H[@]}" -X PUT "$A/admin/site/tags/speedrun/shape" -H 'Content-Type: i
 curl -s "${H[@]}" -X DELETE "$A/admin/site/tags/speedrun/shape"
 ```
 
-- A tag is `{name, label, drawn, color, shape, width, height, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize}`. `name`: `^[a-z0-9][a-z0-9-]{0,31}$`, unique. `label`: 1–40 characters. `drawn`: `true`/`false`. `width`/`height`: `null` or a whole number of px, 8–200.
+- A tag is `{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize, page, pageLabel, homeCard}`. `name`: `^[a-z0-9][a-z0-9-]{0,31}$`, unique. `label`: 1–40 characters. `drawn`: `true`/`false`. `width`/`height`: `null` or a whole number of px, 8–200. `rotate`: `null` (the site's default tilt) or a whole number of degrees, −180 to 180, turning the drawn tag clockwise.
 - `color`, `textColor`, `patternColor`: `null` or a color of at most 160 characters, made only of letters, digits, spaces and `#.,%/()*+-`: a hex (`#` and 3–8 hex digits), a color name (3–20 letters), a theme token `var(--…)` (`--`, a letter, then `[a-z0-9-]*`, no fallback: any site's, `--vx-ok` or keeki's `--k-ok`), or one color function (`rgb rgba hsl hsla hwb lab lch oklab oklch color color-mix`) around the whole value. Inside it: theme tokens, color functions and `calc min max clamp`, at most 4 deep; no other function, `var()` or `--`. So `oklch(from var(--vx-accent) calc(l - 0.15) c h)` and `color-mix(in oklch, var(--vx-ok) 60%, white)` pass and `url()` doesn't. This is the sites' `isTagColor` (vods-core `src/app/lib/vodTags.ts`).
 - Text drawn on the tag: `text` is `null` or 1–24 characters (trimmed). `textSize` is `null` or 6–48 px, `textX`/`textY` `null` or −100 to 100 px, and `textRotate` `null` or −180 to 180 degrees (clockwise), all whole numbers. With `text` `null`, all five of the others are stored as `null`.
 - The pattern: `pattern` is `null`, `"stripes"` or `"checks"`, and `patternSize` is `null` or a whole number of px, 2–40. With `pattern` `null`, `patternColor` and `patternSize` are stored as `null`. A list saved before these fields existed reads them as `null`. `shape` is `v1/site/tags/{name}.svg?v=<hash>` or `null`; it is ignored in a `PUT` (the shape routes set it). Unknown fields are dropped.
+- The type: `page` is `null` or a slug like `name` (not `vods`, `live`, `youtube`, `games`, `manage`, `admin` or `playthrough`, and no two tags the same): the tag's own menu entry and list page at `/{page}`. `pageLabel` is that page's title, 1–40 characters, required with a page and `null` without one. `homeCard`: `true`/`false`, whether the tag can feed a "latest" card on the homepage. Migration 0020 gives `compilation` the `playthroughs` page and a home card on a list saved before types.
 - At most 32 tags, and `new`, `updated` and `compilation` (set automatically) must stay in the list. A refused list changes nothing: `400 {error, msg, tag, field}` names the first refused tag and field. A tag no longer in the list loses its shape.
 - **A VOD's `tags`** (`PATCH /admin/vods/:id`, `PATCH /api/v2/vods/:id`, synthetic VODs) take the names in this list, less `new` and `updated` (the site works those out from dates). Until the list is saved, only `compilation`. A tag the list drops stays allowed on a VOD that already has it.
 - **Shapes:** the raw SVG, at most 64 KB (`413`), as `Content-Type: image/svg+xml` (`415`), for a tag of the saved list (`404`). It is parsed with [defusedxml](https://pypi.org/project/defusedxml/) and rebuilt from an allow-list of shape elements and attributes. A `400` refuses `<script>`, `<foreignObject>`, `<iframe>`, `<image>` (embedded or linked rasters), `<a>`, animations, `on*` handlers, DOCTYPE and entities, an `href` that isn't `#id`, `url()` that isn't `url(#id)`, `@import` and `javascript:`. Editor metadata, other namespaces and comments are dropped. Colors stay as they are (`currentColor` too, in attributes, `style` and `<style>`): the site recolors only the `currentColor` parts, or the black ones in a file without any.
 - Every route answers like `GET`. Changes are audited with `{before, after}` (the tag list, or the tag with its `shape` path; never the SVG) on target `site:tags` or `site-tag:<name>`.
 
+### Site options
+
+The site's own options: the homepage's cards (its `/manage/home` page edits them; archive-api serves them at `GET /v1/site/options`). Kept in `site_settings` (row `options`).
+
+```bash
+curl -s "${H[@]}" "$A/admin/site/options"                # {homeCards, playDefault, updatedAt, updatedBy}; never saved: the defaults and nulls
+curl -s "${H[@]}" -X PUT "$A/admin/site/options" -d '{"homeCards": [{"kind": "latest"}, {"kind": "tag", "tag": "compilation"}, {"kind": "games"}]}'
+```
+
+- `homeCards`: the homepage's cards in order, at most 12. `{"kind": "latest"}` is the newest VOD (the stream while live), `{"kind": "tag", "tag": name}` the newest VODs with a tag whose type has `homeCard` (any name until the tag list is saved), `{"kind": "games"}` the most played games. One of each. The default is the three above.
+- `playDefault`: what a synthetic VOD's watch page plays first: `"segments"` (the default; its sources' uploads, as composed) or `"compiled"` (its own uploads from a `compile` job, where it has them). The page offers the other too.
+- A `PUT` takes any of the options; the others keep their value. A refused one changes nothing (`400 {error, msg}`). Audited as `site.options.update` with `{before, after}` on target `site:options`.
+
 ### Storage
 
-Every job works in one folder of the data directory: `vods/<vodId>`, or `live/<streamId>` for a live recording. Files are normally deleted after upload; what is left is what `ARCHIVE_KEEP_HLS`/`KEEP_MP4` keep, jobs still in progress, and leftovers of failed jobs or deleted VODs.
+Every job works in one folder of the data directory: `vods/<vodId>`, or `live/<streamId>` for a live recording. Files are normally deleted after upload (or `ARCHIVE_KEEP_FILES_DAYS` later); what is left is what `ARCHIVE_KEEP_HLS`/`KEEP_MP4` keep, jobs still in progress, and leftovers of failed jobs or deleted VODs.
 
 ```bash
 curl -s "${H[@]}" "$A/admin/storage"                    # the disk, and each folder; ?refresh=true to scan again now
@@ -512,7 +537,7 @@ Both are audited as `synthetic.create`, with `detail` naming the merge or split.
 
 The gap chapter runs from the end of A to where B's first uploaded frame lands: offset + B's delay (B's footage missing at its start, plus any cut at its start). That keeps the site's formula, `duration − Σ parts − Σ cuts = delay`, equal to A's own delay. A's uploads always end at A's duration in that model (any shortfall reads as delay at A's start, which stays where it is). The site plays `live` uploads when a VOD has any, so the gap is fitted to them; when a VOD also has `vod` uploads whose delay differs, the response has a warning with the difference. The merge record (`splices[].detail` on `GET /admin/vods/{id}`) has every number.
 
-Refused (409, with the reason and the numbers): B started before A, the VODs overlap, either is already merged into another VOD, either has a queued, running or paused job, the two have uploads of different types, or a part has no duration.
+Refused (409, with the reason and the numbers): B started before A, the VODs overlap, either is already merged into another VOD, either has a queued, running or paused job, the two have uploads of different types, or a part has no duration. One exception: either VOD (not both) may have no uploads at all, and its time still counts on the site. When the first section of a stream was lost, merge the rest into its VOD: A's whole length is missing footage before B's uploads. When the last section was lost, merge it into A: B's whole length lands under the gap chapter after A's uploads. A lost section in the middle: merge the last VOD into the lost one first, then that into the first.
 
 **Split** (`/admin`). A VOD can only be split where an upload ends: between two parts (anywhere across a cut or gap chapter there), or inside a cut before the first part or after the last. Anywhere else is a 409 with `validPoints` (`[{at, from, to}]`, nearest first). At a merge's join (inside its gap chapter) the split undoes that merge instead. Otherwise the rest becomes a new VOD `<id>-2` (`-3`, … if taken) starting at `createdAt + at`, with the chapters, parts (renumbered), `games` rows and chat rows from `at` on, shifted back by `at`, and a copy of the emotes. A chapter cut in two keeps its name and `kind` on both sides. `drive` entries have no times, so they stay on the first half.
 
@@ -533,30 +558,34 @@ curl -s "${H[@]}" "$A/api/v2/playthrough-candidates?game_id=512953"             
 
 A segment's `start` defaults to 0, `end` to its VOD's end, and `at` to right after the segment before. Changes are audited as `synthetic.create`, `synthetic.update` and `synthetic.delete`.
 
+A playthrough can keep itself up to date: send `"auto": {"game_id": "512953"}` (on create, instead of `segments`, or on a PUT) and its segments become every window of that game. Each monitor round writes them again when they differ, so a new stream of the game or a source's edited chapters reach it; that change is audited as `synthetic.update` by `system`. Sending `segments` without `auto` is a hand edit and stops it, as does `"auto": null`. The view says what it follows in `auto` (`null`: nothing).
+
+A synthetic VOD can also be made into one file and uploaded as its own video: a `compile` job cuts each window from its source's kept MP4 (`ARCHIVE_KEEP_MP4`, at `<vod_dir>/<id>/<id>.mp4`), joins them, then splits, uploads and describes it like a VOD. Its uploads go on the synthetic VOD's row as `type: "compiled"` (unlisted unless `ARCHIVE_COMPILE_YOUTUBE_PUBLIC`), and only with `ARCHIVE_COMPILE_YOUTUBE_UPLOAD` on (off by default; `youtube_upload` must be on too); with it off the job runs but uploads nothing (the file stays only with `ARCHIVE_KEEP_MP4`). The segments stay what the VOD is: changing them later (by hand, or a playthrough following its game) doesn't change the compiled uploads, but marks them outdated (`compiled.outdated` in `GET /api/v2/synthetic/{id}`, from `synthetic.compiledFrom`); Manage then offers Recompile (`"replace": true` replaces the old ones). A gap in the timeline (a playthrough's time between runs) is left out of the file: the windows play back to back and each upload's `gaps` records what it skips, so the player maps the file onto the VOD's time as it does a live recording's ad breaks. Refused: a source without a kept MP4 and a source with censor ranges (its kept MP4 is uncensored). A source with DMCA claims (its done `dmca` / `part_dmca` jobs, listed by `GET /api/v2/synthetic/{id}/dmca` as `overlapping`, the ranges in a window it plays, and `other`; a live copy's claims count as overlapping) compiles only with `"accept_dmca": true`, which Manage sends after a warning listing them. Each window is re-encoded (H.264 + AAC) so it cuts on the exact frame, slower than a stream copy; each window's measured length is used.
+
 ### Browser access (dashboard)
 
-A web dashboard logs in instead of carrying the API key: with Twitch through [vexoulz-auth](https://github.com/vEXOULZ/vexoulz-auth) (the sign-in shared by the vexoulz sites), or with `ARCHIVE_ADMIN_PASSWORD` from the local network. The key keeps working for scripts; every `/admin/*` route accepts any of them. The audit log records the actor as `api-key`, `password` or `twitch:<id>`.
+A web dashboard logs in instead of carrying the API key: with Twitch through [vex-auth](https://github.com/vexouLuna/vex-auth) (the sign-in shared by the vexoul.net sites), or with `ARCHIVE_ADMIN_PASSWORD` from the local network. The key keeps working for scripts; every `/admin/*` route accepts any of them. The audit log records the actor as `api-key`, `password` or `twitch:<id>`.
 
 | Route | |
 |---|---|
 | `GET /admin/session` | No auth. `{"authenticated", "csrf", "expiresAt", "passwordLogin", "twitchLogin", "user"}`. `passwordLogin`: the password is offered to this address. `user`: the Twitch user, `null` for a password login |
 | `POST /admin/session` `{"password"}` | Logs in: the same shape plus the `archive_admin` cookie. `401` wrong password, `403` from outside `ARCHIVE_ADMIN_PASSWORD_NETWORKS`, `429` + `Retry-After` after 5 failed logins in 5 minutes from one address, `404` when password login is off |
-| `GET /admin/signin?next=/admin/...` | Starts a Twitch sign-in: redirects to vexoulz-auth, which comes back to `/admin/signin/callback`. That sets the same cookie and redirects to `next`, or to `/admin/login?auth_error=<denied\|expired\|twitch\|not_allowed\|unavailable\|misconfigured>&next=...`. `404` when Twitch sign-in is off |
-| `POST /admin/session` `{"code"}` | A Twitch sign-in from a code the site's page got from vexoulz-auth, with no redirect: see [Sign-in from a site's page](#sign-in-from-a-sites-page-post-adminsession-code) |
-| `GET /admin/signin?quiet=1&next=/...` | A quiet sign-in (the older way to do what `POST /admin/session {code}` does; it stays until the sites have moved): the site checking whether someone already signed in to it is an admin. The same trip, but the callback never shows the login page: it redirects to `next` with `admin=1` added when it made a session, or `admin=0` for anything else (not listed, denied, unavailable). vexoulz-auth answers a signed-in browser at once, so nobody sees Twitch |
+| `GET /admin/signin?next=/admin/...` | Starts a Twitch sign-in: redirects to vex-auth, which comes back to `/admin/signin/callback`. That sets the same cookie and redirects to `next`, or to `/admin/login?auth_error=<denied\|expired\|twitch\|not_allowed\|unavailable\|misconfigured>&next=...`. `404` when Twitch sign-in is off |
+| `POST /admin/session` `{"code"}` | A Twitch sign-in from a code the site's page got from vex-auth, with no redirect: see [Sign-in from a site's page](#sign-in-from-a-sites-page-post-adminsession-code) |
+| `GET /admin/signin?quiet=1&next=/...` | A quiet sign-in (the older way to do what `POST /admin/session {code}` does; it stays until the sites have moved): the site checking whether someone already signed in to it is an admin. The same trip, but the callback never shows the login page: it redirects to `next` with `admin=1` added when it made a session, or `admin=0` for anything else (not listed, denied, unavailable). vex-auth answers a signed-in browser at once, so nobody sees Twitch |
 | `DELETE /admin/session` | Logs out (`204`) and clears the cookie |
 
-Only `ARCHIVE_ADMIN_TWITCH_IDS` get in through Twitch. A Twitch session is checked with vexoulz-auth again every minute, so signing out everywhere on any vexoulz site ends it too; if vexoulz-auth can't be reached, the session stands until it can.
+Only `ARCHIVE_ADMIN_TWITCH_IDS` get in through Twitch. A Twitch session is checked with vex-auth again every minute, so signing out everywhere on any vexoul.net site ends it too; if vex-auth can't be reached, the session stands until it can.
 
 The cookie is `HttpOnly; Secure; SameSite=Strict` and lasts 8 hours. Sessions are kept in the `admin_sessions` table (by the sha256 of the cookie's token, never the token itself), so they outlast a restart; expired ones are dropped at the next login. With the cookie, every request except `GET` must also send the session's `csrf` value as `X-CSRF-Token`, or it gets `403`. `Secure` means browsers only send the cookie over HTTPS (or to `localhost`), so serve the dashboard through something that terminates TLS. The one exception is a password login that reached the worker over plain HTTP, such as a LAN address with no TLS: that cookie goes without `Secure`, since a browser would otherwise drop it (the password only works from `ARCHIVE_ADMIN_PASSWORD_NETWORKS` anyway). Twitch sign-in always comes back over HTTPS. If a reverse proxy sits in front, list its address in `ARCHIVE_ADMIN_TRUSTED_PROXIES` so the login rate limit and the password networks see the real client and not the proxy (a proxy on this host would otherwise make every request look local), and so its `X-Forwarded-Proto` says whether the browser used HTTPS. Forwarded headers from any other address are ignored.
 
 #### Sign-in from a site's page (`POST /admin/session {code}`)
 
 A site page can learn, in two `fetch`es and with no page redirect, whether the person signed in to the
-vexoulz sites is an archive admin, and get the dashboard session if they are. It needs vexoulz-auth
+vexoul.net sites is an archive admin, and get the dashboard session if they are. It needs vex-auth
 `v0.3.0` or later.
 
-1. The page asks vexoulz-auth for a one-time code for this worker's client:
+1. The page asks vex-auth for a one-time code for this worker's client:
 
    ```js
    const me = await fetch(`${AUTH}/v1/me`, { credentials: "include" });   // 401: not signed in, so not an admin
@@ -564,7 +593,7 @@ vexoulz sites is an archive admin, and get the dashboard session if they are. It
    const r = await fetch(`${AUTH}/v1/codes`, {
      method: "POST",
      credentials: "include",
-     headers: { "Content-Type": "application/json", "X-Vexoulz-CSRF": csrf },
+     headers: { "Content-Type": "application/json", "X-Vex-CSRF": csrf },
      body: JSON.stringify({ client_id: "vods-admin" }),   // ARCHIVE_ADMIN_AUTH_CLIENT_ID
    });
    // 200 {code}; 401 signed_out (not an admin); 400 unknown_client, 403 csrf, 409 scope_missing, 429 rate_limited
@@ -581,18 +610,18 @@ vexoulz sites is an archive admin, and get the dashboard session if they are. It
    });
    ```
 
-The worker redeems the code with vexoulz-auth's `POST /v1/token` (its client id and secret, and the
+The worker redeems the code with vex-auth's `POST /v1/token` (its client id and secret, and the
 redirect URI the code carries: `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL`), then:
 
 | Answer | When |
 |---|---|
-| `200` `{"admin": true, "authenticated": true, "csrf", "expiresAt", "passwordLogin", "twitchLogin", "user"}` + the `archive_admin` cookie | The user is in `ARCHIVE_ADMIN_TWITCH_IDS`. The same session, cookie and once-a-minute check with vexoulz-auth as `/admin/signin/callback` makes; send `csrf` as `X-CSRF-Token` on writes |
+| `200` `{"admin": true, "authenticated": true, "csrf", "expiresAt", "passwordLogin", "twitchLogin", "user"}` + the `archive_admin` cookie | The user is in `ARCHIVE_ADMIN_TWITCH_IDS`. The same session, cookie and once-a-minute check with vex-auth as `/admin/signin/callback` makes; send `csrf` as `X-CSRF-Token` on writes |
 | `200` `{"admin": false}`, no cookie | Signed in, but not an admin |
-| `400` `invalid_code` | The code is missing, unknown, expired (codes last 60 seconds), already used, or its vexoulz-auth session has ended. A wrong `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL` looks like this too |
+| `400` `invalid_code` | The code is missing, unknown, expired (codes last 60 seconds), already used, or its vex-auth session has ended. A wrong `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL` looks like this too |
 | `403` `origin_not_allowed` | The request's `Origin` is neither in `ARCHIVE_ADMIN_SITE_ORIGINS` nor `ARCHIVE_ADMIN_AUTH_REDIRECT_URL`'s. The code is not redeemed |
 | `404` `signin_off` | Twitch sign-in isn't configured |
-| `502` `misconfigured` | vexoulz-auth refused the worker's client id or secret |
-| `503` `unavailable` | vexoulz-auth couldn't be reached or is rate-limiting; try again |
+| `502` `misconfigured` | vex-auth refused the worker's client id or secret |
+| `503` `unavailable` | vex-auth couldn't be reached or is rate-limiting; try again |
 
 Refusals are RFC 9457 problem details (`application/problem+json`, with `code` as above). A request
 without an `Origin` header (not a browser) is let through; a browser always sends one with a `POST`.
@@ -637,9 +666,10 @@ curl -s "${H[@]}" "$A/admin/audit?before=&limit=50"     # who changed what
 - **VODs on Twitch** (`GET /admin/twitch/videos`): every past broadcast Twitch still keeps for the channel (7 to 60 days, depending on the channel), newest first, as `{data}`, each `{id, title, createdAt, duration, thumbnailUrl, inArchive, uploaded, archiveJob}`. `inArchive` means the VOD has a row, `uploaded` means it has YouTube parts, and `archiveJob` is `{id, state, step}` for a queued, running or paused archive job, otherwise `null`. `POST /admin/twitch/import` with `{"vodIds": [...]}` queues an archive job for each one (creating its row from Twitch when it has none), paused before `capture`; send `"paused": false` to let them run. It answers `{added: [{vodId, jobId}], skipped: [{vodId, reason}]}`: a VOD no longer on Twitch, or with an archive job already queued, running or paused, is skipped.
 - **YouTube entries** keep their stored thumbnail, and keep their duration unless you send a new one.
 - **The VOD list** (`GET /admin/vods`) has every VOD, hidden and merged ones included, newest first: `{data, next}`, each row `{id, title, createdAt, duration, duration_seconds, thumbnail_url, stream_id, hidden, merged_into}`. `q` matches the id exactly or the title (case-insensitive substring), `hidden=true|false` filters, `limit` is at most 200, and `before=<next>` pages back.
-- **VOD fields** (`PATCH /admin/vods/{id}`): any of `title`, `hidden`, `thumbnailUrl` (an http(s) URL, or `null` for the site's default), `duration` (`HH:MM:SS`; it must still hold the chapters and games rows) and `createdAt` (ISO with an offset). A merged VOD takes only `hidden`. **Hidden** takes the VOD off the public API as if it were missing (see [§6](#6-public-api-reference)); the dashboard still has it, and unhiding brings it back.
+- **VOD fields** (`PATCH /admin/vods/{id}`): any of `title`, `hidden`, `thumbnailUrl` (an http(s) URL, or `null` for the site's default), `duration` (`HH:MM:SS`; it must still hold the chapters and games rows) and `createdAt` (ISO with an offset), and `cutReason` (why the VOD was cut, up to 500 characters; `null` or blank clears it). The public API shows it as `cut_reason`, only while set; the site shows it on the page of a VOD cut in full. A merged VOD takes only `hidden`. **Hidden** takes the VOD off the public API as if it were missing (see [§6](#6-public-api-reference)); the dashboard still has it, and unhiding brings it back.
 - **Games rows** (`PUT /admin/vods/{id}/games`) replace the VOD's rows. Send them in the shape `GET` returns (`id`, `vodId` and the dates are ignored): `start_time` and `end_time` in seconds, sorted, not overlapping and inside the VOD, a `game_name`, and optionally `game_id`, `title`, `video_provider`, `video_id`, and `thumbnail_url` and `chapter_image` (http(s) URLs). Refused on a merged VOD.
 - **Censor ranges** (`PUT /admin/vods/{id}/censor` with `{"censor": [...]}`) replace what is hidden in the VOD's uploads, for what Twitch allows and YouTube doesn't (in-game nudity, say). Each range is `{start, end, video, mute, note?}` in VOD seconds, inside the VOD: `video` is `"blur"`, `"black"` or `null`, `mute` silences the audio, and a range must do one or the other. Ranges may overlap (black wins over blur). The `censor` step applies them to the whole source before `split`, so every upload made from then on carries them; a live recording's ranges are moved onto the recording, and a range it didn't record is skipped. Only the covered clips are re-encoded. Saving ranges doesn't touch what is already on YouTube: re-archive for that. Refused on merged and synthetic VODs, and merging or splitting a VOD with ranges is refused until they are removed. To set them before a new VOD's first upload, add `censor` to its manual steps (`ARCHIVE_MANUAL_STEPS` or `pauseBefore`).
+- **Censor check.** The `censor_check` step, just before `censor`, looks up the games of the chapters about to be uploaded on IGDB (Twitch's categories are IGDB games; the Twitch app's credentials work there too, results are cached a day). A game in `RESTRICTED_GAMES` is cut and not looked up, one in `CENSOR_ALLOW_GAMES` is uploaded as it is, and one whose age-rating content descriptors or themes contain one of `CENSOR_DESCRIPTORS` pauses the job before `censor`, with the games and what matched in the job payload's `censor_review`. An IGDB error pauses it the same way. Then either set censor ranges and resume, resume as it is, or `POST /admin/jobs/{id}/censor-review` with `{"decision": "upload"}` (resume) or `{"decision": "cut"}` (mark those games' chapters restricted, lock the chapters, resume). Without a Twitch app the check is skipped with a warning. A re-archive checks again: add a game to `CENSOR_ALLOW_GAMES` (or `RESTRICTED_GAMES`) to stop being asked.
 - **Deleting uploads** (`POST /admin/vods/{id}/youtube/delete` with `{"videos": [ids]}`) deletes those of the VOD's uploads from YouTube (50 quota units each) and takes them off its list; one already gone from YouTube is just taken off. A describe job per copy that still has parts rewrites their descriptions. It answers `{deleted, failed, describeJobs, vod}`; one that YouTube refused stays on the list, in `failed`.
 - **Re-archiving** (`POST /admin/vods/{id}/rearchive` with `{type, part?, path?}`) uploads the VOD again with today's settings and censor ranges: a `download` job, or `reupload` for one `part`, with `"replace": true`. The source is `path`, the local copy, or Twitch while it still has the VOD. Each new part is uploaded first, then the upload it replaces is deleted from YouTube (one that fails is logged and stays on YouTube, listed in the job payload's `not_removed`), so the VOD always has its uploads. Re-archiving the whole VOD into fewer parts also deletes the old parts left over. Refused on merged and synthetic VODs.
 - **Edits show up on the public API at once:** the worker sends a Postgres `NOTIFY`, and archive-api drops its cached responses for that VOD and for the lists that include it.
@@ -728,7 +758,8 @@ This is what the frontend uses. The output is compatible with the old Feathers A
 | `GET /v1/status` | `{live, stream, vod}`. Live: `stream` is `{id, started_at, title, game: {name, gameId, image, imageTemplate} \| null}` and `vod` is the VOD row of that stream (`null` until the worker has created it). Offline: `stream` is `null` and `vod` is the latest VOD. `vod` has the usual `/vods` fields. Live state comes from `streams.is_live`; title and category from Helix when credentials are set, else from the VOD's title and last chapter. Cached for 45 s. |
 | `GET /v1/emotes/third-party` | `{"7tv": [...], "bttv": [...], "ffz": [...], "failed": [...]}`, each item `{id, code, provider}`: global plus channel emotes for `ARCHIVE_TWITCH_ID` from the providers' APIs (a channel emote replaces a global one with the same code). Build image URLs from the CDNs: `cdn.7tv.app/emote/{id}/1x.webp`, `cdn.betterttv.net/emote/{id}/1x`, `cdn.frankerfacez.com/emote/{id}/1`. A provider that failed is named in `failed` (its list holds whatever part loaded). Cached for 6 h, or 5 min when something failed. |
 | `GET /v1/previews/:youtubeId/:k.jpg` | Sheet `k` of an upload's seek-bar previews (see [Seek-bar previews](#seek-bar-previews); the layout is in the upload's `youtube[].preview`). 404 unless a VOD the API shows lists that upload. `Cache-Control: public, max-age=31536000, immutable`. Not rate limited. The api container reads the sheets from the data dir, mounted read-only. |
-| `GET /v1/site/tags` | `{tags: [{name, label, drawn, color, shape, width, height, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize}]}`: how the site shows each VOD tag, in order (see [Site tags](#site-tags)); 404 until it was saved once (the site then uses its defaults). `Cache-Control: public, max-age=60`. |
+| `GET /v1/site/tags` | `{tags: [{name, label, drawn, color, shape, width, height, rotate, text, textColor, textSize, textX, textY, textRotate, pattern, patternColor, patternSize, page, pageLabel, homeCard}]}`: how the site shows each VOD tag, in order (see [Site tags](#site-tags)); 404 until it was saved once (the site then uses its defaults). `Cache-Control: public, max-age=60`. |
+| `GET /v1/site/options` | `{homeCards}`: the site's own options (see [Site options](#site-options)); the defaults while never saved. `Cache-Control: public, max-age=60`. |
 | `GET /v1/site/tags/:name.svg` | A tag's shape: the cleaned SVG as `image/svg+xml`, with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`. `Cache-Control: public, max-age=31536000, immutable` when `?v=` is the current hash (as in the list's `shape`), `max-age=60` otherwise. 404 when the tag has no shape. Not rate limited. |
 | `youtube[].preview` | On uploads that have seek-bar previews: `{v, interval, w, h, cols, rows, count}`; absent otherwise. |
 | `youtube[].gaps` | On `live` uploads whose recording missed part of the VOD (ad breaks, an early end): `[[at, seconds], ...]`, sorted, `at` in seconds into that upload. VOD time jumps `seconds` ahead at `at`. Absent otherwise. The upload's delay is `duration − Σ part durations − Σ gaps − Σ cuts`. See "Ad breaks in live recordings" under [Recipes](#recipes). |
@@ -769,7 +800,7 @@ If the host is an unprivileged LXC container, Docker needs `nesting=1,keyctl=1`,
 
 1. **Get the code and configure it:**
    ```bash
-   git clone https://github.com/vEXOULZ/twitch-archive.git && cd twitch-archive
+   git clone https://github.com/vexouLuna/twitch-archive.git && cd twitch-archive
    cp .env.example .env && chmod 600 .env && $EDITOR .env
    cp -r secrets.example secrets && rm secrets/README.md && $EDITOR secrets/*
    chmod 0400 secrets/* && sudo chown 1000:1000 secrets/*   # the images run as uid 1000
