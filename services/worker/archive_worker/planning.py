@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -121,6 +122,14 @@ def is_restricted(chapter: dict[str, Any], restricted_games: list[str]) -> bool:
 # stretch recorded without a gap. The VOD's own time is wall-clock time since ``vods.created_at``.
 
 TIMELINE_TOLERANCE = 1.0  # seconds of clock jitter between segments that are not a gap
+
+
+def video_target(sources: list[tuple[int, int, str]]) -> tuple[int, int, str]:
+    """What a compile's windows are all converted to: the largest resolution (by pixels) and the highest
+    frame rate among its sources (``(width, height, ffprobe rate)`` each), even sizes for H.264."""
+    w, h, _ = max(sources, key=lambda s: (s[0] * s[1], s[1]))
+    rate = max((s[2] for s in sources), key=Fraction)
+    return w + w % 2, h + h % 2, rate
 
 
 def recording_timeline(segments: list[tuple[float, float | None]]) -> list[list[float]]:

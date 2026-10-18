@@ -134,6 +134,17 @@ def test_descriptions_are_rebuilt():
     assert planning.full_description(base, 2, siblings, lines) == text
 
 
+def test_video_target_is_the_largest_size_and_fastest_rate():
+    # 720p60 and 1080p30 sources: 1080p, at 60 fps.
+    assert planning.video_target([(1280, 720, "60/1"), (1920, 1080, "30/1")]) == (1920, 1080, "60/1")
+    # Rates compare as fractions; one source alone is kept as it is.
+    assert planning.video_target([(1920, 1080, "30000/1001"), (1920, 1080, "30/1")])[2] == "30/1"
+    assert planning.video_target([(854, 480, "30000/1001")]) == (854, 480, "30000/1001")
+    # More pixels wins over a taller frame; odd sizes round up for H.264.
+    assert planning.video_target([(1080, 1920, "30/1"), (1920, 1200, "30/1")]) == (1920, 1200, "30/1")
+    assert planning.video_target([(853, 479, "25/1")]) == (854, 480, "25/1")
+
+
 def test_claims_split_by_the_windows_played():
     windows = [(100.0, 200.0), (500.0, 600.0)]
     ranges = [(0.0, 10.0), (95.0, 105.0), (300.0, 400.0), (590.0, 700.0)]

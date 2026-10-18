@@ -19,7 +19,7 @@ from archive_common.serialize import flat_segments
 from archive_common.timeutil import format_hhmmss
 from sqlalchemy import select
 
-from .. import ffmpeg, synthetic
+from .. import ffmpeg, planning, synthetic
 from ..context import JobContext, StepRefused
 
 
@@ -67,23 +67,29 @@ async def compile(ctx: JobContext) -> None:
     """Cut each clip and join them into the job's MP4 (kept if already done), and save where each clip is in
     the file (``payload.timeline``, planning.recording_timeline's shape on the synthetic VOD's time) for the
     chapters and each upload's ``gaps``. Each window is re-encoded, so it starts and ends on the exact
-    frame; its measured length is still used."""
+    frame, and converted to the sources' largest resolution and highest frame rate (``payload.video``,
+    planning.video_target) so they join; its measured length is still used."""
     out = ctx.default_mp4
     if out.exists() and ctx.payload.get("duration"):
         return
     clips = ctx.payload["clips"]
     work = ctx.work_dir / "compile"
+    if not ctx.payload.get("video"):  # saved, so a re-run part-way cuts the rest to the same size
+        found = [await ffmpeg.probe_video(Path(p)) for p in sorted({c["path"] for c in clips})]
+        ctx.payload["video"] = list(planning.video_target(found))
+        await ctx.save()
+    w, h, rate = ctx.payload["video"]
     paths, timeline, rec = [], [], 0.0
     for i, c in enumerate(clips):
         path = work / f"{i:04d}.mp4"
         if not path.exists():  # a finished cut survives a crash part-way through
-            await ffmpeg.encode(Path(c["path"]), path, c["start"], c["end"] - c["start"])
+            await ffmpeg.encode(Path(c["path"]), path, c["start"], c["end"] - c["start"], (w, h, rate))
         paths.append(path)
         length = await ffmpeg.probe_duration(path)
         timeline.append([round(rec, 3), round(float(c["at"]), 3), round(length, 3)])
         rec += length
         ctx.progress(i + 1, len(clips), "parts", f"cut {i + 1}/{len(clips)} windows")
-    ctx.log.info("joining %d windows into %s", len(paths), out)
+    ctx.log.info("joining %d windows at %dx%d %s fps into %s", len(paths), w, h, rate, out)
     await ffmpeg.concat(paths, out)
     await asyncio.to_thread(shutil.rmtree, work, True)
     ctx.payload["duration"] = await ffmpeg.probe_duration(out)
