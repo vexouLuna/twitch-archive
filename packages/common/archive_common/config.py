@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count
     youtube_check_hours: float = 24.0  # how often the uploads are checked on YouTube; 0 = only by hand
     restricted_games: list[str] = []
+    # censor_check: a game whose IGDB content descriptors or themes contain one of these pauses the
+    # job for a censor review (empty: no check); games in censor_allow_games are never looked up.
+    censor_descriptors: list[str] = ["Sexual Content", "Nudity"]
+    censor_allow_games: list[str] = []
     # Steps a job pauses before until resumed (POST /admin/jobs/{id}/resume), per
     # job kind, e.g. {"archive": ["upload"]}. A job's own pauseBefore overrides it.
     # Kinds and steps: GET /admin/kinds, or jobs.KINDS in the worker.
