@@ -57,6 +57,7 @@ ROUTE_ACTIONS: dict[str, str] = {
     "PUT /admin/site/tags": "site.tags.replace",
     "PUT /admin/site/tags/{tag}/shape": "site.tag.shape.set",
     "DELETE /admin/site/tags/{tag}/shape": "site.tag.shape.clear",
+    "PUT /admin/site/options": "site.options.update",
     "DELETE /admin/storage/{area}/{name}": "storage.delete",
     "POST /admin/jobs": "job.enqueue",
     "POST /admin/jobs/{job_id}/resume": "job.resume",

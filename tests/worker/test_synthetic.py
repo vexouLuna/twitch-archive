@@ -15,7 +15,7 @@ from archive_api.main import create_app
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
 from archive_common.db import get_engine, get_sessionmaker
-from archive_common.models import Game, Vod, VodSegment
+from archive_common.models import Game, Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
 from archive_worker.vods import splice_reason
@@ -47,6 +47,7 @@ async def _clean():
         mine = or_(Vod.id.like("test-syn-%"))
         synthetic_ids = select(Vod.id).where(mine, Vod.synthetic.is_not(None))
         await s.execute(delete(AUDIT_LOG).where(AUDIT_LOG.c.target.like("vod:test-syn-%")))
+        await s.execute(delete(Job).where(Job.vod_id.like("test-syn-%")))
         await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_(synthetic_ids)))
         await s.execute(delete(Vod).where(mine, Vod.synthetic.is_not(None)))
         await s.execute(delete(Game).where(Game.vod_id.in_((A, B))))
@@ -433,3 +434,142 @@ def test_live_span_without_a_start():
     assert P in str(clause.compile(compile_kwargs={"literal_binds": True})) and AB not in str(
         clause.compile(compile_kwargs={"literal_binds": True})
     )
+
+
+async def test_auto_playthrough(admin):
+    bad = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": "test-syn-none"}})
+    assert bad.status_code == 422
+    r = await admin.post(
+        "/api/v2/synthetic", headers=KEY, json={"id": P, "tags": ["compilation"], "auto": {"game_id": GAME}}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["auto"] == {"game_id": GAME}
+    assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
+        (A, 3600, 7200, 0),
+        (B, 0, 3600, 3600),
+    ]
+    assert P not in await synthetic.refresh_auto()  # nothing changed
+
+    # B plays less of the game now: the next round follows, audited as the system.
+    async with get_sessionmaker()() as s:
+        await s.execute(
+            update(Vod)
+            .where(Vod.id == B)
+            .values(chapters=[_ch(0, 1800, "Test Game", GAME), _ch(1800, 1800, "Other")], updated_at=func.now())
+        )
+        await s.commit()
+    assert P in await synthetic.refresh_auto()
+    view = (await admin.get(f"/api/v2/synthetic/{P}", headers=KEY)).json()
+    assert [(x["vod_id"], x["end"]) for x in view["segments"]] == [(A, 7200), (B, 1800)]
+    assert view["duration"] == "01:30:00"
+    async with get_sessionmaker()() as s:
+        [row] = (
+            await s.execute(
+                select(AUDIT_LOG).where(AUDIT_LOG.c.target == f"vod:{P}", AUDIT_LOG.c.action == "synthetic.update")
+            )
+        ).all()
+    assert (row.actor_kind, row.detail) == ("system", {"auto": {"gameId": GAME}})
+
+    # Other changes keep it; segments by hand stop it; it can follow again, or stop outright.
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"title": "renamed"})
+    assert r.json()["auto"] == {"game_id": GAME}
+    r = await admin.put(
+        f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
+    )
+    assert r.status_code == 200 and r.json()["auto"] is None
+    assert P not in await synthetic.refresh_auto()
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": {"game_id": GAME}})
+    assert r.json()["auto"] == {"game_id": GAME} and len(r.json()["segments"]) == 2
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": None})
+    assert r.json()["auto"] is None and len(r.json()["segments"]) == 2
+
+
+async def test_compile_sources(admin, make_ctx):
+    from archive_worker.context import StepRefused
+    from archive_worker.steps import compile as comp
+
+    async def sources(vod_id):
+        ctx = make_ctx("compile", vod_id, {"type": "compiled"})
+        await comp.compile_sources(ctx)
+        return ctx.payload["clips"]
+
+    with pytest.raises(StepRefused, match="not a synthetic"):
+        await sources(A)
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201, r.text
+    with pytest.raises(StepRefused, match=f"no kept MP4 of source.s. {A}, {B}"):
+        await sources(P)
+    vod_dir = make_ctx().settings.vod_dir
+    for v in (A, B):
+        (vod_dir / v).mkdir(parents=True)
+        (vod_dir / v / f"{v}.mp4").touch()
+    assert [(c["vod_id"], c["start"], c["end"]) for c in await sources(P)] == [(A, 3600, 7200), (B, 0, 3600)]
+
+    # A source's DMCA claims: listed for Manage's warning, split by whether a window it plays has them, and
+    # the compile needs them accepted, any of them.
+    def claim(start, length):
+        return {
+            "type": "CLAIM_TYPE_AUDIO",
+            "claimPolicy": {"primaryPolicy": {"policyType": "POLICY_TYPE_BLOCK"}},
+            "matchDetails": {"longestMatchStartTimeSeconds": start, "longestMatchDurationSeconds": length},
+        }
+
+    async def add_job(vod_id, kind, payload):
+        async with get_sessionmaker()() as s:
+            s.add(Job(kind=kind, vod_id=vod_id, state="done", payload=payload))
+            await s.commit()
+
+    async def dmca():
+        r = await admin.get(f"/api/v2/synthetic/{P}/dmca", headers=KEY)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    # B plays 0-3600; its part 2 starts at 3600, so a claim 10-30 s into it is outside.
+    parts = [{"number": 2, "start": 3600, "end": 7200, "path": "x"}]
+    await add_job(B, "part_dmca", {"claims": [claim(10, 20)], "start_part": 2, "parts": parts})
+    b_other = {"vod_id": B, "part": 2, "mute": [[10, 30]], "blackout": [], "placed": True}
+    assert await dmca() == {"overlapping": [], "other": [b_other]}
+    # A plays 3600-7200: of its whole-VOD claims, 4000-4020 is in it and 100-120 isn't.
+    await add_job(A, "dmca", {"claims": [claim(4000, 20), claim(100, 20)]})
+    assert await dmca() == {
+        "overlapping": [{"vod_id": A, "part": None, "mute": [[4000, 4020]], "blackout": [], "placed": True}],
+        "other": [b_other, {"vod_id": A, "part": None, "mute": [[100, 120]], "blackout": [], "placed": True}],
+    }
+    with pytest.raises(StepRefused, match=f"{A}, {B} have DMCA claims"):
+        await sources(P)
+    ctx = make_ctx("compile", P, {"type": "compiled", "accept_dmca": True})
+    await comp.compile_sources(ctx)
+    assert len(ctx.payload["clips"]) == 2
+    async with get_sessionmaker()() as s:
+        await s.execute(delete(Job).where(Job.vod_id.in_((A, B))))
+        await s.commit()
+
+    # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
+    # becomes its uploads' ``gaps``). A censored source's kept MP4 isn't what its uploads show.
+    assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
+    first, second = await sources(AB)
+    assert second["at"] > first["at"] + first["end"] - first["start"] + 1
+    async with get_sessionmaker()() as s:
+        await s.execute(update(Vod).where(Vod.id == B).values(censor=[{"start": 0, "end": 5, "mode": "blur"}]))
+        await s.commit()
+    with pytest.raises(StepRefused, match=f"{B} have censor ranges"):
+        await sources(P)
+    assert (await admin.get("/api/v2/synthetic/test-syn-none/dmca", headers=KEY)).status_code == 404
+
+
+async def test_compiled_uploads_go_outdated_when_the_segments_change(admin, make_ctx):
+    from archive_worker.steps import compile as comp
+
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201 and r.json()["compiled"] is None  # nothing compiled yet
+    async with get_sessionmaker()() as s:
+        await s.execute(update(Vod).where(Vod.id == P).values(youtube=[{"id": "yt", "type": "compiled", "part": 1}]))
+        await s.commit()
+        made = (await s.execute(select(Vod.synthetic).where(Vod.id == P))).scalar_one()["changedAt"]
+    ctx = make_ctx("compile", P, {"type": "compiled", "uploaded": {"1": {}}, "compiled_from": made})
+    await comp.compiled(ctx)
+    assert (await admin.get(f"/api/v2/synthetic/{P}", headers=KEY)).json()["compiled"] == {"outdated": False}
+    r = await admin.put(
+        f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
+    )
+    assert r.json()["compiled"] == {"outdated": True}

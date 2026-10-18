@@ -8,12 +8,18 @@ synthetic VODs it is in (``superseded_by``, ``appears_in``).
 
 Besides ``supersedes``, the ``synthetic`` column keeps ``madeAt`` (when it was created) and
 ``changedAt`` (when what it plays last changed: its segments, or its length as a source grew), so
-the site can tell a viewer who finished it that there is more now.
+the site can tell a viewer who finished it that there is more now. ``compiledFrom`` is the
+``changedAt`` its compiled uploads were made from (steps/compile): when they differ, those are outdated.
 
 ``recompose`` writes a synthetic VOD's cached columns from its sources again. The monitor runs
 ``recompose_stale`` every round, which picks the ones with a source updated since: that is how a
 backfill or an edit of a source reaches the synthetic VODs made of it. A source may be a synthetic
 VOD itself (``compose.check_nesting``); one that others are made of cannot be deleted.
+
+A playthrough can keep itself up to date: ``synthetic.auto = {"gameId": ...}`` makes its segments
+every window of that game (``game_windows``). ``refresh_auto`` (also every monitor round) writes them
+again when they differ, so a new stream of the game, or a source's chapters edited, reaches it.
+Sending segments by hand ends that (the API clears ``auto``).
 """
 
 from __future__ import annotations
@@ -22,22 +28,26 @@ import datetime as dt
 import logging
 from typing import Any
 
-from archive_common.db import VOD_CHANGED, get_sessionmaker
-from archive_common.models import Vod, VodSegment
+from archive_common import audit
+from archive_common.db import VOD_CHANGED, get_engine, get_sessionmaker
+from archive_common.models import Job, Vod, VodSegment
 from archive_common.segments import EPS, MAX_DEPTH, Segment, resolve
-from archive_common.serialize import js_iso, nested_segments
+from archive_common.serialize import flat_segments, js_iso, nested_segments, not_hidden, not_merged_away, real
 from archive_common.timeutil import hhmmss_to_seconds
 from sqlalchemy import ARRAY, Text, cast, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from vex_platform.actor import SYSTEM
+from vex_platform.audit import AuditEntry
 
-from . import compose
+from . import compose, planning
 from .compose import ComposeError, Source
 from .site_tags import vod_tags
 from .vod_edits import tags as check_tags
 
 log = logging.getLogger(__name__)
 STALE_BATCH = 50
+KEEP = "keep"  # ``change(auto=KEEP)``: leave ``auto`` as it is
 
 
 class SyntheticError(Exception):
@@ -164,7 +174,13 @@ def synthetic_json(vod: Vod, segments: list[Segment]) -> dict[str, Any]:
         "createdAt": js_iso(vod.created_at),
         "madeAt": meta.get("madeAt"),
         "changedAt": meta.get("changedAt"),
+        "auto": meta.get("auto"),
         "segments": [seg.json() for seg in segments],
+        "compiled": (
+            {"outdated": meta.get("compiledFrom") != meta.get("changedAt")}
+            if any(e.get("type") == "compiled" for e in vod.youtube or [])
+            else None
+        ),
     }
 
 
@@ -184,11 +200,20 @@ async def _checked(s: AsyncSession, vod_id: str, segments: list[Segment], supers
 
 
 async def create(
-    vod_id: str, segments: list[Segment], *, title: str | None = None, supersedes: bool = False, tags: Any = ()
+    vod_id: str,
+    segments: list[Segment],
+    *,
+    title: str | None = None,
+    supersedes: bool = False,
+    tags: Any = (),
+    auto: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A new synthetic VOD; ``title`` defaults to the first source's."""
+    """A new synthetic VOD; ``title`` defaults to the first source's. With ``auto``, its segments are
+    that game's windows (``segments`` is not used)."""
     _composed(compose.check_id, vod_id)  # type: ignore[no-untyped-call]
     async with get_sessionmaker()() as s, s.begin():
+        if auto is not None:
+            segments = await _auto_segments(s, auto)
         tags = _composed(check_tags, list(tags), await vod_tags(s))  # type: ignore[no-untyped-call]
         if await s.get(Vod, vod_id) is not None:
             raise SyntheticError(409, f"There is already a VOD {vod_id}", vodId=vod_id)
@@ -199,7 +224,12 @@ async def create(
             title=(title or "").strip() or first.title,
             platform="twitch",
             chapters_locked=True,
-            synthetic={"supersedes": supersedes, "madeAt": (now := _now()), "changedAt": now},
+            synthetic={
+                "supersedes": supersedes,
+                "madeAt": (now := _now()),
+                "changedAt": now,
+                **({"auto": auto} if auto is not None else {}),
+            },
             tags=tags,
             hidden=False,
             youtube=[],
@@ -220,14 +250,18 @@ async def change(
     title: str | None = None,
     supersedes: bool | None = None,
     tags: Any = None,
+    auto: dict[str, Any] | str | None = KEEP,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Change what is given; returns the synthetic VOD (as ``synthetic_json``) before and after."""
+    """Change what is given; returns the synthetic VOD (as ``synthetic_json``) before and after.
+    ``auto``: a game to follow (its windows replace the segments), None to stop, ``KEEP`` as it is."""
     async with get_sessionmaker()() as s, s.begin():
         vod = await _locked(s, vod_id)
         if tags is not None:
             tags = _composed(check_tags, tags, await vod_tags(s, vod.tags))  # type: ignore[no-untyped-call]
         old = await _segments(s, vod_id)
         before = synthetic_json(vod, old)
+        if isinstance(auto, dict):
+            segments = await _auto_segments(s, auto)
         new = old if segments is None else segments
         supersedes = before["supersedes"] if supersedes is None else supersedes
         sources = await _checked(s, vod_id, new, supersedes)
@@ -237,7 +271,12 @@ async def change(
             vod.title = title.strip()
         if tags is not None:
             vod.tags = tags
-        vod.synthetic = {**(vod.synthetic or {}), "supersedes": supersedes}
+        meta = {**(vod.synthetic or {}), "supersedes": supersedes}
+        if auto != KEEP:
+            meta.pop("auto", None)
+            if auto is not None:
+                meta["auto"] = auto
+        vod.synthetic = meta
         _apply(vod, compose.derive(new, sources))
         if vod.duration != before["duration"] or [x.json() for x in new] != before["segments"]:
             _changed(vod)
@@ -283,6 +322,47 @@ async def get(vod_id: str) -> dict[str, Any]:
         return synthetic_json(vod, await _segments(s, vod_id))
 
 
+def _part_offset(kind: str, payload: dict[str, Any]) -> float | None:
+    """Where the claimed file starts on its VOD's time: 0 for the whole VOD, the cut part's start for one
+    part. None when that isn't known: a live recording's file runs on the recording's time."""
+    if payload.get("type") == "live":
+        return None
+    if kind == "dmca":
+        return 0.0
+    part = next((p for p in payload.get("parts") or [] if p.get("number") == payload.get("start_part")), None)
+    return float(part["start"]) if part and part.get("start") is not None else None
+
+
+async def dmca_claims(vod_id: str) -> dict[str, list[dict[str, Any]]]:
+    """The DMCA claims on the VODs a synthetic VOD plays (done ``dmca`` / ``part_dmca`` jobs), oldest first,
+    as ``{overlapping, other}``: the ranges that overlap a window it plays (what a compile copies), and the
+    rest of those sources' claims. Each is ``{vod_id, part, mute, blackout, placed}``: ``part`` None for the
+    whole VOD, ranges in seconds of that VOD or part, as YouTube claimed them; ``placed`` false when the
+    file couldn't be put on the VOD's time (a live copy), whose ranges all count as overlapping."""
+    async with get_engine().connect() as conn:
+        segs = [x for x in (await flat_segments(conn, [vod_id])).get(vod_id, []) if x.length > 0]
+    windows: dict[str, list[tuple[float, float]]] = {}
+    for x in segs:
+        windows.setdefault(x.source_id, []).append((x.start, x.start + x.length))
+    async with get_sessionmaker()() as s:
+        rows = await s.execute(
+            select(Job.vod_id, Job.kind, Job.payload)
+            .where(Job.kind.in_(("dmca", "part_dmca")), Job.state == "done", Job.vod_id.in_(sorted(windows)))
+            .order_by(Job.created_at)
+        )
+    out: dict[str, list[dict[str, Any]]] = {"overlapping": [], "other": []}
+    for source, kind, payload in rows:
+        plan = planning.plan_dmca(payload.get("claims") or [])
+        offset = _part_offset(kind, payload)
+        mute = planning.split_by_windows(plan.mute, offset, windows[source])
+        black = planning.split_by_windows(plan.blackout, offset, windows[source])
+        base = {"vod_id": source, "part": payload.get("start_part") if kind == "part_dmca" else None}
+        for i, key in enumerate(("overlapping", "other")):
+            if mute[i] or black[i]:
+                out[key].append(base | {"mute": mute[i], "blackout": black[i], "placed": offset is not None})
+    return out
+
+
 async def containing(source_id: str) -> list[dict[str, Any]]:
     """The synthetic VODs made with ``source_id``, each with the segments of it they use."""
     async with get_sessionmaker()() as s:
@@ -311,6 +391,61 @@ async def containing(source_id: str) -> list[dict[str, Any]]:
 
 
 # ── Freshness ─────────────────────────────────────────────────────────────
+
+
+async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, float]]:
+    """Every window of a real, shown VOD playing ``game_id`` (``compose.game_windows``), oldest first."""
+    vods = (
+        await s.execute(
+            select(Vod)
+            .where(real(), not_merged_away(), not_hidden(), Vod.chapters.contains([{"gameId": game_id}]))
+            .order_by(Vod.created_at, Vod.id)
+        )
+    ).scalars()
+    return [(vod, a, b) for vod in vods for a, b in compose.game_windows(vod.chapters, game_id)]
+
+
+def window_segment(vod: Vod, start: float, end: float) -> dict[str, Any]:
+    """A window as a request segment (placed right after the one before it)."""
+    return {"vodId": vod.id, "start": start, "end": end, "label": f"{vod.created_at:%d %b %Y}"}
+
+
+async def _auto_segments(s: AsyncSession, auto: dict[str, Any]) -> list[Segment]:
+    game_id = auto.get("gameId")
+    if set(auto) != {"gameId"} or not isinstance(game_id, str) or not game_id:
+        raise SyntheticError(422, 'auto must be {"gameId": "<game id>"}')
+    windows = await game_windows(s, game_id)
+    if not windows:
+        raise SyntheticError(422, f"no VOD plays game {game_id}")
+    return _composed(compose.parse, [window_segment(*w) for w in windows])  # type: ignore[no-any-return, no-untyped-call]
+
+
+def _plays(segments: list[Segment]) -> list[tuple[str, float, float | None, float]]:
+    return [(x.source_id, x.start, x.end, x.at) for x in segments]
+
+
+async def refresh_auto() -> list[str]:
+    """Write each auto playthrough's segments from its game's windows again where they differ; each
+    change is audited as ``synthetic.update`` by the system. Returns the ones changed."""
+    async with get_sessionmaker()() as s:
+        rows = (await s.execute(select(Vod.id, Vod.synthetic["auto"]).where(Vod.synthetic.has_key("auto")))).all()
+    done = []
+    for vod_id, auto in rows:
+        try:
+            async with get_sessionmaker()() as s:
+                fresh = await _auto_segments(s, auto)
+                if _plays(fresh) == _plays(await _segments(s, vod_id)):
+                    continue
+            before, after = await change(vod_id, segments=fresh)
+        except SyntheticError as exc:
+            log.warning("auto playthrough %s not refreshed: %s", vod_id, exc.msg)
+            continue
+        await audit.write(
+            AuditEntry("synthetic.update", SYSTEM, f"vod:{vod_id}", before=before, after=after, detail={"auto": auto})
+        )
+        log.info("refreshed auto playthrough %s", vod_id)
+        done.append(vod_id)
+    return done
 
 
 async def recompose(*vod_ids: str) -> list[str]:
