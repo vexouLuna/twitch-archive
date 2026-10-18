@@ -72,7 +72,9 @@ class _Source:
 
 
 REPLAY = _Source("replay", LOGS, _lt.c["_id"], _lt.c.createdAt)  # type: ignore[arg-type]
-BOT = _Source("bot", BOT_LOGS, _bt.c.seq, _bt.c.at, (_bt.c.kind.in_(("message", "notice")),))  # type: ignore[arg-type]
+# A redemption notice folded into its message (`merged_into`) is shown once, as that message.
+_BOT_SHOWN = (_bt.c.kind.in_(("message", "notice")), ~_bt.c.data.has_key("merged_into"))
+BOT = _Source("bot", BOT_LOGS, _bt.c.seq, _bt.c.at, _BOT_SHOWN)  # type: ignore[arg-type]
 SOURCES = {s.name: s for s in (REPLAY, BOT)}
 
 
