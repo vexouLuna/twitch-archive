@@ -17,10 +17,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRETS_DIR = Path(os.environ.get("ARCHIVE_SECRETS_DIR", "/run/secrets"))
+
+
+TITLE_FIELDS = ("channel", "label", "date", "title")  # what a title template (youtube_title*) may use
+
+
+def check_title(template: str) -> None:
+    """ValueError unless ``template`` formats with TITLE_FIELDS only."""
+    try:
+        template.format(**dict.fromkeys(TITLE_FIELDS, ""))
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(f"a title can use only {{{'}, {'.join(TITLE_FIELDS)}}} ({exc})") from None
 
 
 class Settings(BaseSettings):
@@ -78,11 +89,19 @@ class Settings(BaseSettings):
     force_upload_manual: bool = False
     youtube_upload: bool = True
     youtube_public: bool = False
+    compile_youtube_upload: bool = False  # the compile job may upload to YouTube; off: it only makes the file
+    compile_youtube_public: bool = False  # compiled uploads public instead of unlisted (youtube_public doesn't apply)
     youtube_description: str = "VOD"
+    youtube_title: str = "{channel} Twitch {label} - {date}"  # planning.TITLE_FIELDS; " PART n" is added
+    youtube_title_compiled: str = "{title}"  # a compiled synthetic VOD's uploads (its own title)
     youtube_keepalive_hours: float = 24.0  # periodic token refresh; see README "YouTube OAuth"
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count
     youtube_check_hours: float = 24.0  # how often the uploads are checked on YouTube; 0 = only by hand
     restricted_games: list[str] = []
+    # censor_check: a game whose IGDB content descriptors or themes contain one of these pauses the
+    # job for a censor review (empty: no check); games in censor_allow_games are never looked up.
+    censor_descriptors: list[str] = ["Sexual Content", "Nudity"]
+    censor_allow_games: list[str] = []
     # Steps a job pauses before until resumed (POST /admin/jobs/{id}/resume), per
     # job kind, e.g. {"archive": ["upload"]}. A job's own pauseBefore overrides it.
     # Kinds and steps: GET /admin/kinds, or jobs.KINDS in the worker.
@@ -90,6 +109,7 @@ class Settings(BaseSettings):
     split_duration: int = 10800
     keep_hls: bool = False
     keep_mp4: bool = False
+    keep_files_days: float = 0  # days a pipeline's files stay before a scheduled cleanup job removes them
     dry_run: bool = False
     runner_concurrency: int = 3  # jobs run at once
     max_attempts: int = 3  # tries of a failing step before its job fails
@@ -131,16 +151,16 @@ class Settings(BaseSettings):
         "192.168.0.0/16",  # conventions:allow-infra
         "fc00::/7",
     ]
-    # Twitch sign-in through vexoulz-auth: on when admin_auth_url, the client secret, the redirect URL
+    # Twitch sign-in through vex-auth: on when admin_auth_url, the client secret, the redirect URL
     # and at least one Twitch user id are set. Only those users get in.
     admin_twitch_ids: list[str] = []
-    admin_auth_url: str = ""  # vexoulz-auth as browsers reach it
+    admin_auth_url: str = ""  # vex-auth as browsers reach it
     admin_auth_internal_url: str = ""  # as this worker reaches it; empty = admin_auth_url
     admin_auth_client_id: str = "vods-admin"
     admin_auth_client_secret: SecretStr = SecretStr("")
-    # This worker's /admin/signin/callback as browsers reach it; registered with vexoulz-auth.
+    # This worker's /admin/signin/callback as browsers reach it; registered with vex-auth.
     admin_auth_redirect_url: str = ""
-    # The redirect URI a code from vexoulz-auth's POST /v1/codes carries: the client's first registered
+    # The redirect URI a code from vex-auth's POST /v1/codes carries: the client's first registered
     # one. Empty = admin_auth_redirect_url.
     admin_auth_code_redirect_url: str = ""
     # Site origins (e.g. https://vods.example.net) that may call /admin/session from the browser, with
@@ -154,6 +174,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
     google_redirect_url: str = "http://localhost:3031/admin/refreshtoken"
+
+    @field_validator("youtube_title", "youtube_title_compiled")
+    @classmethod
+    def _title(cls, v: str) -> str:
+        check_title(v)  # a bad env template fails at startup, not at the first upload
+        return v
 
     @property
     def vod_dir(self) -> Path:

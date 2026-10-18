@@ -87,6 +87,16 @@ async def probe_duration(path: Path) -> float:
     return float(json.loads(out)["format"]["duration"])
 
 
+async def probe_video(path: Path) -> tuple[int, int, str]:
+    """The first video stream's width, height and frame rate (ffprobe's fraction, e.g. ``30000/1001``)."""
+    fields = "stream=width,height,avg_frame_rate,r_frame_rate"
+    args = ["-v", "error", "-select_streams", "v:0", "-show_entries", fields, "-of", "json", str(path)]
+    out = await _run([FFPROBE, *args])
+    s = json.loads(out)["streams"][0]
+    rate = s.get("avg_frame_rate", "0/0")
+    return int(s["width"]), int(s["height"]), s["r_frame_rate"] if rate.startswith("0/") else rate
+
+
 @_one_at_a_time("remux")
 async def hls_to_mp4(playlist: Path, out: Path, *, fmp4: bool = False) -> Path:
     extra = ["-avoid_negative_ts", "make_zero", "-fflags", "+genpts"] if fmp4 else []
@@ -287,3 +297,60 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
     finally:
         for p in pieces:
             p.unlink(missing_ok=True)
+
+
+@_one_at_a_time("encode")
+async def encode(
+    src: Path, out: Path, start: float, duration: float, video: tuple[int, int, str] | None = None
+) -> Path:
+    """Re-encode ``duration`` seconds from ``start``, cut on the exact frame (stream copy cuts at keyframes).
+    H.264 + AAC, the first video and audio stream only, so clips of the same settings concat as copies.
+    ``video`` (width, height, frame rate) scales to fit inside that size, pads the rest black (the aspect
+    ratio is kept) and converts the frame rate, so windows of different sources join cleanly."""
+    vf = []
+    if video:
+        w, h, rate = video
+        vf = [
+            "-vf",
+            f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate}",
+        ]
+    return await _ffmpeg_to(
+        out,
+        [
+            "-ss",
+            f"{start:.3f}",
+            "-i",
+            str(src),
+            "-t",
+            f"{duration:.3f}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            *vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+        ],
+    )
+
+
+@_one_at_a_time("concat")
+async def concat(parts: list[Path], out: Path) -> Path:
+    """Join stream-copied clips of the same encoding end to end (the concat demuxer), index in front."""
+    listing = out.with_name(out.name + ".txt")
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+    try:
+        return await _ffmpeg_to(
+            out,
+            ["-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0", "-c", "copy", "-movflags", "+faststart"],
+        )
+    finally:
+        listing.unlink(missing_ok=True)

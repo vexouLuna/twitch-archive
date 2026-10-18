@@ -1,8 +1,10 @@
 """How each VOD tag shows on the site (vods.vexoul.net's /manage/tags), as both services read it.
 
 The worker's admin routes write it (archive_worker/site_tags.py), archive-api serves it at
-``/v1/site/tags``. A tag is ``{name, label, drawn, color, shape, width, height}``, then the text drawn
-on it (``TEXT_FIELDS``) and its pattern (``PATTERN_FIELDS``); ``shape`` is not stored with the list
+``/v1/site/tags``. A tag is ``{name, label, drawn, color, shape, width, height, rotate}``, then the text drawn
+on it (``TEXT_FIELDS``), its pattern (``PATTERN_FIELDS``) and its type (``TYPE_FIELDS``: ``page``, the
+slug of its own menu entry and page or null, ``pageLabel``, that page's title, and ``homeCard``, whether it
+can feed a "latest" homepage card); ``shape`` is not stored with the list
 but made from ``site_tag_shapes``: the path of the tag's SVG relative to the public API, versioned by
 its content's hash. A list saved before a field existed reads it as null.
 """
@@ -21,7 +23,9 @@ MAX_TAGS = 32
 SHAPE_MAX_BYTES = 64 * 1024
 TEXT_FIELDS = ("text", "textColor", "textSize", "textX", "textY", "textRotate")  # all null without text
 PATTERN_FIELDS = ("pattern", "patternColor", "patternSize")  # all null without a pattern
-FIELDS = ("name", "label", "drawn", "color", "width", "height", *TEXT_FIELDS, *PATTERN_FIELDS)  # stored, in this order
+TYPE_FIELDS = ("page", "pageLabel", "homeCard")  # page/pageLabel both null without a page
+# stored, in this order
+FIELDS = ("name", "label", "drawn", "color", "width", "height", "rotate", *TEXT_FIELDS, *PATTERN_FIELDS, *TYPE_FIELDS)
 
 
 def shape_path(name: str, digest: str) -> str:

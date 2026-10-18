@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from archive_common import http
+from archive_common import site_options as site_options_common
 from archive_common import site_tags as site_tags_common
 from archive_common.audit import AUDIT_LOG, actor_of, legacy_actor, route_entry
 from archive_common.audit import write as write_audit
@@ -45,6 +46,7 @@ from . import (
     api_v2,
     api_v2_routes,
     jobs,
+    site_options,
     site_tags,
     splices,
     svg_clean,
@@ -75,7 +77,7 @@ from .admin_signin import (
     AuthClient,
     PendingStates,
     SignInError,
-    VexoulzAuth,
+    VexAuth,
     safe_next,
     with_admin,
 )
@@ -83,6 +85,7 @@ from .context import Deps
 from .events import iso_utc
 from .job_rows import ALL_JOBS
 from .runtime_settings import RuntimeSettings
+from .steps import content_check
 from .storage import Storage, StorageError
 from .vods import drop_youtube_entries, notify_rows_moved, splice_reason, upsert_vod
 
@@ -228,7 +231,7 @@ def create_admin_app(
     sessions: SessionStore | None = None,
     runtime: RuntimeSettings | None = None,
 ) -> FastAPI:
-    """``signin``: the vexoulz-auth client; by default built from the settings (None when not configured).
+    """``signin``: the vex-auth client; by default built from the settings (None when not configured).
     ``sessions``: where dashboard sessions are kept; the worker passes the database's, tests leave memory.
     ``runtime``: the dashboard's setting overrides, already loaded; by default a fresh one over ``deps.settings``."""
     settings = deps.settings
@@ -273,7 +276,7 @@ def create_admin_app(
     login_limiter = LoginLimiter()
     trusted_proxies = parse_networks(settings.admin_trusted_proxies)
     password_networks = parse_password_networks(settings.admin_password_networks)
-    signin = signin or VexoulzAuth.from_settings(settings)
+    signin = signin or VexAuth.from_settings(settings)
     twitch_ids = {str(i) for i in settings.admin_twitch_ids}
     pending = PendingStates()
     site_origins = {o.strip().rstrip("/").lower() for o in settings.admin_site_origins if o.strip()}
@@ -292,8 +295,8 @@ def create_admin_app(
     started_at = dt.datetime.now(dt.UTC)
 
     async def live_session(token: str | None) -> Session | None:
-        """The cookie's session, unless it has expired or its vexoulz-auth session was signed out.
-        If vexoulz-auth can't be reached, the session stands and is checked again next time."""
+        """The cookie's session, unless it has expired or its vex-auth session was signed out.
+        If vex-auth can't be reached, the session stands and is checked again next time."""
         session = await passwords.session(token)
         if session is None or session.sid is None or signin is None:
             return session
@@ -467,7 +470,7 @@ def create_admin_app(
         return response
 
     async def code_login(request: Request, code: Any) -> Response:
-        """``POST /admin/session {code}``: a Twitch sign-in from a code the site minted with vexoulz-auth's
+        """``POST /admin/session {code}``: a Twitch sign-in from a code the site minted with vex-auth's
         ``POST /v1/codes``, without a redirect. An admin gets the dashboard session the callback would
         make; anyone else ``{"admin": false}`` and no cookie. Refusals are problem details."""
         origin = request.headers.get("origin")
@@ -485,8 +488,8 @@ def create_admin_app(
             if exc.reason == "expired":
                 return refused(400, "invalid_code", "The code is unknown, expired or already used")
             if exc.reason == "misconfigured":
-                return refused(502, "misconfigured", "vexoulz-auth refused this worker's client credentials")
-            return refused(503, "unavailable", "vexoulz-auth could not be reached; try again")
+                return refused(502, "misconfigured", "vex-auth refused this worker's client credentials")
+            return refused(503, "unavailable", "vex-auth could not be reached; try again")
         user_id = str(signed_in.user.get("id", ""))
         if user_id not in twitch_ids:
             # Every signed-in viewer's check: not worth a warning.
@@ -502,7 +505,7 @@ def create_admin_app(
         response.set_cookie(SESSION_COOKIE, session.token, max_age=int(passwords.ttl_s), **cookie)
         return response
 
-    # ── Twitch sign-in (through vexoulz-auth) ─────────────────────────────
+    # ── Twitch sign-in (through vex-auth) ─────────────────────────────
     # The callback is reached through a redirect from another site, which a SameSite=Strict
     # cookie would not be sent on, so the state cookie is Lax. The session cookie stays Strict:
     # it is set here and only read by the dashboard's own requests.
@@ -850,6 +853,25 @@ def create_admin_app(
         request.state.audit_detail, view = await site_tags_change(site_tags.set_shape(tag, None))
         return view
 
+    # ── Site options (the homepage's cards; archive-api serves them) ──
+
+    @app.get("/admin/site/options", dependencies=auth)
+    async def get_site_options() -> dict[str, Any]:
+        """``{homeCards, playDefault, updatedAt, updatedBy}``; an option never saved reads as its default."""
+        async with get_sessionmaker()() as s:
+            return site_options.view(await site_options_common.load(s))
+
+    @app.put("/admin/site/options", dependencies=auth)
+    async def put_site_options(request: Request, body: Any = Body(...)) -> dict[str, Any]:
+        """Any of the options; the others keep their value. All or nothing."""
+        try:
+            before, after, view = await site_options.save(body, changed_by(request))
+        except site_options.SiteOptionError as exc:
+            raise AdminError(400, exc.msg) from None
+        request.state.audit_target = "site:options"
+        request.state.audit_detail = {"before": before, "after": after}
+        return view
+
     # ── Storage ───────────────────────────────────────────────────────────
 
     @app.get("/admin/storage", dependencies=auth)
@@ -1062,6 +1084,7 @@ def create_admin_app(
             "chaptersLocked": locked,
             "botChat": bot_chat,
             "censor": censor,
+            "cut_reason": vod.get("cut_reason"),  # the public JSON leaves it out while NULL
             "jobs": recent,
             "splices": await splices.active_splices(vod_id),
         }
@@ -1093,11 +1116,12 @@ def create_admin_app(
             "hidden": vod.hidden,
             "merged_into": vod.merged_into,
             "tags": list(vod.tags or []),
+            "cut_reason": vod.cut_reason,
         }
 
     def fields_json(vod: Vod, keys) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         row = vod_row_json(vod)
-        return {k: row[{"thumbnailUrl": "thumbnail_url"}.get(k, k)] for k in keys}
+        return {k: row[{"thumbnailUrl": "thumbnail_url", "cutReason": "cut_reason"}.get(k, k)] for k in keys}
 
     @app.get("/admin/vods", dependencies=auth)
     async def list_vods(
@@ -1131,8 +1155,8 @@ def create_admin_app(
     @app.patch("/admin/vods/{vod_id}", dependencies=auth)
     async def patch_vod(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Any of ``title``, ``hidden``, ``thumbnailUrl`` (null: the default), ``duration`` (HH:MM:SS),
-        ``createdAt`` (ISO) and ``tags`` (the site's, site_tags.vod_tags). A merged VOD takes only ``hidden``
-        and ``tags``. Audited with the fields before and after."""
+        ``createdAt`` (ISO), ``tags`` (the site's, site_tags.vod_tags) and ``cutReason`` (text, null: none).
+        A merged VOD takes only ``hidden`` and ``tags``. Audited with the fields before and after."""
         vod = await require_vod(vod_id)
         values = edited(vod_edits.vod_fields, body, await known_tags(vod) if "tags" in body else ())
         if set(body) - vod_edits.MERGED_EDITABLE:
@@ -1227,6 +1251,29 @@ def create_admin_app(
         await save_vod(vod.id, censor=ranges)
         request.state.audit_detail = {"before": before, "after": ranges}
         return await admin_vod(vod.id)
+
+    @app.post("/admin/jobs/{job_id}/censor-review", dependencies=auth)
+    async def censor_review(job_id: int, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Answer a job the ``censor_check`` step paused: ``{"decision": "upload"}`` resumes it (with whatever
+        censor ranges are set by now), ``"cut"`` first marks the flagged games' chapters restricted (and locks
+        the chapters) so ``split`` leaves them out of the uploads."""
+        decision = body.get("decision")
+        if decision not in ("upload", "cut"):
+            raise AdminError(400, 'decision must be "upload" or "cut"')
+        job = await jobs.get(job_id)
+        review = (job.payload or {}).get("censor_review") or {}
+        if job.state != "paused" or not review.get("games"):
+            raise AdminError(409, f"Job {job_id} is not paused for a censor review")
+        if decision == "cut":
+            ids = {str(g["gameId"]) for g in review["games"] if g.get("gameId")}
+            if not ids:
+                raise AdminError(409, "IGDB could not be checked, so there are no games to cut; set censor ranges")
+            vod = await require_vod(str(job.vod_id))
+            chapters = content_check.cut_games(vod.chapters, ids)
+            await save_vod(vod.id, chapters=chapters, chapters_locked=True)
+            request.state.audit_detail = {"vod": vod.id, "cut": sorted(ids)}
+        job = await service.resume(job_id, actor=_actor.get())
+        return job_action(f"Job {job_id} resumed at step {job.step} ({decision})", job)
 
     @app.post("/admin/vods/{vod_id}/youtube/delete", dependencies=auth)
     async def delete_uploads(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
