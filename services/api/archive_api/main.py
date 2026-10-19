@@ -293,7 +293,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 channel, glob = await asyncio.gather(helix.channel_badges(settings.twitch_id), helix.global_badges())
             except httpx.HTTPError as exc:
                 log.warning("failed to fetch badges: %s", exc)
-                raise LegacyError(500, "Something went wrong trying to retrieve channel badges..") from exc
+                raise LegacyError(500, "Couldn't fetch the channel badges from Twitch") from exc
             return {"channel": channel, "global": glob}
 
         return (await badges_cache.get_or_render("badges", fetch)).response(request)

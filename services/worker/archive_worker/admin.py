@@ -593,7 +593,7 @@ def create_admin_app(
     async def require_vod(vod_id: str) -> Vod:
         vod = await vod_exists(vod_id)
         if vod is None:
-            raise AdminError(404, "No Vod Data")
+            raise AdminError(404, "No such VOD")
         return vod
 
     async def refuse_spliced(vod_id: str, what: str) -> None:
@@ -617,9 +617,9 @@ def create_admin_app(
         require_helix()
         video = await helix.get_video(str(vod_id))
         if not video:
-            raise AdminError(404, "No Vod Data")
+            raise AdminError(404, "No such VOD")
         if str(video.get("user_id")) != str(settings.twitch_id):
-            raise AdminError(400, "This vod belongs to another channel..")
+            raise AdminError(400, "This VOD belongs to another channel")
         return video
 
     def vtype(body: dict[str, Any]) -> str:
@@ -633,7 +633,7 @@ def create_admin_app(
         payload: dict[str, Any] = {"type": t, "manual": True}  # started from the dashboard (force_upload_manual)
         if t == "live":
             if not vod.stream_id:
-                raise AdminError(400, "Vod has no stream_id; cannot locate the live recording")
+                raise AdminError(400, "This VOD has no stream_id, so its live recording can't be found")
             payload["stream_id"] = vod.stream_id
         return payload
 
@@ -996,7 +996,7 @@ def create_admin_app(
     async def generate_vod(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         _require(body, "vodId")
         if await vod_exists(body["vodId"]):
-            raise AdminError(400, "Vod data already exists")
+            raise AdminError(400, "This VOD is already in the archive")
         video = await helix_video(body["vodId"])
         await upsert_vod(video)
         await enqueue("chapters", video["id"])
@@ -1053,7 +1053,7 @@ def create_admin_app(
         async with get_sessionmaker()() as s:
             res = await s.execute(update(Vod).where(Vod.id == vod_id).values(**values))
             if res.rowcount == 0:
-                raise AdminError(404, "No Vod Data")
+                raise AdminError(404, "No such VOD")
             if "hidden" in values:
                 await notify_rows_moved(s, vod_id)
             await s.commit()
@@ -1063,7 +1063,7 @@ def create_admin_app(
         async with get_sessionmaker()() as s:
             vod = await vod_json(await s.connection(), vod_id)
             if vod is None:
-                raise AdminError(404, "No Vod Data")
+                raise AdminError(404, "No such VOD")
             locked, bot_chat, hidden, censor = (
                 await s.execute(
                     select(Vod.chapters_locked, Vod.bot_chat, Vod.hidden, Vod.censor).where(Vod.id == vod_id)
@@ -1490,7 +1490,7 @@ def create_admin_app(
                 payload[dst] = int(body[src])
         job = await enqueue("download", vod.id, payload)
         await enqueue("emotes", vod.id)
-        return _ok("Starting download..", job)
+        return _ok("Starting the download…", job)
 
     @app.post("/admin/hls/download", dependencies=auth)
     async def hls_download(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1503,7 +1503,7 @@ def create_admin_app(
         if await jobs.find_active("archive", vod_id=vod.id):
             raise AdminError(409, f"An archive job for {vod.id} is already running")
         job = await enqueue("archive", vod.id, {"type": "vod", "stream_id": vod.stream_id, "manual": True})
-        return _ok(f"Downloading {vod.id} via HLS..", job)
+        return _ok(f"Downloading {vod.id} via HLS…", job)
 
     @app.post("/admin/reupload", dependencies=auth)
     async def reupload(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1512,7 +1512,7 @@ def create_admin_app(
         payload = source_payload(vod, body)
         part = single_part(payload, body)
         job = await enqueue("reupload", vod.id, payload)
-        return _ok(f"Re-uploading {vod.id} part {part}..", job)
+        return _ok(f"Re-uploading {vod.id} part {part}…", job)
 
     @app.post("/admin/dmca", dependencies=auth)
     async def dmca(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1521,7 +1521,7 @@ def create_admin_app(
         payload = source_payload(vod, body)
         payload["claims"] = body["receivedClaims"]
         job = await enqueue("dmca", vod.id, payload)
-        return _ok(f"Muting the DMCA content for {vod.id}...", job)
+        return _ok(f"Muting the DMCA content in {vod.id}…", job)
 
     @app.post("/admin/part/dmca", dependencies=auth)
     async def part_dmca(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1531,7 +1531,7 @@ def create_admin_app(
         payload["claims"] = body["receivedClaims"]
         part = single_part(payload, body)
         job = await enqueue("part_dmca", vod.id, payload)
-        return _ok(f"Trimming DMCA Content from {vod.id} Vod Part {part}", job)
+        return _ok(f"Trimming the DMCA content from {vod.id} part {part}…", job)
 
     # ── Metadata ──────────────────────────────────────────────────────────
 
@@ -1540,14 +1540,14 @@ def create_admin_app(
         _require(body, "vodId")
         await require_vod(body["vodId"])
         job = await enqueue("chat", str(body["vodId"]))
-        return _ok("Getting logs..", job)
+        return _ok("Getting the chat logs…", job)
 
     @app.post("/admin/logs/manual", dependencies=auth)
     async def logs_manual(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         _require(body, "vodId", "path")
         await require_vod(body["vodId"])
         job = await enqueue("logs_manual", str(body["vodId"]), {"path": body["path"]})
-        return _ok("Getting logs..", job)
+        return _ok("Getting the chat logs…", job)
 
     @app.post("/admin/chapters", dependencies=auth)
     async def chapters(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1569,7 +1569,7 @@ def create_admin_app(
         await require_vod(body["vodId"])
         force = body.get("force") is True
         job = await enqueue("emotes", str(body["vodId"]), {"force": True} if force else None)
-        return _ok("Saving emotes (overwriting).." if force else "Saving emotes..", job)
+        return _ok("Saving emotes (overwriting)…" if force else "Saving emotes…", job)
 
     async def backfill(kind: str, what: str, body: dict[str, Any] | None) -> dict[str, Any]:
         """One ``kind`` job over every VOD it applies to, or only ``body["vodIds"]``."""
@@ -1579,7 +1579,7 @@ def create_admin_app(
         if await jobs.find_active(kind):
             raise AdminError(409, f"A {what} backfill is already running")
         job = await enqueue(kind, None, {"vod_ids": [str(v) for v in vod_ids]} if vod_ids else None)
-        return _ok(f"Backfilling {what}..", job)
+        return _ok(f"Backfilling {what}…", job)
 
     @app.post("/admin/emotes/backfill", dependencies=auth)
     async def emotes_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
@@ -1601,7 +1601,7 @@ def create_admin_app(
         if await jobs.find_active("bot_chat", vod_id=vod.id):
             raise AdminError(409, f"A bot chat job for {vod.id} is already running")
         job = await enqueue("bot_chat", vod.id)
-        return _ok(f"Reading bot chat for {vod.id}..", job)
+        return _ok(f"Reading bot chat for {vod.id}…", job)
 
     @app.post("/admin/bot-chat/backfill", dependencies=auth)
     async def bot_chat_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
@@ -1622,7 +1622,7 @@ def create_admin_app(
         if await jobs.find_active("previews_fetch", vod_id=vod.id):
             raise AdminError(409, f"A previews job for {vod.id} is already running")
         job = await enqueue("previews_fetch", vod.id, {"youtube_ids": ids} if ids else None)
-        return _ok(f"Making previews for {vod.id}..", job)
+        return _ok(f"Making previews for {vod.id}…", job)
 
     @app.post("/admin/previews/backfill", dependencies=auth)
     async def previews_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
@@ -1646,7 +1646,7 @@ def create_admin_app(
         async with get_sessionmaker()() as s:
             vod = (await s.execute(select(Vod).where(Vod.stream_id == stream_id).limit(1))).scalar_one_or_none()
             if vod is None:
-                raise AdminError(404, "No Vod found")
+                raise AdminError(404, "No VOD has that stream id")
             if body.get("driveId"):
                 vod.drive = [*(vod.drive or []), {"id": body["driveId"], "type": "live"}]
                 await s.commit()
@@ -1657,7 +1657,7 @@ def create_admin_app(
         job = await service.enqueue(
             "live_file", vod.id, {"type": "live", "stream_id": stream_id, "path": body["path"]}, actor=_actor.get()
         )
-        return _ok("Starting upload to youtube", job)
+        return _ok("Starting the upload to YouTube…", job)
 
     # ── YouTube OAuth ─────────────────────────────────────────────────────
 
