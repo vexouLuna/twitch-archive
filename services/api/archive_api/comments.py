@@ -50,7 +50,7 @@ PAGE = 200
 EMPTY: dict[str, Any] = {"comments": []}
 BOT_SHARE = 0.9  # ``auto`` serves the bot's chat once it has this share of the replay's rows
 _lt, _bt, _vt = Log.__table__, BotLog.__table__, Vod.__table__
-HIDDEN = "Vod not found"  # a hidden VOD's chat answers like a missing page
+HIDDEN = "No such VOD"  # a hidden VOD's chat answers like a missing page
 
 
 @dataclass(frozen=True)
@@ -153,7 +153,7 @@ class Comments:
             if offset is not None and not math.isfinite(offset):
                 offset = None
         if offset is None and not cursor:
-            raise LegacyError(400, "Missing request params")
+            raise LegacyError(400, "Give content_offset_seconds or cursor")
 
         if offset is not None:
             fixed = _js_to_fixed1(offset)
@@ -167,7 +167,7 @@ class Comments:
                 async with engine.connect() as conn:
                     vod = await self._vod(conn, vod_id)
                     if vod is None:
-                        raise LegacyError(500, f"Failed to retrieve vod {vod_id}")
+                        raise LegacyError(500, f"There is no VOD {vod_id}")
                     if vod.hidden:
                         raise LegacyError(404, HIDDEN)
                     if vod.merged_into is not None:
@@ -180,7 +180,7 @@ class Comments:
                     # (from ``sources``) what there is instead; without ``source`` the legacy error stays.
                     if source != "auto" and counts[src.name] == 0:
                         return {**EMPTY, "sources": counts}
-                    raise LegacyError(500, f"Failed to retrieve comments from offset {fixed}")
+                    raise LegacyError(500, f"No chat at or after offset {fixed}")
                 return {**result, "sources": counts}
 
             return await self.cache.get_or_render(f"offset:{vod_id}:{seconds}{src.key}", by_offset)
@@ -188,7 +188,7 @@ class Comments:
         async def by_cursor() -> dict[str, Any]:
             cursor_json = _decode_cursor(cursor or "")
             if cursor_json is None:
-                raise LegacyError(500, "Failed to parse cursor")
+                raise LegacyError(500, "Not a cursor from this API")
             src = SOURCES.get(cursor_json.get("src"), REPLAY)  # type: ignore[arg-type]
             async with engine.connect() as conn:
                 vod = await self._vod(conn, vod_id)
@@ -200,7 +200,7 @@ class Comments:
                 if result is None and vod is not None and vod.synthetic is not None:
                     return await self._synthetic(conn, vod_id)
             if result is None:
-                raise LegacyError(500, f"Failed to retrieve comments from cursor {cursor}")
+                raise LegacyError(500, f"No chat after cursor {cursor}")
             return result
 
         # The cursor names its source, so the key needs nothing else.

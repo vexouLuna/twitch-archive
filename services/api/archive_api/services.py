@@ -97,7 +97,7 @@ class Service:
                 raise
             row = None
         if row is None:
-            raise FeathersError(404, f"No record found for id '{id_}'")
+            raise FeathersError(404, f"Nothing has the id '{id_}'")
         item = self.resource.to_json(row)  # type: ignore[arg-type]
         await self.embed(conn, [item])
         return item

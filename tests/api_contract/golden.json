@@ -12480,7 +12480,7 @@
   "status": 404,
   "body": {
    "name": "NotFound",
-   "message": "No record found for id 'does-not-exist'",
+   "message": "Nothing has the id 'does-not-exist'",
    "code": 404,
    "className": "not-found"
   }
@@ -247974,7 +247974,7 @@
   "status": 400,
   "body": {
    "error": true,
-   "msg": "Missing request params"
+   "msg": "Give content_offset_seconds or cursor"
   }
  },
  {
@@ -247982,7 +247982,7 @@
   "status": 500,
   "body": {
    "error": true,
-   "msg": "Failed to parse cursor"
+   "msg": "Not a cursor from this API"
   }
  }
 ]
