@@ -176,9 +176,10 @@ class Comments:
                         return await self._synthetic(conn, vod_id)
                     result = await self._offset_search(conn, src, vod_id, seconds, vod.createdAt)
                 if result is None:
-                    # A chat asked for by name that the VOD doesn't have is an empty page, so a site can see
-                    # (from ``sources``) what there is instead; without ``source`` the legacy error stays.
-                    if source != "auto" and counts[src.name] == 0:
+                    # A chat asked for by name that has nothing at or after the offset (the VOD lacks it, or the
+                    # seek is past its last message) is an empty page, so a site can see (from ``sources``) what
+                    # there is instead; without ``source`` the legacy error stays.
+                    if source != "auto":
                         return {**EMPTY, "sources": counts}
                     raise LegacyError(500, f"No chat at or after offset {fixed}")
                 return {**result, "sources": counts}
