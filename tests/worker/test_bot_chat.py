@@ -538,8 +538,11 @@ async def test_api_answers_a_missing_chat_with_an_empty_page(vod, api):
     async with api:
         page = (await api.get(f"/v1/vods/{VOD}/comments?content_offset_seconds=0&source=bot")).json()
         assert page == {"comments": [], "sources": {"replay": 10, "bot": 0}}
-        # Past the last message of a chat the VOD has, the legacy error stays.
-        assert (await api.get(f"/v1/vods/{VOD}/comments?content_offset_seconds=99&source=replay")).status_code == 500
+        # Past the last message of a chat the VOD has is an empty page too; only a request without
+        # ``source`` keeps the legacy error.
+        page = (await api.get(f"/v1/vods/{VOD}/comments?content_offset_seconds=99&source=replay")).json()
+        assert page == {"comments": [], "sources": {"replay": 10, "bot": 0}}
+        assert (await api.get(f"/v1/vods/{VOD}/comments?content_offset_seconds=99")).status_code == 500
 
 
 async def test_api_pages_bot_chat_by_cursor(vod, api):
