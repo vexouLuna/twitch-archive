@@ -95,10 +95,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.13" },
+    { name = "alembic", specifier = ">=1.20.0" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "cachetools", specifier = ">=7.2.2" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "tenacity", specifier = ">=8.5" },
@@ -1688,10 +1688,10 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.11" },
-    { name = "psycopg2-binary", specifier = ">=2.9" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "respx", specifier = ">=0.21" },
+    { name = "psycopg2-binary", specifier = ">=2.9.13" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "respx", specifier = ">=0.23.1" },
     { name = "ruff", specifier = ">=0.17.1" },
 ]
 
