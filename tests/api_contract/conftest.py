@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
+
+# The first VOD of the first golden response: present only in a restored copy of the live database.
+GOLDEN_VOD = json.loads((Path(__file__).parent / "golden.json").read_text(encoding="utf-8"))[0]["body"]["data"][0]["id"]
 
 
 @pytest.fixture(scope="module")
@@ -16,9 +22,12 @@ async def client():
         from archive_common.db import get_engine
 
         async with get_engine().connect() as conn:
-            await conn.execute(sqlalchemy.text("select 1"))
+            restored = await conn.scalar(sqlalchemy.text("select 1 from vods where id = :id"), {"id": GOLDEN_VOD})
     except Exception as exc:  # pragma: no cover - environment dependent
         pytest.skip(f"database unavailable: {exc}")
+    if restored is None:  # pragma: no cover - environment dependent
+        # An empty database (CI's): the golden responses were captured against the live data (README §9).
+        pytest.skip(f"the golden data isn't restored (no VOD {GOLDEN_VOD})")
 
     from archive_api.main import create_app
 

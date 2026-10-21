@@ -58,7 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     service_cache = ResponseCache(settings.cache_ttl_seconds)
     comments = Comments(ResponseCache(300), ResponseCache(24 * 3600))
     badges_cache = ResponseCache(3600, maxsize=4)
-    status_cache = ResponseCache(45, maxsize=1)
+    status_cache = ResponseCache(45 if settings.cache_ttl_seconds else 0, maxsize=1)  # 0: caching off, as below
     # A complete emote list is kept for hours; one with a failed provider is retried sooner.
     site_tags_cache = ResponseCache(SITE_TAGS_TTL if settings.cache_ttl_seconds else 0, maxsize=1)
     site_options_cache = ResponseCache(SITE_TAGS_TTL if settings.cache_ttl_seconds else 0, maxsize=1)

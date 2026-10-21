@@ -363,7 +363,15 @@ async def test_merge_refusals(vods, admin):
         assert (await c.post(f"/admin/vods/{A}/merge", headers=KEY, json={"source": B, "gap": 300})).status_code == 200
         # An already-merged source (or target).
         async with get_sessionmaker()() as s:
-            s.add(Vod(id=C, title="c", created_at=START + dt.timedelta(hours=5), duration="00:10:00"))
+            s.add(
+                Vod(
+                    id=C,
+                    title="c",
+                    created_at=START + dt.timedelta(hours=5),
+                    duration="00:10:00",
+                    youtube=[_yt("c1", 1, 600, "live")],  # with no uploads at all a merge is allowed (c0b3e1e)
+                )
+            )
             await s.commit()
         r = await c.post(f"/admin/vods/{C}/merge", headers=KEY, json={"source": B})
         assert r.status_code == 409 and "already merged into" in r.json()["msg"]

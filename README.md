@@ -902,7 +902,7 @@ uv run ruff check && uv run ruff format --check && uv run mypy   # what CI's lin
 mypy runs in strict mode. The code written before it was turned on still has inline
 `# type: ignore[...]` comments for each error it found then; remove one when you touch that code.
 
-The DB-backed tests use `ARCHIVE_DATABASE_URL`. The default is the `compose.dev.yaml` database. They expect `alembic upgrade head` to have been run, and no other queued jobs in that database.
+The DB-backed tests use `ARCHIVE_DATABASE_URL`. The default is the `compose.dev.yaml` database. They expect `alembic upgrade head` to have been run, and no other queued jobs in that database. An empty, migrated database is enough for all of them except `tests/api_contract`, which replays responses captured from the live data and skips unless a matching dump is restored; CI runs them that way (`ci.yml`).
 
 **Re-capturing the golden API responses** (only needed if the frontend starts using new queries). This reads from the old Node API:
 

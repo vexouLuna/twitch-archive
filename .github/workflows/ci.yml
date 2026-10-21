@@ -12,10 +12,15 @@ jobs:
     secrets: inherit
 
   ci:
-    # The database and contract tests skip here: they need a restored copy of the live DB.
+    # The database tests run against the workflow's empty Postgres, migrated here. The contract tests
+    # (tests/api_contract) still skip: they replay responses captured from the live data (README §9).
     uses: vexouLuna/conventions/.github/workflows/python-ci.yml@v2.1.1
     with:
-      setup: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      postgres: true
+      setup: >-
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg &&
+        ARCHIVE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres uv run alembic upgrade head
+      test-command: ARCHIVE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres uv run pytest -q
 
   # One image per service, from the targets of the root Dockerfile. A push to main or dev publishes
   # ghcr.io/vexouluna/twitch-archive-api and -worker as :main / :dev; a tag vX.Y.Z as :vX.Y.Z.

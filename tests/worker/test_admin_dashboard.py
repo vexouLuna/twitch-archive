@@ -439,7 +439,8 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
                 await api.get(f"/v1/vods/{vod}/comments?content_offset_seconds={len(seen)}&source=replay")
             ).status_code,
             "played": "test-hidden-game" in [g["gameId"] for g in (await api.get("/v1/games-played")).json()],
-            "latest": None if status["live"] else status["vod"]["id"] == vod,  # None: live, not checked
+            # None: live, not checked. With no other VOD (an empty database) a hidden one leaves vod null.
+            "latest": None if status["live"] else (status["vod"] or {}).get("id") == vod,
         }
 
     conn, heard = await _listen()
