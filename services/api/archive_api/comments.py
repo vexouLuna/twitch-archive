@@ -184,7 +184,10 @@ class Comments:
                     raise LegacyError(500, f"No chat at or after offset {fixed}")
                 return {**result, "sources": counts}
 
-            return await self.cache.get_or_render(f"offset:{vod_id}:{seconds}{src.key}", by_offset)
+            # An empty page (named source) and the legacy error (``auto``) differ for the same offset and source,
+            # so whether the source was named is part of the key.
+            named = "" if source == "auto" else ":named"
+            return await self.cache.get_or_render(f"offset:{vod_id}:{seconds}{src.key}{named}", by_offset)
 
         async def by_cursor() -> dict[str, Any]:
             cursor_json = _decode_cursor(cursor or "")
