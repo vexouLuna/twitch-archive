@@ -242,7 +242,7 @@ Every token refresh is saved back to `app_state`: the new access token, the scop
 
 ## 4. Admin API
 
-The admin API is served by the worker on port 3031. Keep it on your **private network**: never expose it through your reverse proxy or tunnel. Every call needs `Authorization: Bearer <ARCHIVE_ADMIN_API_KEY>`, or a dashboard login (see [Browser access](#browser-access-dashboard)). The old app accepted any word before the key, and so does this one.
+The admin API is served by the worker on port 3031. Keep the port itself on your **private network**: never publish it to the internet (`ARCHIVE_ADMIN_PUBLISH_ADDR`, §7). The only public path to it should be the site's TLS proxy, for the routes a browser has to reach (`/admin/session`, `/admin/signin*` and the YouTube callback; vods.vexoul.net serves it at `/backend-admin`, §3). List that proxy in `ARCHIVE_ADMIN_TRUSTED_PROXIES`, or the password is refused through it (see [Browser access](#browser-access-dashboard)). Every call needs `Authorization: Bearer <ARCHIVE_ADMIN_API_KEY>`, or a dashboard login (see [Browser access](#browser-access-dashboard)). The old app accepted any word before the key, and so does this one.
 
 Two routes need no key: `GET /healthz` (`{"status": "ok", "runningJobs": N}` while the process answers; the container's `HEALTHCHECK`, no dependency checks) and `GET /readyz` (the same once the database responds too, else 503 with `"status": "unavailable"` and `"error": "database: <type>"`). Point uptime monitors at `/readyz`. The dashboard's status bar reports the api as up when the api's `/readyz` answers 200.
 
@@ -788,11 +788,11 @@ Rate limit: 20 requests per 5 s per IP on `/vods`, `/v1/*` (except `/v1/previews
 - **`migrate`** runs `alembic upgrade head` as the superuser, from the api image.
 - **`roles`** runs `deploy/roles.sql`: the `archive_api` and `archive_worker` roles, their passwords (taken from `secrets/api_database_url` and `secrets/worker_database_url`) and their grants.
 
-If either step fails, the running api and worker are left as they are. Only the compose network reaches the database; the api and admin ports are published on `ARCHIVE_PUBLISH_ADDR` (default `127.0.0.1`). You need:
+If either step fails, the running api and worker are left as they are. Only the compose network reaches the database; the api port is published on `ARCHIVE_PUBLISH_ADDR` and the admin port on `ARCHIVE_ADMIN_PUBLISH_ADDR` (both default `127.0.0.1`; the admin one follows `ARCHIVE_PUBLISH_ADDR` when unset). You need:
 
 - Docker with the compose plugin.
 - A data directory for the worker, set as `ARCHIVE_HOST_DATA_DIR` (default `./data`). A VOD needs about 3–3.5 GB per hour of stream while it is processed; twice that with `MULTI_TRACK`. Files are deleted after upload.
-- A reverse proxy in front of the API port if the frontend is public. The worker's admin port must **not** go through it. A proxy on another host needs `ARCHIVE_PUBLISH_ADDR=0.0.0.0` (or the address it connects to).
+- A reverse proxy in front of the API port if the frontend is public. A proxy on another host needs `ARCHIVE_PUBLISH_ADDR=0.0.0.0` (or the address it connects to). Set `ARCHIVE_ADMIN_PUBLISH_ADDR` separately (`127.0.0.1`, or a private interface the proxy reaches): left unset it follows `ARCHIVE_PUBLISH_ADDR`, and `0.0.0.0` would publish the admin API, over plain HTTP, on every interface. See §4 for what the admin port may be reached through.
 
 If the host is an unprivileged LXC container, Docker needs `nesting=1,keyctl=1`, and a bind-mounted data directory must be writable by the container's uid.
 
