@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 from typing import Any
 
-import archive_worker.admin as admin_module
+import archive_worker.admin_status as admin_status
 import asyncpg
 import httpx
 import pytest
@@ -684,7 +684,7 @@ async def test_healthz_and_readyz(app, monkeypatch):
         r = await c.get("/readyz")
         assert (r.status_code, r.json()) == (200, {"status": "ok", "runningJobs": 0})
 
-    monkeypatch.setattr(admin_module, "get_sessionmaker", lambda: async_sessionmaker(create_async_engine(UNREACHABLE)))
+    monkeypatch.setattr(admin_status, "get_sessionmaker", lambda: async_sessionmaker(create_async_engine(UNREACHABLE)))
     async with client(app) as c:
         assert (await c.get("/healthz")).status_code == 200  # liveness doesn't look at the database
         r = await c.get("/readyz")
