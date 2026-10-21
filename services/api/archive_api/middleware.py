@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import ipaddress
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -92,12 +93,35 @@ class ResponseCache:
             task.exception()  # retrieved: the requests awaiting it re-raise it
 
 
-def client_ip(request: Request) -> str:
-    return (
-        request.headers.get("cf-connecting-ip")
-        or request.headers.get("x-real-ip")
-        or (request.client.host if request.client else "unknown")
-    )
+Networks = list[ipaddress.IPv4Network | ipaddress.IPv6Network] | None
+
+
+def parse_proxies(values: list[str]) -> Networks:
+    """``ARCHIVE_API_TRUSTED_PROXIES``: addresses or CIDR ranges; ``*`` means every peer (None).
+    ValueError on a typo."""
+    if any(v.strip() == "*" for v in values):
+        return None
+    return [ipaddress.ip_network(v.strip(), strict=False) for v in values if v.strip()]
+
+
+def _trusted(peer: str, proxies: Networks) -> bool:
+    if proxies is None:
+        return True
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(ip in net for net in proxies)
+
+
+def client_ip(request: Request, proxies: Networks = None) -> str:
+    """The address the rate limit counts: the proxy's CF-Connecting-IP or X-Real-IP when the peer is a
+    trusted proxy, else the peer. (uvicorn has already replaced the peer with X-Forwarded-For's client
+    when the connection came from one of the same proxies.)"""
+    peer = request.client.host if request.client else "unknown"
+    if not _trusted(peer, proxies):
+        return peer
+    return request.headers.get("cf-connecting-ip") or request.headers.get("x-real-ip") or peer
 
 
 class RateLimiter:

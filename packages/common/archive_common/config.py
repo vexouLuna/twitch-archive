@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     paginate_max: int = 50
     rate_limit_points: int = 20
     rate_limit_window_seconds: int = 5
+    # Peers (addresses or CIDR ranges) whose CF-Connecting-IP / X-Real-IP / X-Forwarded-For name the client
+    # the rate limit counts; any other peer is counted by its own address. ["*"]: every peer (the default,
+    # as before), so a client that reaches the api directly can choose its own bucket.
+    api_trusted_proxies: list[str] = ["*"]
     cache_ttl_seconds: int = 300
 
     # ── Worker ────────────────────────────────────────────────────────────

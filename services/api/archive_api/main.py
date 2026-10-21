@@ -33,7 +33,7 @@ from .comments import Comments
 from .errors import FeathersError, LegacyError, bad_literal, legacy_error
 from .games_played import games_played
 from .invalidation import VodInvalidator
-from .middleware import GZIP_MIN_SIZE, JsonBody, RateLimiter, ResponseCache, client_ip
+from .middleware import GZIP_MIN_SIZE, JsonBody, RateLimiter, ResponseCache, client_ip, parse_proxies
 from .services import build_services
 from .status import stream_status
 from .third_party_emotes import fetch_third_party_emotes
@@ -64,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     site_options_cache = ResponseCache(SITE_TAGS_TTL if settings.cache_ttl_seconds else 0, maxsize=1)
     emotes_cache, emotes_partial_cache = ResponseCache(6 * 3600, maxsize=1), ResponseCache(300, maxsize=1)
     limiter = RateLimiter(settings.rate_limit_points, settings.rate_limit_window_seconds)
+    proxies = parse_proxies(settings.api_trusted_proxies)
     helix = Helix(settings)
     # Admin edits reach the public API at once instead of after the cache TTL.
     invalidator = VodInvalidator(settings.database_url, service_cache, status_cache, comments=comments)
@@ -85,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def rate_limit(request: Request, call_next):  # type: ignore[no-untyped-def]
         path = request.url.path
         if path.startswith(RATE_LIMITED_PREFIXES) and not path.startswith(UNLIMITED_PREFIXES):
-            allowed, headers = limiter.hit(client_ip(request))
+            allowed, headers = limiter.hit(client_ip(request, proxies))
             if not allowed:
                 resp = legacy_error(429, "Too Many Requests")
                 resp.headers.update(headers)
@@ -316,7 +317,8 @@ def run() -> None:
         host=settings.api_host,
         port=settings.api_port,
         proxy_headers=True,
-        forwarded_allow_ips="*",
+        # The same peers the rate limit believes: X-Forwarded-For from anyone else leaves the peer alone.
+        forwarded_allow_ips=[p.strip() for p in settings.api_trusted_proxies if p.strip()],
         access_log=False,
         log_level=settings.log_level.lower(),
         log_config=None,  # use the handler from logs.setup

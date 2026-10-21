@@ -123,6 +123,7 @@ See [Troubleshooting](#8-operations-and-troubleshooting) for how to find new val
 | `ARCHIVE_API_HOST` / `ARCHIVE_API_PORT` | `0.0.0.0` / `3030` | |
 | `ARCHIVE_PAGINATE_DEFAULT` / `ARCHIVE_PAGINATE_MAX` | `10` / `50` | Same as Feathers |
 | `ARCHIVE_RATE_LIMIT_POINTS` / `ARCHIVE_RATE_LIMIT_WINDOW_SECONDS` | `20` / `5` | Per client IP (`cf-connecting-ip` → `x-real-ip` → peer) |
+| `ARCHIVE_API_TRUSTED_PROXIES` | `["*"]` | Peers (JSON list of addresses or CIDR ranges) whose `cf-connecting-ip`, `x-real-ip` and `X-Forwarded-For` are believed for the rate limit; any other peer counts as itself. The default believes every peer, as before: set it to your proxy (e.g. Docker's gateway for a proxy on this host) so a client that reaches the api directly can't pick its own bucket, or someone else's |
 | `ARCHIVE_CACHE_TTL_SECONDS` | `300` | Response cache for `/vods`, `/emotes`, … |
 
 ### archive-worker
