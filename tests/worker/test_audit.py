@@ -1,4 +1,4 @@
-"""audit_log: the copy of admin_audit, and who GET /admin/audit shows (needs the dev DB)."""
+"""audit_log: Alembic 0014's copy of admin_audit, and who GET /admin/audit shows (needs the dev DB)."""
 
 import datetime as dt
 from typing import Any
@@ -7,7 +7,7 @@ import httpx
 import pytest
 from archive_common import audit
 from archive_common.audit import AUDIT_LOG
-from archive_common.db import get_sessionmaker
+from archive_common.db import get_engine, get_sessionmaker
 from archive_common.models import AdminAudit
 from archive_worker import jobs
 from archive_worker.admin import create_admin_app
@@ -70,8 +70,12 @@ async def test_copy_names_the_routes_and_skips_rows_already_copied(marks):
         )
         await s.commit()
 
-    assert await audit.copy_admin_audit() >= 3  # the dev DB may hold other uncopied rows
-    assert await audit.copy_admin_audit() == 0
+    async def copy() -> int:  # Alembic 0014's copy, on this database
+        async with get_engine().begin() as conn:
+            return await conn.run_sync(audit.copy_admin_audit_sync)
+
+    assert await copy() >= 3  # the dev DB may hold other uncopied rows
+    assert await copy() == 0
     rows = await _copies(new)
     edit, download, gone = (rows[f"admin_audit:{i}"] for i in ids)
     assert (edit["action"], edit["actor_kind"], edit["actor_id"], edit["actor_login"], edit["via"]) == (

@@ -1,9 +1,9 @@
 """The audit log: ``audit_log``, shared with doomtp-bot (vex-platform's docs/conventions.md, "Audit").
 
-It replaces ``admin_audit`` (Alembic 0005), whose rows are copied in by Alembic 0014 and, for any the
-previous release wrote while that migration ran, by ``copy_admin_audit`` when the worker starts. A
-copied row keeps its old id as ``request_id = "admin_audit:<id>"``, which is also how a copy knows
-what is already there.
+It replaces ``admin_audit`` (Alembic 0005), whose rows Alembic 0014 copied in (``copy_admin_audit_sync``).
+A copied row keeps its old id as ``request_id = "admin_audit:<id>"``, which is also how a copy knows
+what is already there. (The worker also copied at startup, for rows the release before 0014 wrote
+while the migration ran; that window closed many releases ago.)
 
 The admin API's v1 routes are named here by their route (``ROUTE_ACTIONS``): an ``admin_audit`` row
 recorded ``"PATCH /admin/vods/{vod_id}"`` where ``audit_log`` has ``vod.update``.
@@ -178,13 +178,3 @@ def copy_admin_audit_sync(conn: Any) -> int:
     if params:
         conn.execute(_INSERT, params)
     return len(params)
-
-
-async def copy_admin_audit() -> int:
-    """``copy_admin_audit_sync`` for the worker: rows the previous release wrote after Alembic 0014."""
-    async with get_sessionmaker()() as s:
-        params = _copies(await s.execute(_UNCOPIED))
-        if params:
-            await s.execute(_INSERT, params)
-            await s.commit()
-        return len(params)

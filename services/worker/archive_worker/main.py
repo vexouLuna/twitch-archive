@@ -15,7 +15,7 @@ import signal
 from pathlib import Path
 
 import uvicorn
-from archive_common import audit, http, logs
+from archive_common import http, logs
 from archive_common.config import get_settings
 from archive_common.twitch.gql import Gql
 from archive_common.twitch.helix import Helix
@@ -71,9 +71,6 @@ async def serve(dry_run: bool = False) -> None:
         settings.youtube_upload,
         settings.dry_run,
     )
-    copied = await audit.copy_admin_audit()  # what the previous release audited while it was replaced
-    if copied:
-        log.info("copied %d admin_audit rows into audit_log", copied)
     await service.runtime.open()
     await service.runtime.start()  # new jobs; the legacy runner below finishes the old table's
     tasks = [
