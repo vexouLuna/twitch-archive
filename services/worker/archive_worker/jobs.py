@@ -38,7 +38,8 @@ from vex_platform.jobs import InvalidJob, JobConflict, JobNotFound, JobRun, JobR
 from . import legacy_jobs
 from .context import Deps, JobContext
 from .events import event_json, iso_utc
-from .job_rows import ACTIVE, ALL_JOBS, STATES, subject_of, vod_of
+from .job_rows import ACTIVE, ALL_JOBS, STATES, active_by_vod, exists_any, find_active, subject_of, vod_of
+from .kinds import KINDS
 from .steps import STEPS
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "JobConflict",
     "JobNotFound",
     "JobService",
+    "active_by_vod",
     "apply_settings",
     "build_registry",
     "check_steps",
@@ -57,118 +59,6 @@ __all__ = [
     "find_active",
     "get",
 ]
-
-KINDS: dict[str, list[str]] = {
-    # Stream went live (or /admin/hls/download): follow the VOD playlist, then process.
-    "archive": [
-        "capture",
-        "finalize",
-        "chapters",
-        "chat",
-        "emotes",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # /admin/download: full VOD (or a given file), split + upload, optional part range.
-    "download": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "chapters",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    "reupload": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # Recording of the live stream itself (unmuted), uploaded as type "live". It saves the VOD's
-    # chat and emotes too: without multi_track no archive job runs for the stream.
-    "live": [
-        "live_record",
-        "resolve_vod",
-        "finalize",
-        "chapters",
-        "chat",
-        "emotes",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # /v2/live callback from an external recorder.
-    "live_file": ["ensure_source", "chapters", "censor_check", "censor", "split", "upload", "describe", "previews"],
-    "dmca": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "dmca_edit",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    "part_dmca": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "censor_check",
-        "censor",
-        "split",
-        "dmca_edit",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # A synthetic VOD as one file, uploaded as type "compiled" with compile_youtube_upload on (steps/compile.py).
-    "compile": ["compile_sources", "compile", "split", "upload", "compiled", "describe", "cleanup"],
-    "chat": ["chat"],
-    "logs_manual": ["logs_manual"],
-    "chapters": ["chapters"],
-    "emotes": ["emotes"],
-    # One-off: give every emotes row saved before global sets were captured the current ones.
-    "global_emotes_backfill": ["global_emotes_backfill"],
-    # One-off: add 7TV's zero-width flags to channel sets saved before flags were kept.
-    "seventv_flags_backfill": ["seventv_flags_backfill"],
-    # One-off: the ad breaks (gaps) of live uploads made before they were saved, from their live jobs.
-    "live_gaps_backfill": ["live_gaps_backfill"],
-    "describe": ["describe"],
-    # A pipeline's cleanup, queued by its own cleanup step to run keep_files_days later.
-    "cleanup": ["cleanup"],
-    # Chat from doomtp-bot into bot_logs, beside the archive job of the same VOD.
-    "bot_chat": ["bot_chat"],
-    # Queues a bot_chat run per VOD without bot chat (or per given VOD), newest first; they run one at a time.
-    "bot_chat_backfill": ["bot_chat_backfill"],
-    # Seek-bar previews for a VOD's uploads that have none, from a small download of each (steps/previews.py).
-    "previews_fetch": ["previews_fetch"],
-    # Queues a previews_fetch run per VOD with uploads without previews, newest first; they run one at a time.
-    "previews_backfill": ["previews_backfill"],
-}
 
 # The old runner waited 60·2^n seconds after the n-th failure; the runtime waits base·2^(n-1).
 RETRY_BASE_SECONDS = 120
@@ -239,42 +129,6 @@ def create_runtime(deps: Deps, **options: Any) -> JobRuntime:
         context_factory=lambda ctx: JobContext.of_run(ctx, deps),
         **{"audit_table": audit.TABLE, **options},
     )
-
-
-# ── Reading jobs of both tables ────────────────────────────────────────────
-
-
-def _matching(stmt, kind: str, vod_id: str | None, stream_id: str | None):  # type: ignore[no-untyped-def]
-    stmt = stmt.where(ALL_JOBS.c.kind == kind)
-    if vod_id is not None:
-        stmt = stmt.where(ALL_JOBS.c.vod_id == vod_id)
-    if stream_id is not None:
-        stmt = stmt.where(ALL_JOBS.c.payload["stream_id"].astext == str(stream_id))
-    return stmt.limit(1)
-
-
-async def find_active(kind: str, *, vod_id: str | None = None, stream_id: str | None = None) -> Row | None:  # type: ignore[type-arg]
-    stmt = _matching(select(ALL_JOBS).where(ALL_JOBS.c.state.in_(ACTIVE)), kind, vod_id, stream_id)
-    async with get_sessionmaker()() as s:
-        return (await s.execute(stmt)).first()  # type: ignore[no-any-return]
-
-
-async def active_by_vod(vod_ids: list[str]) -> dict[str, list[Row]]:  # type: ignore[type-arg]
-    """The queued, running and paused jobs of each of ``vod_ids`` that has any, oldest first."""
-    if not vod_ids:
-        return {}
-    stmt = select(ALL_JOBS).where(ALL_JOBS.c.state.in_(ACTIVE), ALL_JOBS.c.vod_id.in_(vod_ids)).order_by(ALL_JOBS.c.id)
-    out: dict[str, list[Row]] = {}  # type: ignore[type-arg]
-    async with get_sessionmaker()() as s:
-        for row in (await s.execute(stmt)).all():
-            out.setdefault(row.vod_id, []).append(row)
-    return out
-
-
-async def exists_any(kind: str, *, vod_id: str | None = None, stream_id: str | None = None) -> bool:
-    """Any job (including finished/failed) — used so the monitor enqueues once per stream."""
-    async with get_sessionmaker()() as s:
-        return (await s.execute(_matching(select(ALL_JOBS.c.id), kind, vod_id, stream_id))).first() is not None
 
 
 async def get(job_id: int) -> Row:  # type: ignore[type-arg]
