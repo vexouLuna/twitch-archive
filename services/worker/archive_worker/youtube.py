@@ -9,10 +9,10 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
-import hmac
 import json
 import logging
 import random
+import secrets
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -121,17 +121,16 @@ async def save_token(value: dict[str, Any]) -> None:
 # ── OAuth consent flow (admin endpoints) ──────────────────────────────────
 
 
-def _sign(settings: Settings, payload: str) -> str:
-    key = settings.admin_api_key.get_secret_value().encode()
-    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
+STATE_TTL_S = 900  # how long a consent flow's state is accepted
 
 
-def new_state(settings: Settings) -> str:
-    ts = str(int(time.time()))
-    return f"{ts}.{_sign(settings, ts)}"
+def new_state() -> str:
+    """A consent flow's ``state``: random and single-use. The admin API keeps the ones it issued and
+    the callback accepts only those (admin.py), so nothing about it can be computed from outside."""
+    return secrets.token_urlsafe(32)
 
 
-def consent_url(settings: Settings, state: str | None = None) -> str:
+def consent_url(settings: Settings, state: str) -> str:
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": settings.google_redirect_url,
@@ -140,16 +139,9 @@ def consent_url(settings: Settings, state: str | None = None) -> str:
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
-        "state": state or new_state(settings),
+        "state": state,
     }
     return f"{AUTH_URI}?{urlencode(params)}"
-
-
-def verify_state(settings: Settings, state: str, max_age: int = 900) -> bool:
-    ts, _, sig = state.partition(".")
-    if not ts.isdigit() or not hmac.compare_digest(sig, _sign(settings, ts)):
-        return False
-    return time.time() - int(ts) <= max_age
 
 
 async def exchange_code(settings: Settings, code: str) -> dict[str, Any]:

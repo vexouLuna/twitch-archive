@@ -206,7 +206,7 @@ When the admin API is published behind the site's proxy (vods.vexoul.net serves 
 2. Set `ARCHIVE_GOOGLE_REDIRECT_URL` to the same URI and restart the worker.
 3. On the site, Manage → Overview → **Connect YouTube**, sign in with the channel's Google account and allow access. The tab ends on "YouTube authorized. You can close this tab.", and the YouTube tile turns valid.
 
-`/admin/refreshtoken` needs no key or session (the signed `state` proves the request), and it answers with or without a trailing slash, so the old app's `/admin/refreshtoken/` URI works too.
+`/admin/refreshtoken` needs no key or session: the `state` proves the request. It is random, issued by `/admin/youtube/auth`, works once, and expires after 15 minutes or when the worker restarts (start the flow again then). The callback answers with or without a trailing slash, so the old app's `/admin/refreshtoken/` URI works too.
 
 ### Option C: run the consent flow through an SSH tunnel
 

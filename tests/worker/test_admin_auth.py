@@ -1,5 +1,8 @@
 """Browser login for the admin API: password, sessions, CSRF, login rate limit (no database needed)."""
 
+import hashlib
+import hmac
+import time
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -269,3 +272,27 @@ async def test_youtube_callback_answers_with_and_without_slash(admin, deps, monk
     assert (actor.kind, error) == ("user", None)  # who started the flow, not the system
     assert before["refreshToken"] == youtube.fingerprint("old")
     assert after["refreshToken"] == youtube.fingerprint("new") and after["channel"] == {"id": "UC1"}
+
+    async with admin() as c:  # a state works once
+        assert (await c.get(path, params={"state": state, "code": "c"})).status_code == 403
+    assert exchanged == ["c"]
+
+
+async def test_youtube_callback_refuses_a_state_it_never_issued(deps, monkeypatch):
+    # The old state was a timestamp MAC keyed with the API key, which may be empty: anyone could make one.
+    deps.settings.admin_api_key = SecretStr("")
+    deps.settings.admin_password = SecretStr("correct horse")
+    exchanged = []
+
+    async def exchange(settings, code):
+        exchanged.append(code)
+        return {}
+
+    monkeypatch.setattr(youtube, "exchange_code", exchange)
+    app = create_admin_app(deps, jobs.JobService(deps, jobs.create_runtime(deps)))
+    ts = str(int(time.time()))
+    forged = f"{ts}.{hmac.new(b'', ts.encode(), hashlib.sha256).hexdigest()[:32]}"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://admin") as c:
+        for state in (forged, youtube.new_state(), ""):
+            assert (await c.get("/admin/refreshtoken", params={"state": state, "code": "c"})).status_code == 403
+    assert exchanged == []

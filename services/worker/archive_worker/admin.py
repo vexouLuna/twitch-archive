@@ -1661,17 +1661,18 @@ def create_admin_app(
 
     # ── YouTube OAuth ─────────────────────────────────────────────────────
 
-    # Who started each consent flow, by its state, so the callback (which has no session) can audit
-    # the connect as them. In memory: after a restart the connect is audited as the system.
+    # The consent flows this worker started, by their state: when, and who, so the callback (which has no
+    # session) accepts only these and audits the connect as them. In memory: a flow started before a
+    # restart has to be started again.
     connecting: dict[str, tuple[float, Actor]] = {}
 
     @app.get("/admin/youtube/auth", dependencies=auth)
     async def youtube_auth(redirect: bool = False):  # type: ignore[no-untyped-def]
         if not settings.google_client_id:
             raise AdminError(500, "google_client_id is not configured")
-        state = youtube.new_state(settings)
+        state = youtube.new_state()
         now = time.monotonic()
-        for key in [k for k, (at, _) in connecting.items() if now - at > 900]:
+        for key in [k for k, (at, _) in connecting.items() if now - at > youtube.STATE_TTL_S]:
             del connecting[key]
         connecting[state] = (now, _actor.get())
         url = youtube.consent_url(settings, state)
@@ -1701,11 +1702,13 @@ def create_admin_app(
     @app.get("/admin/refreshtoken")
     @app.get("/admin/refreshtoken/", include_in_schema=False)
     async def refresh_token(code: str | None = None, state: str | None = None) -> dict[str, Any]:
-        # Google redirects the browser here, so this cannot carry the API key;
-        # the HMAC-signed ``state`` from /admin/youtube/auth proves the request.
-        if not code or not state or not youtube.verify_state(settings, state):
+        # Google redirects the browser here, so this cannot carry the API key or rely on the session
+        # cookie. What proves the request is the state: one /admin/youtube/auth issued, unused, and
+        # younger than STATE_TTL_S. It is consumed here, so a state works once.
+        started = connecting.pop(state, None) if state else None
+        if not code or started is None or time.monotonic() - started[0] > youtube.STATE_TTL_S:
             raise AdminError(403, "Invalid or expired OAuth state; start again at /admin/youtube/auth")
-        actor = connecting.pop(state, (0.0, SYSTEM))[1]
+        actor = started[1]
         before = youtube.token_summary(await youtube.load_token())
         if before is not None and deps.youtube.last_check:
             before["channel"] = deps.youtube.last_check.get("channel")
