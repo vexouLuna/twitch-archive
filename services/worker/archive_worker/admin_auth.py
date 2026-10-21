@@ -283,6 +283,20 @@ def client_address(request: Request, trusted_proxies) -> str:  # type: ignore[no
     return request.headers.get("x-real-ip", "").strip() or peer
 
 
+FORWARDING_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip")
+
+
+def forwarded_untrusted(request: Request, trusted_proxies) -> bool:  # type: ignore[no-untyped-def]
+    """Whether the request names a client behind its peer (a forwarding header) although the peer is
+    not a trusted proxy: it came through a proxy ``ARCHIVE_ADMIN_TRUSTED_PROXIES`` doesn't list, so the
+    peer address says nothing about where the browser is. Such a peer is usually local (a proxy on
+    this host, or Docker's port forward), which must not make an internet client look local."""
+    peer = request.client.host if request.client else "unknown"
+    if trusted_proxies and _in(peer, trusted_proxies):
+        return False
+    return any(h in request.headers for h in FORWARDING_HEADERS)
+
+
 def plain_http(request: Request, trusted_proxies) -> bool:  # type: ignore[no-untyped-def]
     """Whether the browser reached us over plain HTTP.
 

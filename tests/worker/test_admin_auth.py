@@ -14,6 +14,7 @@ from archive_worker.admin_auth import (
     AdminAuth,
     LoginLimiter,
     client_address,
+    forwarded_untrusted,
     parse_networks,
     plain_http,
 )
@@ -95,6 +96,45 @@ def test_client_address_trusts_only_configured_proxies():
     assert client_address(_request("10.0.0.1", {}), proxies) == "10.0.0.1"  # conventions:allow-infra
     with pytest.raises(ValueError):
         parse_networks(["not-an-address"])
+
+
+def test_forwarded_untrusted_spots_a_proxy_nobody_listed():
+    proxies = parse_networks(["10.0.0.1"])  # conventions:allow-infra
+    gateway = "172.17.0.1"  # conventions:allow-infra
+    for header in ({"X-Forwarded-For": "203.0.113.9"}, {"Forwarded": "for=203.0.113.9"}, {"X-Real-IP": "203.0.113.9"}):
+        assert forwarded_untrusted(_request(gateway, header), []) is True
+        assert forwarded_untrusted(_request(gateway, header), proxies) is True
+        assert forwarded_untrusted(_request("10.0.0.1", header), proxies) is False  # conventions:allow-infra
+    assert forwarded_untrusted(_request(gateway, {}), []) is False  # straight to the worker
+
+
+async def test_password_is_off_through_a_proxy_that_is_not_trusted(deps):
+    # A reverse proxy on this host reaches the published port through Docker's gateway, inside the
+    # default password networks: without ARCHIVE_ADMIN_TRUSTED_PROXIES every internet client looked local.
+    deps.settings.admin_api_key = SecretStr("k")
+    deps.settings.admin_password = SecretStr("correct horse")
+    app = create_admin_app(deps, jobs.JobService(deps, jobs.create_runtime(deps)))
+    gateway = "172.17.0.1"  # conventions:allow-infra
+
+    def client(headers: dict[str, str]) -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=app, client=(gateway, 1234))
+        return httpx.AsyncClient(transport=transport, base_url="https://admin", headers=headers)
+
+    async with client({"X-Forwarded-For": "203.0.113.9"}) as c:
+        assert (await c.get("/admin/session")).json()["passwordLogin"] is False
+        r = await c.post("/admin/session", json={"password": "correct horse"})
+        assert r.status_code == 403 and "ARCHIVE_ADMIN_TRUSTED_PROXIES" in r.json()["msg"]
+        for _ in range(6):  # refused before the limiter: nobody can lock the LAN out through the proxy
+            await c.post("/admin/session", json={"password": "wrong"})
+    async with client({}) as c:  # the same address without a proxy in between still works
+        assert (await c.get("/admin/session")).json()["passwordLogin"] is True
+        assert (await c.post("/admin/session", json={"password": "correct horse"})).status_code == 200
+
+    deps.settings.admin_trusted_proxies = [gateway]
+    app = create_admin_app(deps, jobs.JobService(deps, jobs.create_runtime(deps)))
+    async with client({"X-Forwarded-For": "203.0.113.9"}) as c:  # listed: the real client is judged
+        r = await c.post("/admin/session", json={"password": "correct horse"})
+        assert r.status_code == 403 and "local network" in r.json()["msg"]
 
 
 def test_plain_http_believes_x_forwarded_proto_only_from_proxies():

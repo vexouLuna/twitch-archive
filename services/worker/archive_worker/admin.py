@@ -64,6 +64,7 @@ from .admin_auth import (
     Session,
     SessionStore,
     client_address,
+    forwarded_untrusted,
     parse_networks,
     parse_password_networks,
     password_allowed,
@@ -420,7 +421,11 @@ def create_admin_app(
     # ── Session (browser login) ───────────────────────────────────────────
 
     def password_here(request: Request) -> bool:
-        return passwords.enabled and password_allowed(client_address(request, trusted_proxies), password_networks)
+        return (
+            passwords.enabled
+            and not forwarded_untrusted(request, trusted_proxies)
+            and password_allowed(client_address(request, trusted_proxies), password_networks)
+        )
 
     def session_json(request: Request, session: Session | None) -> dict[str, Any]:
         return {
@@ -443,6 +448,16 @@ def create_admin_app(
         if not passwords.enabled:
             raise AdminError(404, "Password login is off (ARCHIVE_ADMIN_PASSWORD is not set)")
         address = client_address(request, trusted_proxies)
+        if forwarded_untrusted(request, trusted_proxies):
+            # Fail closed: through an unlisted proxy every client would pass as the proxy's own address.
+            log.warning(
+                "admin password refused: %s forwards requests but is not in ARCHIVE_ADMIN_TRUSTED_PROXIES", address
+            )
+            raise AdminError(
+                403,
+                "The password is off through this proxy until it is listed in ARCHIVE_ADMIN_TRUSTED_PROXIES; "
+                "sign in with Twitch",
+            )
         if not password_allowed(address, password_networks):
             log.warning("admin password refused from %s (not in ARCHIVE_ADMIN_PASSWORD_NETWORKS)", address)
             raise AdminError(403, "The password only works from the local network; sign in with Twitch")
