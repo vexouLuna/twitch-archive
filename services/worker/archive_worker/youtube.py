@@ -419,7 +419,7 @@ class YouTube:
             else:
                 log.error(
                     "YouTube token is not usable (%s). Uploads will fail until the OAuth flow is "
-                    "run again: GET /admin/youtube/auth (README section 3).",
+                    "run again: GET /admin/youtube/auth (docs/youtube-oauth.md).",
                     result["error"],
                 )
             await asyncio.sleep(self.settings.youtube_keepalive_hours * 3600)

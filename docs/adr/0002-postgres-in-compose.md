@@ -32,7 +32,7 @@ service.
 ## Consequences
 
 - `docker compose up -d` on a fresh host brings up a working stack with its own database.
-- Moving an existing database is a dump and a `pg_restore` (README §7.4), done once per host.
+- Moving an existing database is a dump and a `pg_restore` (docs/deployment.md, "Restoring a dump"), done once per host.
 - The migrations' rule is unchanged: they stay additive, because the old containers run against the
   migrated schema until the new ones start.
 - Postgres upgrades are an image tag change plus a dump and restore across major versions, as for the

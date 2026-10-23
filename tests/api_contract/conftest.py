@@ -26,7 +26,7 @@ async def client():
     except Exception as exc:  # pragma: no cover - environment dependent
         pytest.skip(f"database unavailable: {exc}")
     if restored is None:  # pragma: no cover - environment dependent
-        # An empty database (CI's): the golden responses were captured against the live data (README §9).
+        # An empty database (CI's): the golden responses were captured against the live data (docs/development.md).
         pytest.skip(f"the golden data isn't restored (no VOD {GOLDEN_VOD})")
 
     from archive_api.main import create_app

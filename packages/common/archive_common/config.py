@@ -149,7 +149,7 @@ class YouTubeSettings(_Base):
     youtube_description: str = "VOD"
     youtube_title: str = "{channel} Twitch {label} - {date}"  # planning.TITLE_FIELDS; " PART n" is added
     youtube_title_compiled: str = "{title}"  # a compiled synthetic VOD's uploads (its own title)
-    youtube_keepalive_hours: float = 24.0  # periodic token refresh; see README "YouTube OAuth"
+    youtube_keepalive_hours: float = 24.0  # periodic token refresh; see docs/youtube-oauth.md
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count
     youtube_check_hours: float = 24.0  # how often the uploads are checked on YouTube; 0 = only by hand
 

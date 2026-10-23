@@ -130,7 +130,7 @@ services:
       - archive_google_client_secret
       - archive_doomtp_api_key
     ports:
-      # The admin API: never published to the internet (README §4). Its own address, so exposing the api to
+      # The admin API: never published to the internet (docs/admin-api.md). Its own address, so exposing the api to
       # a proxy on another host doesn't expose this too; unset, it follows ARCHIVE_PUBLISH_ADDR.
       - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_ADMIN_PORT:-3031}:${ARCHIVE_ADMIN_PORT:-3031}"
     volumes:

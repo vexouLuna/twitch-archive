@@ -13,7 +13,7 @@ jobs:
 
   ci:
     # The database tests run against the workflow's empty Postgres, migrated here. The contract tests
-    # (tests/api_contract) still skip: they replay responses captured from the live data (README §9).
+    # (tests/api_contract) still skip: they replay responses captured from the live data (docs/development.md).
     uses: vexouLuna/conventions/.github/workflows/python-ci.yml@v2.1.1
     with:
       postgres: true

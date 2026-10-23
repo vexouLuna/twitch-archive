@@ -4,7 +4,7 @@
 
 Records and archives Twitch VODs: `services/worker` captures, processes and uploads them; `services/api`
 serves the read-only, Feathers-compatible API the sites use. `packages/common` is shared by both. The
-README is the full manual.
+README links to the manual in `docs/`.
 
 - Pull requests go to `dev`; `main` is production and changes only through a release
   (docs/adr/0001). The server rebuilds and restarts on every change to `main`.
@@ -15,7 +15,7 @@ README is the full manual.
 - The API's response shapes are a contract with the sites (golden tests in `tests/api_contract/`).
   Don't change a shape without changing the sites too.
 - The database tests run in CI against an empty, migrated Postgres. The contract tests
-  (`tests/api_contract/`) need a restored copy of the database (README §9) and so skip in CI: run them
+  (`tests/api_contract/`) need a restored copy of the database (docs/development.md) and so skip in CI: run them
   locally before merging anything that touches queries or response shapes.
 - Long job steps save their progress in `ctx.payload` and must be safe to re-run part-way.
 - mypy is strict. Existing code carries inline `# type: ignore[...]` from when it was turned on; don't

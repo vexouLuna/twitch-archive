@@ -1,7 +1,7 @@
 """Steps and the legacy job runner against the local Postgres (skipped without it).
 
 The runner only drains jobs queued before the job runtime (legacy_jobs.py); the tests insert such
-rows themselves. Assumes a dev database with no other queued legacy jobs (see README "Development").
+rows themselves. Assumes a dev database with no other queued legacy jobs (see docs/development.md).
 """
 
 import asyncio

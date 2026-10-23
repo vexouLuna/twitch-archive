@@ -55,7 +55,7 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
 ## Consequences
 
 - **Easier:** fewer concepts to keep coherent. `create_admin_app` shrinks, auditing has one fewer writer,
-  and the README stops documenting two of everything.
+  and the docs stop documenting two of everything.
 - **Harder:** each step needs its exit check run against the live database or the sites first. Those are
   owner actions.
 - **Unchanged:** stored data and the schema. Rolling back a retirement is reverting its pull request.

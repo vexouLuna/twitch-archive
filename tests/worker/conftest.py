@@ -56,7 +56,7 @@ def make_ctx(deps):
 
 @pytest.fixture
 async def db():
-    """Local Postgres (see README "Development"); tests using it skip without one."""
+    """Local Postgres (see docs/development.md); tests using it skip without one."""
     import sqlalchemy
     from archive_common.db import get_engine
 

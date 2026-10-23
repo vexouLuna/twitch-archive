@@ -380,7 +380,9 @@ def create_admin_app(
             log.warning("admin code sign-in refused from origin %s (not in ARCHIVE_ADMIN_SITE_ORIGINS)", origin)
             return refused(403, "origin_not_allowed", "This origin is not one of ARCHIVE_ADMIN_SITE_ORIGINS")
         if signin is None:
-            return refused(404, "signin_off", "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            return refused(
+                404, "signin_off", "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)"
+            )
         if not isinstance(code, str) or not code:
             return refused(400, "invalid_code", "Missing parameter: code")
         try:
@@ -415,7 +417,7 @@ def create_admin_app(
     @app.get("/admin/signin")
     async def signin_start(next: str | None = None, quiet: bool = False) -> Response:
         if signin is None:
-            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)")
         state = pending.start(safe_next(next), quiet)
         response = RedirectResponse(signin.authorize_url(state), status_code=302)
         response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_S, **STATE_COOKIE_ARGS)  # type: ignore[arg-type]
@@ -426,7 +428,7 @@ def create_admin_app(
         request: Request, code: str | None = None, state: str | None = None, error: str | None = None
     ) -> Response:
         if signin is None:
-            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)")
         cookie = request.cookies.get(STATE_COOKIE) or ""
         started = pending.finish(state)
         # The state must be one this worker handed out, to this browser.

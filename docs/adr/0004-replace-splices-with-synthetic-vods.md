@@ -6,7 +6,7 @@
 
 ## Context
 
-There are two ways to merge two VODs of one broadcast or to split one in two (README "Merging and
+There are two ways to merge two VODs of one broadcast or to split one in two (docs/admin-api.md, "Merging and
 splitting VODs"):
 
 - **Splices** (`/admin/vods/{id}/merge|split|unmerge|unsplit`, `splices.py`, `timeline.py`, migration
@@ -79,7 +79,7 @@ If query 1 returns nothing, skip phase 2.
 
 ### Phase 2: convert the active splices
 
-Add a committed, documented command: `archive-worker convert-splices` (README). It is a dry run
+Add a committed, documented command: `archive-worker convert-splices` (docs/operations.md). It is a dry run
 unless `--apply` is given, and it is safe to run again: a converted splice is undone, so it is not
 picked up a second time.
 
@@ -107,7 +107,7 @@ For each group of connected active splices (query 2), newest splice first:
    Also write a `synthetic.create` row for each new VOD, as
    `/api/v2` does.
 
-Check on a restored copy first (README §9): a dry run, then `--apply`. Then, for each converted VOD,
+Check on a restored copy first (docs/development.md): a dry run, then `--apply`. Then, for each converted VOD,
 check that:
 
 - the site plays the same video;
