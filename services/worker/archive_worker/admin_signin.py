@@ -6,11 +6,6 @@ Twitch user and a vex-auth session id. Only ``ARCHIVE_ADMIN_TWITCH_IDS`` get a d
 The session id is checked again every ``CHECK_S`` seconds, so "sign out everywhere" on any site
 ends the dashboard session too.
 
-A *quiet* sign-in (``/admin/signin?quiet=1``) is the site checking whether someone already signed in
-to the site is an admin: vex-auth answers at once for a signed-in browser, and the callback always
-goes back to ``next`` with ``admin=1`` (a dashboard session was made) or ``admin=0`` (anything else),
-never to the login page.
-
 A *code* sign-in (``POST /admin/session {code}``) needs no redirect at all: the site mints a code with
 vex-auth's ``POST /v1/codes`` from the browser and hands it over, and the worker redeems it like
 the callback's. Such a code carries the client's first registered redirect URI (``code_redirect_uri``),
@@ -24,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode
 
 import httpx
 from archive_common.config import Settings
@@ -144,7 +139,6 @@ class VexAuth:
 
 class Pending(NamedTuple):
     next: str
-    quiet: bool
     expires: float
 
 
@@ -157,14 +151,14 @@ class PendingStates:
     clock: Callable[[], float] = time.monotonic
     _pending: dict[str, Pending] = field(default_factory=dict, repr=False)
 
-    def start(self, next_path: str, quiet: bool = False) -> str:
+    def start(self, next_path: str) -> str:
         now = self.clock()
         for state in [s for s, p in self._pending.items() if p.expires <= now]:
             del self._pending[state]
         while len(self._pending) >= self.limit:  # oldest first: dicts keep insertion order
             del self._pending[next(iter(self._pending))]
         state = secrets.token_urlsafe(32)
-        self._pending[state] = Pending(next_path, quiet, now + self.ttl_s)
+        self._pending[state] = Pending(next_path, now + self.ttl_s)
         return state
 
     def finish(self, state: str | None) -> Pending | None:
@@ -173,14 +167,6 @@ class PendingStates:
         if entry is None or entry.expires <= self.clock():
             return None
         return entry
-
-
-def with_admin(path: str, ok: bool) -> str:
-    """``path`` with ``admin=1`` or ``admin=0`` added: a quiet sign-in's answer."""
-    parts = urlsplit(path)
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "admin"]
-    query.append(("admin", "1" if ok else "0"))
-    return urlunsplit(("", "", parts.path, urlencode(query), parts.fragment))
 
 
 def safe_next(value: str | None) -> str:
