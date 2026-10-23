@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from archive_common import config
 from archive_common.config import Settings
 
 
@@ -31,3 +32,15 @@ def test_environment_wins_over_a_file(tmp_path: Path, monkeypatch: pytest.Monkey
     (tmp_path / "archive_admin_api_key").write_text("from-a-file")
     settings = load(tmp_path)
     assert settings.admin_api_key.get_secret_value() == "from-the-environment"
+
+
+def test_each_setting_is_in_one_group() -> None:
+    groups = [
+        g
+        for g in vars(config).values()
+        if isinstance(g, type) and issubclass(g, config._Base) and g.__bases__ == (config._Base,)
+    ]
+    names = [n for g in groups for n in g.__annotations__]
+    assert len(names) == len(set(names))  # no field defined twice
+    assert set(names) == set(Settings.model_fields)
+    assert set(config.ApiSettings.model_fields) < set(Settings.model_fields)

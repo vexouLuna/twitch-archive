@@ -80,7 +80,7 @@ To point the frontend at your local API, run `Archive-React-Vex` with `REACT_APP
 
 ## 2. Configuration
 
-All settings are environment variables with the `ARCHIVE_` prefix. They can also be put in a `.env` file in the working directory. Lists are JSON, e.g. `ARCHIVE_RESTRICTED_GAMES='["Artifact"]'`. The source of truth is `packages/common/archive_common/config.py`.
+All settings are environment variables with the `ARCHIVE_` prefix. They can also be put in a `.env` file in the working directory. Lists are JSON, e.g. `ARCHIVE_RESTRICTED_GAMES='["Artifact"]'`. The source of truth is `packages/common/archive_common/config.py`, which groups them by concern (`CoreSettings`, `TwitchSettings`, `YouTubeSettings`, …); archive-api reads only `ApiSettings`, the shared groups and its own. Where a value comes from, first match wins: a dashboard override (worker only, the † settings), the environment, `.env`, its secret file, the default.
 
 Settings marked **†** in the archive-worker table can also be changed from the admin dashboard while the worker runs ([Runtime settings](#runtime-settings)); the env value is then the default.
 

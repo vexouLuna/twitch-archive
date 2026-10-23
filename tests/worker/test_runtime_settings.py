@@ -57,6 +57,16 @@ def test_no_secret_or_path_is_editable():
         assert not any(word in key for word in ("secret", "key", "url", "dir", "hash", "password", "database"))
 
 
+def test_only_worker_settings_are_editable():
+    """An override only reaches the worker, so a setting archive-api reads can't be one."""
+    from archive_common.config import AdminSettings, ApiSettings, Settings
+
+    for key in BY_KEY:
+        assert key in Settings.model_fields
+        assert key not in ApiSettings.model_fields and key not in AdminSettings.model_fields
+        assert Settings.model_fields[key].annotation is not SecretStr
+
+
 def test_requires_names_a_bool_setting(settings):
     rows = {r["key"]: r for r in RuntimeSettings(settings).describe()}
     assert rows["multi_track"]["requires"] == "live_record"

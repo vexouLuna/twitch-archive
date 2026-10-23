@@ -47,7 +47,7 @@ def run(settings, monkeypatch):
     monkeypatch.setattr(monitor_mod, "set_live_stream", nothing)
     monkeypatch.setattr(monitor_mod, "live_stream_ids", nothing)
     settings.vod_download, settings.doomtp_url = True, ""
-    m = Monitor(FakeHelix(), FakeService())  # type: ignore[arg-type]
+    m = Monitor(FakeHelix(), FakeService(), settings)  # type: ignore[arg-type]
 
     async def ticks(live_record: bool, multi_track: bool) -> tuple[list[tuple[str, str | None]], set[str]]:
         settings.live_record, settings.multi_track = live_record, multi_track

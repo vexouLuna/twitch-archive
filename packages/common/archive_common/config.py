@@ -8,6 +8,13 @@ the worker's (archive_worker/runtime_settings.py); the env value is then the def
 Secrets can also come from files: one per setting, named like its variable in lowercase
 (``archive_admin_api_key``), in ``/run/secrets`` (where compose mounts them) or
 ``ARCHIVE_SECRETS_DIR``. A variable set in the environment wins over its file.
+
+So a value comes from, first match wins: an override saved from the dashboard (worker only, only the
+keys in runtime_settings.ENTRIES), the environment, ``.env``, its secret file, the default here.
+
+The fields are grouped by concern (``CoreSettings``, ``TwitchSettings``, ...). ``Settings`` is all of
+them (the worker's); ``ApiSettings`` is the part archive-api reads. The groups only organise the
+definitions: a field is still ``settings.<name>``, set by ``ARCHIVE_<NAME>``.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ def check_title(template: str) -> None:
         raise ValueError(f"a title can use only {{{'}, {'.join(TITLE_FIELDS)}}} ({exc})") from None
 
 
-class Settings(BaseSettings):
+class _Base(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ARCHIVE_",
         env_file=".env",
@@ -42,15 +49,22 @@ class Settings(BaseSettings):
         secrets_dir=SECRETS_DIR if SECRETS_DIR.is_dir() else None,
     )
 
-    # ── Shared ────────────────────────────────────────────────────────────
+
+# ── Groups: one per concern. Each field keeps its variable (ARCHIVE_ + its name in capitals) ──
+
+
+class CoreSettings(_Base):
+    """The database and logging: both services."""
+
     database_url: str = "postgresql+asyncpg://postgres:dev@127.0.0.1:55433/archive"
-    channel: str = ""  # display name in YouTube titles
-    domain_name: str = ""  # frontend host for the "Chat Replay" link
     timezone: str = "UTC"
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"  # json: one object per line, for containers
 
-    # ── Twitch ────────────────────────────────────────────────────────────
+
+class TwitchSettings(_Base):
+    """Twitch's Helix app and its private GQL: both services (the api only reads ``twitch_id``)."""
+
     twitch_id: str = ""
     twitch_username: str = ""
     twitch_client_id: str = ""
@@ -69,7 +83,10 @@ class Settings(BaseSettings):
     gql_hash_moments: str = "7399051b2d46f528d5f0eedf8b0db8d485bb1bb4c0a2c6707be6f1290cdcb31a"
     gql_hash_nielsen: str = "2dbf505ee929438369e68e72319d1106bb3c142e295332fac157c90638968586"
 
-    # ── API ───────────────────────────────────────────────────────────────
+
+class PublicApiSettings(_Base):
+    """archive-api's own: where it listens, pagination, the rate limit and its caches."""
+
     api_host: str = "0.0.0.0"
     api_port: int = 3030
     paginate_default: int = 10
@@ -82,8 +99,28 @@ class Settings(BaseSettings):
     api_trusted_proxies: list[str] = ["*"]
     cache_ttl_seconds: int = 300
 
-    # ── Worker ────────────────────────────────────────────────────────────
+
+class DataSettings(_Base):
+    """The data directory: the worker writes it, the api serves previews from it."""
+
     data_dir: Path = Path("/data")
+
+    @property
+    def vod_dir(self) -> Path:
+        return self.data_dir / "vods"
+
+    @property
+    def live_dir(self) -> Path:
+        return self.data_dir / "live"
+
+    @property
+    def previews_dir(self) -> Path:
+        return self.data_dir / "previews"
+
+
+class CaptureSettings(_Base):
+    """What the worker captures from Twitch, and how often it looks."""
+
     vod_download: bool = True
     chat_download: bool = True
     live_record: bool = False
@@ -91,6 +128,20 @@ class Settings(BaseSettings):
     # With live_record on and multi_track off, still upload the VOD copy of an archive started from the
     # dashboard (added from Twitch, re-downloaded): a stream the live recording missed has no other copy.
     force_upload_manual: bool = False
+
+    monitor_interval_seconds: int = 30
+    hls_poll_interval_seconds: int = 60
+    hls_no_change_threshold: int = 10
+    live_poll_interval_seconds: float = 2.0
+    live_end_threshold: int = 90  # consecutive polls without new segments (~3 min)
+    segment_concurrency: int = 4
+
+
+class YouTubeSettings(_Base):
+    """Uploads to YouTube: titles, descriptions, visibility, the OAuth client and the checks."""
+
+    channel: str = ""  # display name in YouTube titles
+    domain_name: str = ""  # frontend host for the "Chat Replay" link
     youtube_upload: bool = True
     youtube_public: bool = False
     compile_youtube_upload: bool = False  # the compile job may upload to YouTube; off: it only makes the file
@@ -101,6 +152,22 @@ class Settings(BaseSettings):
     youtube_keepalive_hours: float = 24.0  # periodic token refresh; see README "YouTube OAuth"
     youtube_daily_quota: int = 10_000  # the Google project's daily API units, for the dashboard's count
     youtube_check_hours: float = 24.0  # how often the uploads are checked on YouTube; 0 = only by hand
+
+    google_client_id: str = ""
+    google_client_secret: SecretStr = SecretStr("")
+    google_redirect_url: str = "http://localhost:3031/admin/refreshtoken"
+
+    @field_validator("youtube_title", "youtube_title_compiled")
+    @classmethod
+    def _title(cls, v: str) -> str:
+        check_title(v)  # a bad env template fails at startup, not at the first upload
+        return v
+
+
+class PipelineSettings(_Base):
+    """How a job runs: restricted and censored games, manual steps, splitting, kept files, previews,
+    bot chat and the runner."""
+
     restricted_games: list[str] = []
     # censor_check: a game whose IGDB content descriptors or themes contain one of these pauses the
     # job for a censor review (empty: no check); games in censor_allow_games are never looked up.
@@ -130,12 +197,9 @@ class Settings(BaseSettings):
     # A read-scope key: adds moderation entries and removed messages. Empty = the public log.
     doomtp_api_key: SecretStr = SecretStr("")
 
-    monitor_interval_seconds: int = 30
-    hls_poll_interval_seconds: int = 60
-    hls_no_change_threshold: int = 10
-    live_poll_interval_seconds: float = 2.0
-    live_end_threshold: int = 90  # consecutive polls without new segments (~3 min)
-    segment_concurrency: int = 4
+
+class AdminSettings(_Base):
+    """The worker's admin API: keys, the password, Twitch sign-in through vex-auth, proxies, sites."""
 
     admin_host: str = "0.0.0.0"
     admin_port: int = 3031
@@ -175,27 +239,17 @@ class Settings(BaseSettings):
     # GET /admin/vods/{id}/merge-candidates: VODs that started up to this long after one ended.
     merge_candidate_minutes: int = 30
 
-    google_client_id: str = ""
-    google_client_secret: SecretStr = SecretStr("")
-    google_redirect_url: str = "http://localhost:3031/admin/refreshtoken"
 
-    @field_validator("youtube_title", "youtube_title_compiled")
-    @classmethod
-    def _title(cls, v: str) -> str:
-        check_title(v)  # a bad env template fails at startup, not at the first upload
-        return v
+# ── What each service reads ──────────────────────────────────────────────
 
-    @property
-    def vod_dir(self) -> Path:
-        return self.data_dir / "vods"
 
-    @property
-    def live_dir(self) -> Path:
-        return self.data_dir / "live"
+class ApiSettings(CoreSettings, TwitchSettings, PublicApiSettings, DataSettings):
+    """What archive-api uses. Typing it against this, not ``Settings``, keeps the worker's settings out of it."""
 
-    @property
-    def previews_dir(self) -> Path:
-        return self.data_dir / "previews"
+
+class Settings(ApiSettings, CaptureSettings, YouTubeSettings, PipelineSettings, AdminSettings):
+    """Every setting: the worker's, and the shared ones. The dashboard can override the ones listed in
+    archive_worker/runtime_settings.py's ``ENTRIES``, and only those."""
 
 
 @lru_cache

@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from archive_common import logs, site_options, site_tags
 from archive_common import previews as pv
-from archive_common.config import Settings, get_settings
+from archive_common.config import ApiSettings, get_settings
 from archive_common.db import get_engine
 from archive_common.http import close_client
 from archive_common.models import Vod
@@ -51,7 +51,7 @@ SITE_TAG_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # fullmatch
 SERVICES = ("vods", "games", "emotes", "streams")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: ApiSettings | None = None) -> FastAPI:
     settings = settings or get_settings()
     engine = get_engine()
     services = build_services(settings)

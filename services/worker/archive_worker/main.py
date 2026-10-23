@@ -42,7 +42,7 @@ async def serve(dry_run: bool = False) -> None:
     events.install()  # job log lines -> GET /admin/jobs/{id}/events
     deps = Deps(settings, Helix(settings), Gql(settings), youtube.YouTube(settings), events)
     service = jobs.JobService.create(deps)
-    monitor = Monitor(deps.helix, service)
+    monitor = Monitor(deps.helix, service, settings)
     admin = uvicorn.Server(
         uvicorn.Config(
             create_admin_app(deps, service, sessions=DbSessionStore(), runtime=runtime),
