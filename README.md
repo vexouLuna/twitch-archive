@@ -849,7 +849,7 @@ docker compose up -d --wait                          # migrate, roles (grants), 
 
 `--no-privileges` skips the dump's grants, because the roles don't exist yet when it runs; the `roles` step recreates them and their grants. Compare row counts between the two servers before you switch the old one off, and keep it, stopped, until you're confident: switching back is stopping the stack and pointing the URLs at it again, losing what was written since.
 
-Pushes and pull requests run CI (`.github/workflows/ci.yml`): lint (ruff, mypy), the unit tests and both image builds. Pushes to `dev` and `main` and `vX.Y.Z` tags also publish the images to GHCR. Changes merge into `dev` and reach production in a release from `dev` into `main` (docs/adr/0001). The database and contract tests skip there because they need a copy of a real database; run them locally (§9) before merging anything that touches queries.
+Pushes and pull requests run CI (`.github/workflows/ci.yml`): lint (ruff, mypy), the unit tests and both image builds. Pushes to `dev` and `main` and `vX.Y.Z` tags also publish the images to GHCR. Changes merge into `dev` and reach production in a release from `dev` into `main` (docs/adr/0001). The database tests run there against an empty, migrated Postgres; the contract tests skip, because they need a restored copy of the real database: run them locally (§9) before merging anything that touches queries or response shapes.
 
 ---
 
