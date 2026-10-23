@@ -20,9 +20,6 @@ Every action on a job is audited (``audit_log``) by the runtime, in the transact
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -141,22 +138,6 @@ async def get(job_id: int) -> Row:  # type: ignore[type-arg]
 
 # ── Acting on jobs ─────────────────────────────────────────────────────────
 
-_RUN_CONFLICT = re.compile(r"run \d+ is (\w+); only (.+) runs can be (\w+)")
-
-
-@contextmanager
-def _v1_conflicts() -> Iterator[None]:
-    """The runtime's conflicts ("run 7 is succeeded; only paused runs can be resumed") worded as the
-    admin API always has ("Job is done; only paused jobs can be resumed")."""
-    try:
-        yield
-    except JobConflict as exc:
-        m = _RUN_CONFLICT.fullmatch(str(exc))
-        if m is None:
-            raise
-        state = "done" if m[1] == "succeeded" else m[1]
-        raise JobConflict(f"Job is {state}; only {m[2]} jobs can be {m[3]}") from exc
-
 
 async def _not_legacy(job_id: int) -> None:
     """Nothing runs the old table's jobs any more: they can be read, not acted on."""
@@ -203,33 +184,28 @@ class JobService:
 
     async def resume(self, job_id: int, *, once: bool = False, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
         await _not_legacy(job_id)
-        with _v1_conflicts():
-            await self.runtime.resume(job_id, once=once, actor=actor)
+        await self.runtime.resume(job_id, once=once, actor=actor)
         return await get(job_id)
 
     async def pause(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
         await _not_legacy(job_id)
-        with _v1_conflicts():
-            await self.runtime.pause(job_id, actor=actor)
+        await self.runtime.pause(job_id, actor=actor)
         return await get(job_id)
 
     async def retry(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
         await _not_legacy(job_id)
-        with _v1_conflicts():
-            await self.runtime.retry(job_id, actor=actor)
+        await self.runtime.retry(job_id, actor=actor)
         return await get(job_id)
 
     async def cancel(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
         await _not_legacy(job_id)
-        with _v1_conflicts():
-            await self.runtime.cancel(job_id, actor=actor)
+        await self.runtime.cancel(job_id, actor=actor)
         return await get(job_id)
 
     async def update(self, job_id: int, *, actor: Actor = SYSTEM, **values: Any) -> Row:  # type: ignore[type-arg]
         """``pause_before`` (None: back to the kind's default) and/or ``pause_next``."""
         await _not_legacy(job_id)
-        with _v1_conflicts():
-            await self.runtime.update(job_id, actor=actor, **values)
+        await self.runtime.update(job_id, actor=actor, **values)
         return await get(job_id)
 
     def note(self, job: Row, message: str) -> None:  # type: ignore[type-arg]

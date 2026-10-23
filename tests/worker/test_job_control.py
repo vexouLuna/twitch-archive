@@ -226,7 +226,7 @@ async def test_admin_launch_list_pause_resume(vod, steps, deps, make_service, wa
 
         assert (await c.post(f"/admin/jobs/{job_id}/resume", headers=headers)).status_code == 200
         r = await c.post(f"/admin/jobs/{job_id}/resume", headers=headers)
-        assert r.status_code == 409 and r.json()["msg"].startswith("Job is ")
+        assert r.status_code == 409 and r.json()["msg"].startswith(f"run {job_id} is ")
         await wait_job(job_id, "done")
         events = (await c.get(f"/admin/jobs/{job_id}/events", headers=headers)).json()
         assert f"Job {job_id} resumed at step c" in [e["message"] for e in events["data"]]
@@ -255,7 +255,10 @@ async def test_admin_job_routes_404_and_409(vod, steps, deps, make_service, wait
         job = await service.enqueue("test", vod)
         await wait_job(job.id, "done")
         r = await c.post(f"/admin/jobs/{job.id}/pause", headers=headers)
-        assert (r.status_code, r.json()["msg"]) == (409, "Job is done; only queued or running jobs can be paused")
+        assert (r.status_code, r.json()["msg"]) == (
+            409,
+            f"run {job.id} is succeeded; only queued or running runs can be paused",
+        )
 
         legacy = await _legacy_job("test")
         async with get_sessionmaker()() as s:

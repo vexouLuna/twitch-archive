@@ -49,7 +49,9 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
    ```
    Reads have no audit rows, so check the dashboard's code for `GET /admin/settings` and `/admin/storage` too.
 4. **`/admin` VOD routes and conflict rewording.** Exit: `/api/v2` covers games, chapters, YouTube and Drive
-   lists, and the dashboard uses it. Then remove `_v1_conflicts()` with them.
+   lists, and the dashboard uses it. `_v1_conflicts()` went first: production checks found no client that
+   matches the old wording (the dashboard shows the message as it is), so `/admin/jobs` now answers with
+   vex-platform's own messages.
 5. **Row-moving merge and split.** Decided: synthetic VODs replace them. The plan (stop making them,
    convert the active splices, remove the code) is ADR 0004.
 6. **Legacy auth header.** Exit: every script sends `Bearer`. Accepted: the worker logs a warning for any
