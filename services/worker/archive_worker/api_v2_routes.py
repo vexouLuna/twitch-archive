@@ -16,6 +16,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     GET    /api/v2/vods/{vod_id}/games its games rows, by start
     PUT    /api/v2/vods/{vod_id}/games {games}: all of them replaced
     PUT    /api/v2/vods/{vod_id}/chapters {chapters, locked}: all of them replaced
+    PUT    /api/v2/vods/{vod_id}/youtube {youtube}, /drive {drive}, /censor {censor}: each list replaced
     POST   /api/v2/synthetic           a synthetic VOD: segments of real ones (see compose, synthetic)
     GET    /api/v2/synthetic/{vod_id}
     PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
@@ -263,6 +264,7 @@ class VodDetail(VodRow):
     chapters_locked: bool  # edited by hand: the chapters step leaves them alone
     youtube: list[dict[str, Any]]
     drive: list[dict[str, Any]]
+    censor: list[dict[str, Any]]  # ranges blurred, blacked out or muted in uploads made from now on
     bot_chat: dict[str, Any] | None = None  # the last bot chat read
     updated_at: UtcDatetime
     splices: list[dict[str, Any]]  # merges and splits touching it, not undone
@@ -336,6 +338,26 @@ class ChaptersPut(ApiModel):
     locked: bool
 
 
+class YoutubePut(ApiModel):
+    """Every upload: ``{id, type ("vod" or "live"), part, duration?}``. A video already listed keeps its
+    thumbnail, seek-bar previews and recording gaps."""
+
+    youtube: list[dict[str, Any]]
+
+
+class DrivePut(ApiModel):
+    """Every Drive file: ``{id, type}``."""
+
+    drive: list[dict[str, Any]]
+
+
+class CensorPut(ApiModel):
+    """Every range: ``{start, end, video ("blur", "black" or null), mute, note?}`` in VOD seconds. Uploads
+    made from now on carry them; re-archive the VOD to replace the ones already on YouTube."""
+
+    censor: list[dict[str, Any]]
+
+
 def _game(row: Game) -> GameRow:
     return GameRow(
         id=str(row.id),
@@ -405,6 +427,7 @@ async def _detail(vod: Vod) -> VodDetail:
         chapters_locked=vod.chapters_locked,
         youtube=vod.youtube or [],
         drive=vod.drive or [],
+        censor=vod.censor or [],
         bot_chat=vod.bot_chat,
         updated_at=vod.updated_at,
         splices=await splices.active_splices(vod.id),
@@ -603,6 +626,64 @@ def vods_router(auth: Auth) -> APIRouter:
             )
             await s.commit()
         return await _detail(vod)
+
+    async def replace_list(
+        request: Request, vod_id: str, column: str, parse: Callable[[Vod], list[Any]], *, uploads: bool = False
+    ) -> VodDetail:
+        """Replace one of the VOD's lists (``parse`` validates the body against the VOD), audited as
+        ``vod.<column>.replace`` before and after. ``uploads``: refused on a merged or synthetic VOD,
+        which have no uploads of their own."""
+        async with get_sessionmaker()() as s:
+            vod = await _locked_vod(s, vod_id)
+            if uploads and vod.merged_into is not None:
+                raise ApiError(
+                    409,
+                    "vod_merged",
+                    f"{vod.id} was merged into {vod.merged_into.get('id')}; its uploads are that VOD's now. "
+                    "Undo the merge first",
+                )
+            if uploads and vod.synthetic is not None:
+                raise ApiError(409, "vod_synthetic", f"{vod.id} is synthetic: it has no uploads of its own to edit")
+            try:
+                value = parse(vod)
+            except ValueError as exc:
+                raise ApiError(422, f"invalid_{column}", str(exc)) from None
+            before = getattr(vod, column) or []
+            # A database trigger tells archive-api to drop its cached copies.
+            await s.execute(update(Vod).where(Vod.id == vod.id).values({column: value}))
+            await s.refresh(vod)
+            await record(
+                s,
+                AuditEntry(
+                    f"vod.{column}.replace",
+                    _actor(request),
+                    f"vod:{vod.id}",
+                    before={column: before},
+                    after={column: getattr(vod, column) or []},
+                    request_id=request_id(request),
+                ),
+                table=audit.TABLE,
+            )
+            await s.commit()
+        return await _detail(vod)
+
+    @router.put("/vods/{vod_id}/youtube")
+    async def put_youtube(request: Request, vod_id: str, body: YoutubePut) -> VodDetail:
+        return await replace_list(request, vod_id, "youtube", lambda vod: vod_edits.youtube(body.youtube, vod.youtube))
+
+    @router.put("/vods/{vod_id}/drive")
+    async def put_drive(request: Request, vod_id: str, body: DrivePut) -> VodDetail:
+        return await replace_list(request, vod_id, "drive", lambda vod: vod_edits.drive(body.drive))
+
+    @router.put("/vods/{vod_id}/censor")
+    async def put_censor(request: Request, vod_id: str, body: CensorPut) -> VodDetail:
+        return await replace_list(
+            request,
+            vod_id,
+            "censor",
+            lambda vod: vod_edits.censor(body.censor, hhmmss_to_seconds(vod.duration)),
+            uploads=True,
+        )
 
     # ── Synthetic VODs ──
 

@@ -382,3 +382,45 @@ async def test_chapters_replace_with_lock_and_audit(admin):
     )
     r = await admin.put(f"/api/v2/vods/{VOD}/chapters", headers=KEY, json={"chapters": [], "locked": False})
     assert (r.json()["chapters"], r.json()["chapters_locked"]) == ([], False)
+
+
+async def test_youtube_drive_and_censor_lists_replace_with_their_audit(admin):
+    youtube = [{"id": "abc123", "type": "vod", "part": 1, "duration": 600}]
+    r = await admin.put(f"/api/v2/vods/{VOD}/youtube", headers=KEY, json={"youtube": youtube})
+    assert r.status_code == 200, r.text
+    assert [(e["id"], e["part"], e["duration"]) for e in r.json()["youtube"]] == [("abc123", 1, 600)]
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], row["before"], row["after"]["youtube"][0]["id"]) == (
+        "vod.youtube.replace",
+        {"youtube": []},
+        "abc123",
+    )
+    twice = [*youtube, {**youtube[0], "part": 2}]
+    _problem(
+        await admin.put(f"/api/v2/vods/{VOD}/youtube", headers=KEY, json={"youtube": twice}), 422, "invalid_youtube"
+    )
+
+    r = await admin.put(f"/api/v2/vods/{VOD}/drive", headers=KEY, json={"drive": [{"id": "f1", "type": "live"}]})
+    assert r.json()["drive"] == [{"id": "f1", "type": "live"}]
+    assert (await _audit(r.headers["x-request-id"]))["action"] == "vod.drive.replace"
+    bad = {"drive": [{"id": "f1", "type": "clip"}]}
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/drive", headers=KEY, json=bad), 422, "invalid_drive")
+
+    censor = [{"start": 30, "end": 60, "video": "blur", "mute": True, "note": "spoiler"}]
+    r = await admin.put(f"/api/v2/vods/{VOD}/censor", headers=KEY, json={"censor": censor})
+    assert r.json()["censor"] == censor
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], row["before"], row["after"]) == ("vod.censor.replace", {"censor": []}, {"censor": censor})
+    late = {"censor": [{"start": 590, "end": 700, "mute": True}]}
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/censor", headers=KEY, json=late), 422, "invalid_censor")
+    _problem(await admin.put("/api/v2/vods/nope/censor", headers=KEY, json={"censor": []}), 404, "vod_not_found")
+
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).synthetic = {"supersedes": False}
+        await s.commit()
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/censor", headers=KEY, json={"censor": []}), 409, "vod_synthetic")
+    async with get_sessionmaker()() as s:
+        vod = await s.get(Vod, VOD)
+        vod.synthetic, vod.merged_into = None, {"id": "other"}
+        await s.commit()
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/censor", headers=KEY, json={"censor": []}), 409, "vod_merged")

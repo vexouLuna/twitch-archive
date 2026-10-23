@@ -68,7 +68,7 @@ Run read-only on both production archives.
 | 1. Legacy runner | No active rows (a few finished ones) | **Done** |
 | 2. Quiet sign-in | No site sends `quiet=1`; the sites' quiet check already uses `POST /admin/session {code}`. The worker log showed no quiet sign-ins, but covered only 4 days (the containers were recreated 2026-10-19), and the proxy keeps no access log | Removed without waiting for 30 days (owner's call) |
 | 3. Settings and storage | Written through the old routes in the last 30 days, all by the dashboard, which still calls `GET`/`PATCH`/`DELETE /admin/settings` and `GET`/`DELETE /admin/storage` | The dashboard moves to `/api/v2/settings` and `/api/v2/storage` (a site change; both exist) |
-| 4. VOD routes | The dashboard calls most `/admin/vods/{id}/*` routes; games, chapters and the VOD `PATCH` were written in the last 30 days. No scripts; nothing matches on error text | Games and chapters are in `/api/v2` (`PATCH /api/v2/vods/{id}` already was). Next: YouTube, Drive, censor, emotes, re-archive and the YouTube delete; then the dashboard. `_v1_conflicts()`: removed |
+| 4. VOD routes | The dashboard calls most `/admin/vods/{id}/*` routes; games, chapters and the VOD `PATCH` were written in the last 30 days. No scripts; nothing matches on error text | Games, chapters, YouTube, Drive and censor are in `/api/v2` (`PATCH /api/v2/vods/{id}` already was). Next: emotes, re-archive, the YouTube delete and the censor review; then the dashboard. `_v1_conflicts()`: removed |
 | 5. Merge and split | 4 active merges, on one archive (ADR 0004, phase 0) | ADR 0004 |
 | 6. Auth header | No API-key writes through the old routes in 30 days | The warning ships; `Bearer` only the release after |
 
