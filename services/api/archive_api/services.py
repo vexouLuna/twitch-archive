@@ -7,7 +7,7 @@ import operator
 from typing import Any
 from urllib.parse import unquote_plus
 
-from archive_common.config import Settings
+from archive_common.config import ApiSettings
 from archive_common.serialize import (
     EMOTES,
     GAMES,
@@ -42,7 +42,7 @@ class Service:
     def __init__(
         self,
         resource: Resource,
-        settings: Settings,
+        settings: ApiSettings,
         special: dict[str, fq.Special] | None = None,
         shown: ColumnElement[bool] | None = None,
     ):
@@ -104,7 +104,7 @@ class Service:
 
 
 class VodsService(Service):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: ApiSettings) -> None:
         special = {"chapters": fq.chapter_filter(VODS.table.c.chapters), "tags": _tags_filter}
         super().__init__(VODS, settings, special, not_hidden())
 
@@ -184,7 +184,7 @@ def _tags_filter(value: Any) -> ColumnElement[bool]:
 
 
 class GamesService(Service):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: ApiSettings) -> None:
         super().__init__(GAMES, settings, shown=of_shown_vod(GAMES.table.c.vod_id))
 
     async def embed(self, conn: AsyncConnection, items: list[dict[str, Any]]) -> None:
@@ -193,7 +193,7 @@ class GamesService(Service):
             item["vod"] = vods.get(item.get("vodId"))  # type: ignore[arg-type]
 
 
-def build_services(settings: Settings) -> dict[str, Service]:
+def build_services(settings: ApiSettings) -> dict[str, Service]:
     return {
         "vods": VodsService(settings),
         "games": GamesService(settings),

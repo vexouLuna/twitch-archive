@@ -21,6 +21,7 @@ from archive_common.models import BotLog, Vod
 from sqlalchemy import func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from .. import job_rows
 from ..context import JobContext, StepError
 from ..events import iso_utc
 from ..vods import notify_rows_moved, resequence_bot_logs, splice_reason
@@ -327,8 +328,6 @@ async def bot_chat_backfill(ctx: JobContext) -> None:
     """
     if not ctx.deps.doomtp.configured:
         raise StepError("ARCHIVE_DOOMTP_URL is not set")
-    from .. import jobs  # jobs imports the steps
-
     stmt = select(Vod).where(Vod.merged_into.is_(None)).order_by(Vod.created_at.desc())
     if ctx.payload.get("vod_ids"):
         stmt = stmt.where(Vod.id.in_([str(v) for v in ctx.payload["vod_ids"]]))
@@ -343,7 +342,7 @@ async def bot_chat_backfill(ctx: JobContext) -> None:
         if reason:
             ctx.log.info("skipping %s: %s", vod.id, reason)
             continue
-        if await jobs.find_active("bot_chat", vod_id=vod.id):
+        if await job_rows.find_active("bot_chat", vod_id=vod.id):
             ctx.log.info("skipping %s: a bot_chat job is already queued or running", vod.id)
             continue
         job_id = await ctx.enqueue("bot_chat", vod.id, {"backfill": True})

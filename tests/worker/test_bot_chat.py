@@ -588,7 +588,7 @@ async def test_monitor_starts_bot_chat_when_the_stream_ends(vod, settings):
 
     settings.live_record = settings.vod_download = False
     helix, runner = FakeHelix(), FakeRunner()
-    monitor = Monitor(helix, runner)  # type: ignore[arg-type]
+    monitor = Monitor(helix, runner, settings)  # type: ignore[arg-type]
     live = select(Stream.id).where(Stream.is_live.is_(True))
     async with get_sessionmaker()() as s:  # the dev DB's own live stream is not this test's
         was_live = list((await s.execute(live)).scalars())

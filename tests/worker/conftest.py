@@ -8,7 +8,7 @@ import pytest
 from archive_common.config import Settings
 from archive_common.twitch.gql import Gql
 from archive_common.twitch.helix import Helix
-from archive_worker import jobs, legacy_jobs
+from archive_worker import jobs
 from archive_worker.context import Deps, JobContext
 from archive_worker.youtube import YouTube
 
@@ -56,7 +56,7 @@ def make_ctx(deps):
 
 @pytest.fixture
 async def db():
-    """Local Postgres (see README "Development"); tests using it skip without one."""
+    """Local Postgres (see docs/development.md); tests using it skip without one."""
     import sqlalchemy
     from archive_common.db import get_engine
 
@@ -81,7 +81,7 @@ async def make_service(deps, db):
         made.append(runtime)
         if start:
             await runtime.start()
-        return jobs.JobService(deps, runtime, legacy_jobs.Runner(deps, runtime.registry))
+        return jobs.JobService(deps, runtime)
 
     yield make
     for runtime in made:

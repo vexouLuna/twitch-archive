@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 from typing import Any
 
-import archive_worker.admin as admin_module
+import archive_worker.admin_status as admin_status
 import asyncpg
 import httpx
 import pytest
@@ -439,7 +439,8 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
                 await api.get(f"/v1/vods/{vod}/comments?content_offset_seconds={len(seen)}&source=replay")
             ).status_code,
             "played": "test-hidden-game" in [g["gameId"] for g in (await api.get("/v1/games-played")).json()],
-            "latest": None if status["live"] else status["vod"]["id"] == vod,  # None: live, not checked
+            # None: live, not checked. With no other VOD (an empty database) a hidden one leaves vod null.
+            "latest": None if status["live"] else (status["vod"] or {}).get("id") == vod,
         }
 
     conn, heard = await _listen()
@@ -683,7 +684,7 @@ async def test_healthz_and_readyz(app, monkeypatch):
         r = await c.get("/readyz")
         assert (r.status_code, r.json()) == (200, {"status": "ok", "runningJobs": 0})
 
-    monkeypatch.setattr(admin_module, "get_sessionmaker", lambda: async_sessionmaker(create_async_engine(UNREACHABLE)))
+    monkeypatch.setattr(admin_status, "get_sessionmaker", lambda: async_sessionmaker(create_async_engine(UNREACHABLE)))
     async with client(app) as c:
         assert (await c.get("/healthz")).status_code == 200  # liveness doesn't look at the database
         r = await c.get("/readyz")

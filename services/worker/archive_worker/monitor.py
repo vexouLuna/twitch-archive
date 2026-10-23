@@ -16,6 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
+from archive_common.config import Settings
 from archive_common.timeutil import parse_helix_duration, parse_ts
 from archive_common.twitch.helix import Helix
 
@@ -26,10 +27,10 @@ log = logging.getLogger(__name__)
 
 
 class Monitor:
-    def __init__(self, helix: Helix, service: jobs.JobService) -> None:
+    def __init__(self, helix: Helix, service: jobs.JobService, settings: Settings) -> None:
         self.helix = helix
         self.service = service
-        self.settings = helix.settings
+        self.settings = settings  # the worker's one Settings object, which dashboard overrides change
 
     async def run_forever(self) -> None:
         watching = self.helix.configured

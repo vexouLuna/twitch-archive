@@ -1,4 +1,4 @@
-"""Step registry: job kinds in ``jobs.KINDS`` are sequences of these names."""
+"""Step registry: job kinds in ``kinds.KINDS`` are sequences of these names."""
 
 from __future__ import annotations
 

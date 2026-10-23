@@ -19,8 +19,8 @@ INTERVAL = 10  # seconds between frames
 WIDTH, HEIGHT = 160, 90
 COLS, ROWS = 10, 10
 
-YOUTUBE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
-SHEET = re.compile(r"^(\d{1,5})\.jpg$")
+YOUTUBE_ID = re.compile(r"\A[A-Za-z0-9_-]{11}\Z")  # \Z: "$" would also take a trailing newline
+SHEET = re.compile(r"\A(\d{1,5})\.jpg\Z")
 
 
 def frame_count(duration: float) -> int:
