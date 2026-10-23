@@ -12,10 +12,10 @@ pauses at the next step boundary once. Gates are checked when a job moves on to 
 resuming, retrying or recovering a job runs its current step.
 
 A job's subject is ``vod:<id>``; one job per (VOD, video type) runs at a time (``_lock``). Jobs
-queued before the runtime existed are finished by legacy_jobs.py; ``JobService`` acts on either.
+queued before the runtime existed (the old ``jobs`` table) are still listed and their logs read, but
+nothing runs them or acts on them any more (ADR 0003, step 1).
 
-Every action on a job is audited (``audit_log``): by the runtime, in the transaction that makes it,
-or for a legacy job by ``JobService`` once it is made.
+Every action on a job is audited (``audit_log``) by the runtime, in the transaction that makes it.
 """
 
 from __future__ import annotations
@@ -32,10 +32,8 @@ from archive_common.db import get_sessionmaker
 from sqlalchemy import Row, select
 from sqlalchemy.engine import make_url
 from vex_platform.actor import SYSTEM, Actor
-from vex_platform.audit import AuditEntry
 from vex_platform.jobs import InvalidJob, JobConflict, JobNotFound, JobRun, JobRuntime, Registry
 
-from . import legacy_jobs
 from .context import Deps, JobContext
 from .events import event_json, iso_utc
 from .job_rows import ACTIVE, ALL_JOBS, STATES, active_by_vod, exists_any, find_active, subject_of, vod_of
@@ -160,29 +158,31 @@ def _v1_conflicts() -> Iterator[None]:
         raise JobConflict(f"Job is {state}; only {m[2]} jobs can be {m[3]}") from exc
 
 
+async def _not_legacy(job_id: int) -> None:
+    """Nothing runs the old table's jobs any more: they can be read, not acted on."""
+    if (await get(job_id)).legacy:
+        raise JobConflict(f"Job {job_id} is from the old jobs table, which no longer runs; queue a new job instead")
+
+
 @dataclass
 class JobService:
-    """What the admin API, the monitor and the CLI do with jobs: new ones go to the runtime, and the
-    actions reach a job in whichever table it is. Each returns the job as ``get`` reads it."""
+    """What the admin API, the monitor and the CLI do with jobs: new ones go to the runtime, and so do
+    the actions on them. Each returns the job as ``get`` reads it."""
 
     deps: Deps
     runtime: JobRuntime
-    legacy: legacy_jobs.Runner | None = None
 
     @classmethod
     def create(cls, deps: Deps) -> JobService:
-        runtime = create_runtime(deps)
-        return cls(deps, runtime, legacy_jobs.Runner(deps, runtime.registry))
+        return cls(deps, create_runtime(deps))
 
     @property
     def running(self) -> int:
         """Jobs running in this worker now."""
-        return self.runtime.limiter.active + (len(self.legacy.running) if self.legacy else 0)  # type: ignore[no-any-return]
+        return self.runtime.limiter.active  # type: ignore[no-any-return]
 
     def apply_settings(self) -> None:
         apply_settings(self.runtime, self.deps.settings)
-        if self.legacy:
-            self.legacy.poke()  # a higher concurrency starts waiting jobs now
 
     async def enqueue(
         self,
@@ -202,65 +202,39 @@ class JobService:
         return await get(enqueued.run.id)
 
     async def resume(self, job_id: int, *, once: bool = False, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().resume(job_id, once=once)
-            return await self._legacy_audit("job.resume", job, actor)
+        await _not_legacy(job_id)
         with _v1_conflicts():
             await self.runtime.resume(job_id, once=once, actor=actor)
         return await get(job_id)
 
     async def pause(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await legacy_jobs.pause(job_id)
-            return await self._legacy_audit("job.pause", job, actor)
+        await _not_legacy(job_id)
         with _v1_conflicts():
             await self.runtime.pause(job_id, actor=actor)
         return await get(job_id)
 
     async def retry(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().retry(job_id)
-            return await self._legacy_audit("job.retry", job, actor)
+        await _not_legacy(job_id)
         with _v1_conflicts():
             await self.runtime.retry(job_id, actor=actor)
         return await get(job_id)
 
     async def cancel(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().cancel(job_id)
-            return await self._legacy_audit("job.cancel", job, actor)
+        await _not_legacy(job_id)
         with _v1_conflicts():
             await self.runtime.cancel(job_id, actor=actor)
         return await get(job_id)
 
     async def update(self, job_id: int, *, actor: Actor = SYSTEM, **values: Any) -> Row:  # type: ignore[type-arg]
         """``pause_before`` (None: back to the kind's default) and/or ``pause_next``."""
-        if (job := await get(job_id)).legacy:
-            await legacy_jobs.set_control(self.runtime.registry, job_id, **values)
-            return await self._legacy_audit("job.update", job, actor, fields=("pause_before", "pause_next"))
+        await _not_legacy(job_id)
         with _v1_conflicts():
             await self.runtime.update(job_id, actor=actor, **values)
         return await get(job_id)
 
-    async def _legacy_audit(self, action: str, before: Row, actor: Actor, fields: tuple[str, ...] = ("state",)) -> Row:  # type: ignore[type-arg]
-        """The audit row of an action on a legacy job, as the runtime writes one for a run."""
-        after = await get(before.id)
-        await audit.write(
-            AuditEntry(
-                action,
-                actor,
-                f"job:{before.id}",
-                before={f: getattr(before, f) for f in fields},
-                after={f: getattr(after, f) for f in fields},
-                detail={"legacy": True},
-            )
-        )
-        return after
-
     def note(self, job: Row, message: str) -> None:  # type: ignore[type-arg]
         """A line in the job's event log (an admin action on it)."""
-        events = self.deps.events if job.legacy else self.runtime.events
-        events.add(job.id, "info", job.step, message)
+        self.runtime.events.add(job.id, "info", job.step, message)
 
     async def events(self, job_id: int, *, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         """The job's log lines, step changes and progress, oldest first, as ``event_json`` shapes them."""
@@ -277,8 +251,3 @@ class JobService:
             }
             for e in await self.runtime.events.list(job_id, after=after, limit=limit)
         ]
-
-    def _legacy(self) -> legacy_jobs.Runner:
-        if self.legacy is None:
-            raise JobConflict("legacy jobs are run by the worker")
-        return self.legacy

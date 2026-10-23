@@ -1,5 +1,5 @@
 """Jobs as the admin API and the other readers see them: vex-platform's ``jobs.job_runs`` and the
-rows left in the legacy ``jobs`` table (legacy_jobs.py), read as one table.
+rows left in the old ``jobs`` table (finished; nothing runs them), read as one table.
 
 A run's ``subject`` is ``vod:<id>``, read as ``vod_id``, and its ``succeeded`` state as ``done``,
 so a row looks the same whichever table it came from. ``legacy`` says which one that was. Ids do

@@ -1,7 +1,7 @@
 """Manual step gates, pause/resume/cancel, and the admin job endpoints (needs the dev DB).
 
-New jobs are runs of the job runtime; the legacy table's jobs are still finished by the old runner
-(legacy_jobs.py) and reached by the same admin actions.
+New jobs are runs of the job runtime. The old table's jobs are only read: nothing runs them, and
+every action on one is refused.
 """
 
 import asyncio
@@ -9,10 +9,10 @@ import datetime as dt
 
 import httpx
 import pytest
-from archive_common.audit import AUDIT_LOG, actor_of
+from archive_common.audit import AUDIT_LOG
 from archive_common.db import get_sessionmaker
 from archive_common.models import Job, Vod
-from archive_worker import jobs, legacy_jobs
+from archive_worker import jobs
 from archive_worker.admin import create_admin_app
 from archive_worker.job_rows import RUNS, subject_of
 from pydantic import SecretStr
@@ -183,7 +183,7 @@ def test_unknown_manual_step_fails_at_startup(deps):
         jobs.create_runtime(deps)
 
 
-# ── Jobs of the legacy table ──────────────────────────────────────────────
+# ── Jobs of the old table ──────────────────────────────────────────────
 
 
 async def _legacy_job(kind: str, **values) -> Job:
@@ -193,45 +193,6 @@ async def _legacy_job(kind: str, **values) -> Job:
         s.add(job)
         await s.commit()
         return job
-
-
-async def _claim_and_run(runner: legacy_jobs.Runner, job_id: int):
-    job = await runner._claim()
-    assert job is not None and job.id == job_id
-    await runner._run(job)
-    return await jobs.get(job_id)
-
-
-async def test_legacy_job_drains_through_its_gates(vod, steps, deps, make_service):
-    deps.settings.manual_steps = {"test": ["b"]}
-    service = await make_service(start=False)
-    job = await _legacy_job("test")
-
-    after = await _claim_and_run(service.legacy, job.id)
-    assert (after.state, after.step, after.legacy, steps) == ("paused", "b", True, ["a"])
-    assert await service.legacy._claim() is None  # paused jobs are not picked up
-
-    assert (await service.resume(job.id)).state == "queued"
-    done = await _claim_and_run(service.legacy, job.id)
-    assert (done.state, steps) == ("done", ["a", "b", "c"])
-
-
-async def test_legacy_job_cancelled_while_running(vod, deps, monkeypatch, make_service):
-    started = asyncio.Event()
-
-    async def forever(ctx):
-        started.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setitem(jobs.KINDS, "test", ["forever"])
-    monkeypatch.setitem(jobs.STEPS, "forever", forever)  # type: ignore[attr-defined]
-    service = await make_service(start=False)
-    job = await _legacy_job("test")
-    await service.legacy._fill()
-    await asyncio.wait_for(started.wait(), 10)
-
-    assert (await service.cancel(job.id)).state == "cancelled"
-    assert job.id not in service.legacy.running
 
 
 # ── Admin endpoints ───────────────────────────────────────────────────────
@@ -300,8 +261,18 @@ async def test_admin_job_routes_404_and_409(vod, steps, deps, make_service, wait
         async with get_sessionmaker()() as s:
             (await s.get(Job, legacy.id)).state = "done"
             await s.commit()
-        r = await c.post(f"/admin/jobs/{legacy.id}/pause", headers=headers)
-        assert (r.status_code, r.json()["msg"]) == (409, "Job is done; only queued or running jobs can be paused")
+        assert (await c.get(f"/admin/jobs/{legacy.id}", headers=headers)).json()["state"] == "done"
+        assert (await c.get(f"/admin/jobs/{legacy.id}/events", headers=headers)).status_code == 200
+        for method, path in (
+            ("post", "/resume"),
+            ("post", "/pause"),
+            ("post", "/retry"),
+            ("post", "/cancel"),
+            ("patch", ""),
+        ):
+            kwargs = {"json": {"pauseNext": True}} if method == "patch" else {}
+            r = await c.request(method.upper(), f"/admin/jobs/{legacy.id}{path}", headers=headers, **kwargs)  # type: ignore[arg-type]
+            assert r.status_code == 409 and "old jobs table" in r.json()["msg"], path
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────
@@ -335,10 +306,3 @@ async def test_admin_job_actions_are_audited_once_with_the_caller(vod, steps, de
         ),
         ("job.cancel", "api_key", "api", {"state": "paused"}, None),
     ]
-
-
-async def test_legacy_job_actions_are_audited_by_the_service(vod, steps, deps, make_service):
-    service = await make_service(start=False)
-    job = await _legacy_job("test")
-    await service.pause(job.id, actor=actor_of("twitch:100", "alice"))
-    assert await _audited(job.id) == [("job.pause", "user", "web", {"state": "queued"}, {"state": "paused"})]

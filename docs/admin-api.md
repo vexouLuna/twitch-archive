@@ -39,7 +39,7 @@ curl -s "${H[@]}" "$A/api/v2/vods?q=title&hidden=false"            # also cursor
 curl -s "${H[@]}" -X PATCH "$A/api/v2/vods/123" -d '{"title":"…","thumbnail_url":null}'
 ```
 
-`/api/v2/jobs` covers the job runtime's runs only. Jobs still in the old `jobs` table are listed and acted on through `/admin/jobs`. A VOD's games, chapters, YouTube and Drive lists are still `/admin` only. Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
+`/api/v2/jobs` covers the job runtime's runs only. Jobs from the old `jobs` table (all finished) are still listed by `/admin/jobs`, with their logs, but nothing runs them any more and actions on them answer 409. A VOD's games, chapters, YouTube and Drive lists are still `/admin` only. Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
 
 A v2 change writes its audit row in the same transaction as the change (`setting.update`, `setting.reset`, `vod.update`), with the fields before and after, so the two never disagree. A storage delete is files, so its row (`storage.delete`, with what it freed) comes right after.
 

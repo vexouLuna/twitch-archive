@@ -34,6 +34,9 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
    ```
    Then remove `legacy_jobs.py`, the `JobService` branches for legacy ids, `ALL_JOBS`' legacy half and the
    runner task in `main.py`. Finished legacy rows can stay readable through a plain query if wanted.
+   **Done** (the check found no active rows in production): the runner and every action on an old job
+   are gone. `ALL_JOBS` keeps its read-only legacy half, so the finished old jobs still list with their
+   logs; an action on one answers 409.
 2. **Quiet sign-in.** Exit: no site requests `GET /admin/signin?quiet=1` (the sites' repositories), and
    the worker log shows no quiet sign-ins for 30 days.
 3. **Duplicated `/admin` settings and storage routes.** Exit: none of their writes in 30 days.

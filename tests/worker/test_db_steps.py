@@ -1,20 +1,14 @@
-"""Steps and the legacy job runner against the local Postgres (skipped without it).
-
-The runner only drains jobs queued before the job runtime (legacy_jobs.py); the tests insert such
-rows themselves. Assumes a dev database with no other queued legacy jobs (see docs/development.md).
-"""
+"""Steps against the local Postgres (skipped without it; see docs/development.md)."""
 
 import asyncio
 import datetime as dt
 import json
 
 import httpx
-import pytest
 import respx
 from archive_common.db import get_sessionmaker
 from archive_common.models import Job, Log, Vod
 from archive_common.twitch.gql import GQL_URL
-from archive_worker import jobs, legacy_jobs
 from archive_worker.steps import metadata
 from sqlalchemy import delete, select
 
@@ -27,19 +21,6 @@ async def _reset():
         await s.execute(delete(Job).where(Job.vod_id == VOD))
         await s.execute(delete(Vod).where(Vod.id == VOD))
         await s.commit()
-
-
-async def _legacy_job(kind: str) -> Job:
-    """A job as the old runner's ``enqueue`` left it."""
-    async with get_sessionmaker()() as s:
-        job = Job(kind=kind, vod_id=VOD, step=jobs.KINDS[kind][0], state="queued", payload={})
-        s.add(job)
-        await s.commit()
-        return job
-
-
-def _runner(deps) -> legacy_jobs.Runner:
-    return legacy_jobs.Runner(deps, jobs.build_registry())
 
 
 async def _vod():
@@ -103,92 +84,6 @@ async def test_chat_crawl_is_idempotent(db, make_ctx, monkeypatch):
     assert json.loads(second.content)["variables"] == {"videoID": VOD, "cursor": "c2"}
     assert first.headers["Client-Id"] != second.headers["Client-Id"]
     assert json.loads(route.calls[2].request.content)["variables"]["contentOffsetSeconds"] == 9
-    await _reset()
-
-
-async def test_runner_resumes_from_failed_step(db, deps, monkeypatch):
-    await _vod()
-    calls: list[str] = []
-    fail = {"b": 1}
-
-    def step(name):
-        async def run(ctx):
-            calls.append(name)
-            ctx.payload[name] = True
-            if fail.get(name):
-                fail[name] -= 1
-                raise RuntimeError("boom")
-
-        return run
-
-    monkeypatch.setitem(jobs.KINDS, "test", ["a", "b", "c"])
-    for name in "abc":
-        monkeypatch.setitem(jobs.STEPS, name, step(name))  # type: ignore[attr-defined]
-
-    runner = _runner(deps)
-    job = await _legacy_job("test")
-    await runner._run(job)
-    async with get_sessionmaker()() as s:
-        after = await s.get(Job, job.id)
-    assert (after.state, after.step, after.attempts) == ("queued", "b", 1)
-    assert after.payload == {"a": True, "b": True} and after.not_before is not None
-    assert "boom" in after.last_error
-
-    await runner._run(after)  # e.g. a restarted worker picks it up again
-    async with get_sessionmaker()() as s:
-        done = await s.get(Job, job.id)
-    assert done.state == "done" and done.step is None
-    assert calls == ["a", "b", "b", "c"]
-    assert done.payload == {"a": True, "b": True, "c": True} and done.not_before is None
-    await _reset()
-
-
-async def test_runner_does_not_repeat_finished_steps_after_interruption(db, deps, monkeypatch):
-    await _vod()
-    calls: list[str] = []
-
-    async def a(ctx):
-        calls.append("a")
-        ctx.payload["a"] = True
-
-    async def b(ctx):
-        calls.append("b")
-        if calls.count("b") == 1:
-            raise asyncio.CancelledError  # worker shut down mid-step
-
-    monkeypatch.setitem(jobs.KINDS, "test", ["a", "b"])
-    monkeypatch.setitem(jobs.STEPS, "a", a)  # type: ignore[attr-defined]
-    monkeypatch.setitem(jobs.STEPS, "b", b)  # type: ignore[attr-defined]
-
-    runner = _runner(deps)
-    job = await _legacy_job("test")
-    with pytest.raises(asyncio.CancelledError):
-        await runner._run(job)
-    async with get_sessionmaker()() as s:
-        after = await s.get(Job, job.id)
-    assert (after.state, after.step, after.payload) == ("queued", "b", {"a": True})
-
-    await runner._run(after)
-    assert calls == ["a", "b", "b"]
-    await _reset()
-
-
-async def test_claim_respects_not_before_and_exclusivity(db, deps):
-    await _vod()
-    runner = _runner(deps)
-    later = await _legacy_job("emotes")
-    async with get_sessionmaker()() as s:
-        (await s.get(Job, later.id)).not_before = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
-        await s.commit()
-    assert await runner._claim() is None
-    j1 = await _legacy_job("emotes")
-    j2 = await _legacy_job("chapters")
-    claimed = await runner._claim()
-    assert claimed.id == j1.id  # type: ignore[union-attr]
-    runner.running_keys[claimed.id] = legacy_jobs._exclusive_key(claimed)  # type: ignore[arg-type, union-attr]
-    assert await runner._claim() is None  # same vod + type is busy
-    runner.running_keys.clear()
-    assert (await runner._claim()).id == j2.id  # type: ignore[union-attr]
     await _reset()
 
 

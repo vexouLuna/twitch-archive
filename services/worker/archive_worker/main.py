@@ -72,9 +72,8 @@ async def serve(dry_run: bool = False) -> None:
         settings.dry_run,
     )
     await service.runtime.open()
-    await service.runtime.start()  # new jobs; the legacy runner below finishes the old table's
+    await service.runtime.start()
     tasks = [
-        asyncio.create_task(service.legacy.run_forever(), name="legacy-runner"),  # type: ignore[union-attr]
         asyncio.create_task(monitor.run_forever(), name="monitor"),
         asyncio.create_task(events.run_forever(), name="job-events"),  # flushes on cancel
     ]
@@ -102,7 +101,6 @@ async def serve(dry_run: bool = False) -> None:
     log.info("shutting down; interrupted jobs resume on next start")
     admin.should_exit = True  # uvicorn stops on its own; cancelling it logs a spurious traceback
     await service.runtime.stop()
-    await service.legacy.shutdown()  # type: ignore[union-attr]
     admin_task, others = tasks[-1], tasks[:-1]
     for t in others:
         t.cancel()

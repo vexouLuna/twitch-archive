@@ -34,7 +34,7 @@ flowchart LR
 **How it differs from the old Node app:**
 
 - **Twitch download is up to date.** It uses the new `PlaybackAccessToken` hash, the usher `/vod/v2/` playlists, and the chunked → 1080p fallback on 403. fMP4 init segments are handled. All GQL hashes and client IDs are settings, so the next Twitch rotation is a config change.
-- **Jobs are durable.** Every job is a list of steps, and progress is stored in Postgres (the `jobs` table). A restart or crash resumes a job at the first unfinished step; finished steps never run again. Failed steps are retried with backoff (3 attempts).
+- **Jobs are durable.** Every job is a list of steps, and progress is stored in Postgres (vex-platform's job runtime, `jobs.job_runs`). A restart or crash resumes a job at the first unfinished step; finished steps never run again. Failed steps are retried with backoff (3 attempts).
 - **No Redis.** Caches and the rate limiter live in process memory.
 - **No config file writes.** The YouTube OAuth token is kept in the `app_state` table.
 - **Fixed bugs:** `/v2/badges` (it crashed on every request), `$select`, `chapters[name]` (regex injection, and it now combines with other filters), duplicate `streams` inserts, reupload offsets, and splitting VODs that have no chapters.

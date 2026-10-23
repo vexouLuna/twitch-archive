@@ -7,7 +7,7 @@ import pytest
 from archive_common.audit import AUDIT_LOG
 from archive_common.db import get_sessionmaker
 from archive_common.models import RuntimeSetting
-from archive_worker import jobs, legacy_jobs
+from archive_worker import jobs
 from archive_worker.admin import create_admin_app
 from archive_worker.context import JobContext
 from archive_worker.runtime_settings import BY_KEY, RuntimeSettings, validate
@@ -91,14 +91,6 @@ def test_apply_settings_reaches_the_runtime(deps):
     assert (runtime.limiter.limit, runtime.max_attempts) == (5, 7)
     assert runtime.registry.get("archive").pause_before == ("upload",)
     assert runtime.registry.get("download").pause_before == ()
-
-
-def test_legacy_runner_reads_concurrency_each_time(deps):
-    runner = legacy_jobs.Runner(deps, jobs.build_registry())
-    assert runner.concurrency == 3
-    deps.settings.runner_concurrency = 5
-    assert runner.concurrency == 5
-    assert legacy_jobs.Runner(deps, jobs.build_registry(), concurrency=1).concurrency == 1
 
 
 # ── The table ─────────────────────────────────────────────────────────────
@@ -205,7 +197,7 @@ async def test_settings_routes(app, clean, deps):
         assert r.status_code == 200
         row = {x["key"]: x for x in r.json()["data"]}["runner_concurrency"]
         assert (row["value"], row["default"], row["overridden"], row["updatedBy"]) == (6, 3, True, "api-key")
-        assert limiter.limit == 6 and app[1].legacy.concurrency == 6
+        assert limiter.limit == 6
         kinds = (await c.get("/admin/kinds", headers=KEY)).json()
         assert kinds["archive"]["manualSteps"] == ["upload"]
 

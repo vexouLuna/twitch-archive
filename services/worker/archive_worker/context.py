@@ -51,7 +51,7 @@ __all__ = ["Deps", "JobContext", "StepDeferred", "StepError", "StepRefused"]
 class JobContext:
     """What a step receives. Under the runtime (``of_run``) it wraps vex-platform's ``StepContext``:
     payload, subject (``vod_id``), step, log, progress and save are the run's. Built directly, it is a
-    job of the legacy table (legacy_jobs.py) or a test's."""
+    test's (``save`` writes the old ``jobs`` table's row)."""
 
     def __init__(
         self,
