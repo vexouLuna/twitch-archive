@@ -7,7 +7,7 @@ import httpx
 import pytest
 from archive_common.audit import AUDIT_LOG
 from archive_common.db import get_sessionmaker
-from archive_common.models import RuntimeSetting, Vod
+from archive_common.models import Game, RuntimeSetting, Vod
 from archive_worker import jobs
 from archive_worker.admin import create_admin_app
 from archive_worker.admin_auth import CSRF_HEADER, SESSION_COOKIE
@@ -29,6 +29,7 @@ async def _reset():
         await s.execute(delete(RUNS).where(RUNS.c.subject == subject_of(VOD)))
         await s.execute(text("SET LOCAL search_path TO jobs, public"))
         await s.execute(text("DELETE FROM procrastinate_jobs WHERE lock LIKE :vod"), {"vod": f"vod:{VOD}:%"})
+        await s.execute(delete(Game).where(Game.vod_id == VOD))
         await s.execute(delete(Vod).where(Vod.id == VOD))
         await s.commit()
 
@@ -308,3 +309,76 @@ async def test_vods_list_get_and_update_with_their_audit(admin):
         await s.commit()
     _problem(await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"title": "x"}), 409, "vod_merged")
     assert (await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"hidden": True})).json()["hidden"] is True
+
+
+async def test_games_replace_round_trip_and_audit(admin):
+    assert (await admin.get(f"/api/v2/vods/{VOD}/games", headers=KEY)).json() == {"items": [], "next_cursor": None}
+    _problem(await admin.get("/api/v2/vods/nope/games", headers=KEY), 404, "vod_not_found")
+
+    games = [
+        {"start_time": 0, "end_time": 120, "game_name": "Celeste", "game_id": "504461"},
+        {"start_time": 120, "end_time": 600, "game_name": "Just Chatting"},
+    ]
+    r = await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": games})
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert [(g["start_time"], g["end_time"], g["game_name"], g["vod_id"]) for g in items] == [
+        (0, 120, "Celeste", VOD),
+        (120, 600, "Just Chatting", VOD),
+    ]
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], row["target"], row["before"]) == ("vod.games.replace", f"vod:{VOD}", {"games": []})
+    assert [g["game_name"] for g in row["after"]["games"]] == ["Celeste", "Just Chatting"]
+
+    # What GET returns can be sent back as it is (ids and dates are ignored).
+    listed = (await admin.get(f"/api/v2/vods/{VOD}/games", headers=KEY)).json()["items"]
+    listed[1]["game_name"] = "Art"
+    r = await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": listed})
+    assert [g["game_name"] for g in r.json()["items"]] == ["Celeste", "Art"]
+
+    overlapping = [{**games[0], "end_time": 200}, games[1]]
+    _problem(
+        await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": overlapping}), 422, "invalid_games"
+    )
+    too_long = [{**games[1], "end_time": 700}]
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": too_long}), 422, "invalid_games")
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": [{"x": 1}]}), 422, "invalid")
+
+    assert (await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": []})).json()["items"] == []
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).merged_into = {"id": "other"}
+        await s.commit()
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/games", headers=KEY, json={"games": games}), 409, "vod_merged")
+
+
+async def test_chapters_replace_with_lock_and_audit(admin):
+    chapters = [
+        {"name": "Celeste", "gameId": "504461", "start": 0, "length": 120, "restricted": False},
+        {"name": "Just Chatting", "gameId": "509658", "start": 120, "length": 480, "restricted": False},
+    ]
+    r = await admin.put(f"/api/v2/vods/{VOD}/chapters", headers=KEY, json={"chapters": chapters, "locked": True})
+    assert r.status_code == 200, r.text
+    vod = r.json()
+    assert vod["chapters_locked"] is True
+    stored = [(c["name"], c["start"], c["end"]) for c in vod["chapters"]]  # the legacy shape: end is the length
+    assert stored == [
+        ("Celeste", 0, 120),
+        ("Just Chatting", 120, 480),
+    ]
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], row["before"]) == ("vod.chapters.replace", {"chapters": [], "chapters_locked": False})
+    assert row["after"]["chapters_locked"] is True and len(row["after"]["chapters"]) == 2
+
+    _problem(
+        await admin.put(f"/api/v2/vods/{VOD}/chapters", headers=KEY, json={"chapters": chapters[::-1], "locked": True}),
+        422,
+        "invalid_chapters",
+    )
+    _problem(await admin.put(f"/api/v2/vods/{VOD}/chapters", headers=KEY, json={"chapters": chapters}), 422, "invalid")
+    _problem(
+        await admin.put("/api/v2/vods/nope/chapters", headers=KEY, json={"chapters": [], "locked": False}),
+        404,
+        "vod_not_found",
+    )
+    r = await admin.put(f"/api/v2/vods/{VOD}/chapters", headers=KEY, json={"chapters": [], "locked": False})
+    assert (r.json()["chapters"], r.json()["chapters_locked"]) == ([], False)

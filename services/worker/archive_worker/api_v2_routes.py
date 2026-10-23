@@ -13,6 +13,9 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
                                        with whether it is uploaded and its queued, running or paused jobs
     GET    /api/v2/vods/{vod_id}
     PATCH  /api/v2/vods/{vod_id}       title, hidden, thumbnail_url, duration, created_at, tags
+    GET    /api/v2/vods/{vod_id}/games its games rows, by start
+    PUT    /api/v2/vods/{vod_id}/games {games}: all of them replaced
+    PUT    /api/v2/vods/{vod_id}/chapters {chapters, locked}: all of them replaced
     POST   /api/v2/synthetic           a synthetic VOD: segments of real ones (see compose, synthetic)
     GET    /api/v2/synthetic/{vod_id}
     PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
@@ -38,7 +41,7 @@ from archive_common.serialize import duration_seconds, real, tagged
 from archive_common.timeutil import hhmmss_to_seconds
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import Field
-from sqlalchemy import exists, func, or_, select, tuple_, update
+from sqlalchemy import delete, exists, func, insert, or_, select, tuple_, update
 from vex_platform.actor import Actor
 from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, decode_cursor, page_of, request_id, utc_iso
 from vex_platform.audit import AuditEntry
@@ -279,6 +282,95 @@ class VodPatch(ApiModel):
     tags: list[str] | None = None
 
 
+class GameRow(ApiModel):
+    """A ``games`` row: a stretch of the VOD playing one game (what the site's game list shows)."""
+
+    id: str
+    vod_id: str
+    start_time: float  # seconds into the VOD
+    end_time: float
+    game_id: str | None = None
+    game_name: str | None = None
+    title: str | None = None
+    video_provider: str | None = None
+    video_id: str | None = None
+    thumbnail_url: str | None = None
+    chapter_image: str | None = None
+    created_at: UtcDatetime | None = None
+    updated_at: UtcDatetime | None = None
+
+
+class GameIn(ApiModel):
+    """A games row to store. ``id``, ``vod_id``, ``created_at`` and ``updated_at`` are taken and ignored,
+    so the items GET returns can be sent back as they are."""
+
+    start_time: float
+    end_time: float
+    game_name: str | None
+    game_id: str | None = None
+    title: str | None = None
+    video_provider: str | None = None
+    video_id: str | None = None
+    thumbnail_url: str | None = None
+    chapter_image: str | None = None
+    id: str | None = None
+    vod_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+_GAME_READ_ONLY = {"id", "vod_id", "created_at", "updated_at"}
+
+
+class GamesPut(ApiModel):
+    games: list[GameIn]
+
+
+class ChaptersPut(ApiModel):
+    """Every chapter, as ``/admin`` takes them: ``{name, gameId, start, length, restricted}``, plus
+    ``imageTemplate`` and ``kind: "gap"`` if wanted. They are stored (and returned) in the legacy shape,
+    where ``start`` and ``end`` are the start and the length. ``locked: true`` keeps the automatic
+    chapters step from overwriting them (unless that job's payload has ``"force": true``)."""
+
+    chapters: list[dict[str, Any]]
+    locked: bool
+
+
+def _game(row: Game) -> GameRow:
+    return GameRow(
+        id=str(row.id),
+        vod_id=row.vod_id,
+        start_time=float(row.start_time or 0),
+        end_time=float(row.end_time or 0),
+        game_id=row.game_id,
+        game_name=row.game_name,
+        title=row.title,
+        video_provider=row.video_provider,
+        video_id=row.video_id,
+        thumbnail_url=row.thumbnail_url,
+        chapter_image=row.chapter_image,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _games_audited(rows: list[GameRow]) -> list[dict[str, Any]]:
+    """The editable part of each row, as the audit records it."""
+    return [r.model_dump(exclude=_GAME_READ_ONLY) for r in rows]
+
+
+async def _games(s: Any, vod_id: str) -> list[GameRow]:
+    rows = await s.execute(select(Game).where(Game.vod_id == vod_id).order_by(Game.start_time, Game.id))
+    return [_game(r) for r in rows.scalars()]
+
+
+async def _locked_vod(s: Any, vod_id: str) -> Vod:
+    vod = await s.get(Vod, vod_id, with_for_update=True)
+    if vod is None:
+        raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
+    return vod  # type: ignore[no-any-return]
+
+
 # VodPatch field -> vod_edits.vod_fields' key.
 _V1_FIELDS = {"thumbnail_url": "thumbnailUrl", "created_at": "createdAt"}
 
@@ -431,6 +523,80 @@ def vods_router(auth: Auth) -> APIRouter:
                     f"vod:{vod.id}",
                     before=before,
                     after=_audited(vod, set(sent)),
+                    request_id=request_id(request),
+                ),
+                table=audit.TABLE,
+            )
+            await s.commit()
+        return await _detail(vod)
+
+    @router.get("/vods/{vod_id}/games")
+    async def get_games(vod_id: str) -> Page[GameRow]:
+        async with get_sessionmaker()() as s:
+            if await s.get(Vod, vod_id) is None:
+                raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
+            return Page[GameRow](items=await _games(s, vod_id))
+
+    @router.put("/vods/{vod_id}/games")
+    async def put_games(request: Request, vod_id: str, body: GamesPut) -> Page[GameRow]:
+        """Replace every games row: sorted by start, not overlapping, inside the VOD. Audited as
+        ``vod.games.replace``, before and after."""
+        async with get_sessionmaker()() as s:
+            vod = await _locked_vod(s, vod_id)
+            if vod.merged_into is not None:
+                raise ApiError(
+                    409,
+                    "vod_merged",
+                    f"{vod.id} was merged into {vod.merged_into.get('id')}; its games rows are that "
+                    "VOD's now. Undo the merge first",
+                )
+            sent = [g.model_dump(exclude=_GAME_READ_ONLY, exclude_unset=True) for g in body.games]
+            try:
+                rows = vod_edits.games(sent, hhmmss_to_seconds(vod.duration))
+            except ValueError as exc:
+                raise ApiError(422, "invalid_games", str(exc)) from None
+            before = await _games(s, vod.id)
+            await s.execute(delete(Game).where(Game.vod_id == vod.id))
+            if rows:
+                await s.execute(insert(Game), [{"vod_id": vod.id, **r} for r in rows])
+            after = await _games(s, vod.id)
+            await record(
+                s,
+                AuditEntry(
+                    "vod.games.replace",
+                    _actor(request),
+                    f"vod:{vod.id}",
+                    before={"games": _games_audited(before)},
+                    after={"games": _games_audited(after)},
+                    request_id=request_id(request),
+                ),
+                table=audit.TABLE,
+            )
+            await s.commit()
+        return Page[GameRow](items=after)
+
+    @router.put("/vods/{vod_id}/chapters")
+    async def put_chapters(request: Request, vod_id: str, body: ChaptersPut) -> VodDetail:
+        """Replace every chapter: sorted by start, not overlapping, each longer than 0 and inside the VOD.
+        Audited as ``vod.chapters.replace``, before and after."""
+        async with get_sessionmaker()() as s:
+            vod = await _locked_vod(s, vod_id)
+            try:
+                chapters = vod_edits.chapters(body.chapters, hhmmss_to_seconds(vod.duration))
+            except ValueError as exc:
+                raise ApiError(422, "invalid_chapters", str(exc)) from None
+            before = {"chapters": vod.chapters or [], "chapters_locked": vod.chapters_locked}
+            # A database trigger tells archive-api to drop its cached copies.
+            await s.execute(update(Vod).where(Vod.id == vod.id).values(chapters=chapters, chapters_locked=body.locked))
+            await s.refresh(vod)
+            await record(
+                s,
+                AuditEntry(
+                    "vod.chapters.replace",
+                    _actor(request),
+                    f"vod:{vod.id}",
+                    before=before,
+                    after={"chapters": vod.chapters or [], "chapters_locked": vod.chapters_locked},
                     request_id=request_id(request),
                 ),
                 table=audit.TABLE,
