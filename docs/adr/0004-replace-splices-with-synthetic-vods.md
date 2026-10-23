@@ -68,6 +68,30 @@ WHERE sp.undone_at IS NULL AND sp.snapshot->'result' ? v.id;
 
 If query 1 returns nothing, skip phase 2.
 
+**Results (2026-10-23):** one archive has 4 active merges and the other none. There are no splits,
+chains or censor ranges. One hand-made synthetic VOD (not `auto`) plays a merge's target, so step 4 below
+applies to it. In each merge, only the target's `youtube` list has changed since the merge. That is likely
+per-upload data added afterwards (seek-bar `preview`, live `gaps`); the query below shows which keys changed:
+
+```sql
+-- per active merge: the upload entries changed since the merge, and which of their keys
+SELECT sp.id AS splice, v.id AS vod, (v.id = sp.vod_id) AS is_target, d.ord AS part,
+       CASE WHEN d.then_part IS NULL THEN 'added' WHEN d.now_part IS NULL THEN 'removed' ELSE 'changed' END AS what,
+       (SELECT array_agg(k ORDER BY k) FROM (
+          SELECT k FROM jsonb_object_keys(coalesce(d.now_part, '{}') || coalesce(d.then_part, '{}')) k
+          WHERE d.now_part->k IS DISTINCT FROM d.then_part->k) x) AS keys
+FROM vod_splices sp
+JOIN vods v ON v.id IN (sp.vod_id, sp.other_id)
+CROSS JOIN LATERAL (
+  SELECT coalesce(n.ord, t.ord) AS ord, n.elem AS now_part, t.elem AS then_part
+  FROM jsonb_array_elements(coalesce(v.youtube, '[]')) WITH ORDINALITY n(elem, ord)
+  FULL JOIN jsonb_array_elements(coalesce(sp.snapshot->'result'->v.id->'youtube', '[]')) WITH ORDINALITY t(elem, ord)
+    ON n.ord = t.ord
+) d
+WHERE sp.undone_at IS NULL AND sp.snapshot->'result' ? v.id AND d.now_part IS DISTINCT FROM d.then_part
+ORDER BY sp.id, v.id, d.ord;
+```
+
 ### Phase 1: stop making splices
 
 - Port `GET /admin/vods/{id}/merge-candidates` to `/api/v2` (the logic is `splices.merge_candidates`;
@@ -87,14 +111,16 @@ For each group of connected active splices (query 2), newest splice first:
 
 1. **Refuse and report** (no change) if any VOD of the group has an active job, censor ranges
    (query 3), or edits since the splice (query 5) that the steps below don't carry over. Those are
-   resolved by hand, then the command is run again.
+   resolved by hand, then the command is run again. Changed keys of upload entries that are still
+   there (matched by YouTube video id) are carried over (step 3); added or removed entries are not.
 2. **Work out the result as segments** from the splice records: a merge of B into A at `offset_s` is
    `[A 0–end at 0, B 0–end at offset]`, which is `compose.merge_segments` with the same offset. A split
    of A at `offset_s` is `[A 0–at]` and `[A at–end]`. A chain composes these into one list per
    resulting VOD.
-3. **In one transaction:** undo the group's splices newest first (`splices._undo`, not forced), then
-   create the synthetic VOD(s) with `supersedes: true` (`synthetic.create`, changed to take the
-   caller's session for this):
+3. **In one transaction:** undo the group's splices newest first (`splices._undo`, forced once step 1
+   has passed). Then put back the per-upload keys that changed since the splice, on the restored
+   entry with the same YouTube video id, whichever VOD it went back to. Then create the synthetic
+   VOD(s) with `supersedes: true` (`synthetic.create`, changed to take the caller's session for this):
    - merge: id `A+B` (`compose.merge_id`), or `A+B+C` for a chain;
    - split: ids `A-1` and `A-2` (`compose.split_ids`). The split-off VOD was `A-2` already, so its URL
      keeps working, and `A` redirects into `A-1`;
