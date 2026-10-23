@@ -1,6 +1,6 @@
 # ADR-0004: Synthetic VODs replace row-moving merge and split
 
-**Status:** Accepted — 2026-10-23 (the plan below is not carried out yet)
+**Status:** Accepted — 2026-10-23; carried out 2026-10-23 (phases 1 to 3)
 **Date:** 2026-10-23
 **Deciders:** Project owner
 
@@ -155,6 +155,17 @@ After the conversion, run `/admin/youtube/parts` for each source, so the YouTube
 listing the merged parts.
 
 ### Phase 3: remove the splice code
+
+**Done.** The conversion ran on 2026-10-23: 4 of 4 merges became synthetic VODs, nothing was left
+behind, and they play correctly on the site. Then the code went, as listed below, with these
+differences:
+- `convert_splices.py` and its command went too, since they had done their one job;
+- `refuse_spliced` and the run-time refusals stay, because they also refuse synthetic VODs; only their
+  splice-table lookup went;
+- `/admin/vods/{id}`'s `splices` stays as `[]` until the dashboard stops reading it, and
+  `merge-candidates` stays on `/admin` (it is read-only and moved to `synthetic.py`).
+
+The plan as written:
 
 Once query 1 returns nothing:
 

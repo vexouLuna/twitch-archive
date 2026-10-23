@@ -224,7 +224,7 @@ async def create_in(
     tags: Any = (),
     auto: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """``create`` in the caller's transaction (convert_splices: with the undo of the splice it replaces)."""
+    """``create`` in the caller's transaction."""
     _composed(compose.check_id, vod_id)  # type: ignore[no-untyped-call]
     if auto is not None:
         segments = await _auto_segments(s, auto)
@@ -299,22 +299,6 @@ async def change(
         await _notify(s, *{x.source_id for x in old}, *sources)
         await s.flush()
         return before, synthetic_json(vod, new)
-
-
-async def resegment_in(s: AsyncSession, vod_id: str, segments: list[Segment]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """New segments for a synthetic VOD, in the caller's transaction, checked like ``change``'s (its own
-    ``supersedes`` kept). Before and after, as ``synthetic_json``."""
-    vod = await _locked(s, vod_id)
-    old = await _segments(s, vod_id)
-    before = synthetic_json(vod, old)
-    sources = await _checked(s, vod_id, segments, bool(before["supersedes"]))
-    _apply(vod, compose.derive(segments, sources))
-    if vod.duration != before["duration"] or [x.json() for x in segments] != before["segments"]:
-        _changed(vod)
-    await _write_segments(s, vod_id, segments)
-    await _notify(s, *{x.source_id for x in old}, *sources)
-    await s.flush()
-    return before, synthetic_json(vod, segments)
 
 
 async def remove(vod_id: str) -> dict[str, Any]:

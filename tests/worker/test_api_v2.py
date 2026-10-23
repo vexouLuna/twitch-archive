@@ -289,7 +289,7 @@ async def test_vods_list_get_and_update_with_their_audit(admin):
     _problem(await admin.get("/api/v2/vods?cursor=nope", headers=KEY), 400, "bad_cursor")
 
     vod = (await admin.get(f"/api/v2/vods/{VOD}", headers=KEY)).json()
-    assert (vod["chapters"], vod["chapters_locked"], vod["splices"], vod["created_at"][-1]) == ([], False, [], "Z")
+    assert (vod["chapters"], vod["chapters_locked"], vod["created_at"][-1]) == ([], False, "Z")
     _problem(await admin.get("/api/v2/vods/nope", headers=KEY), 404, "vod_not_found")
 
     r = await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"title": " new ", "thumbnail_url": None})

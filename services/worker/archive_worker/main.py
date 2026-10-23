@@ -3,7 +3,6 @@
 archive-worker run [--dry-run]            monitor + jobs + admin API
 archive-worker import-youtube-token FILE  import youtube.auth from a legacy config.json
 archive-worker enqueue KIND VOD_ID [JSON] queue a job without the admin API
-archive-worker convert-splices [--apply]  merges -> synthetic VODs (ADR 0004); a dry run without --apply
 """
 
 from __future__ import annotations
@@ -127,17 +126,6 @@ async def _enqueue(kind: str, vod_id: str, payload: str | None) -> None:
     print(f"queued job {job.id} ({kind} {vod_id}, {job.state}); a running worker picks it up at once")
 
 
-async def _convert_splices(apply: bool) -> None:
-    from . import convert_splices
-
-    reports = await convert_splices.run(apply=apply)
-    for report in reports:
-        print(report.line())
-    done = sum(r.refused is None for r in reports)
-    verb = "converted" if apply else "would convert (dry run; --apply to do it)"
-    print(f"{verb}: {done} of {len(reports)} active splice(s)")
-
-
 def run() -> None:
     parser = argparse.ArgumentParser(prog="archive-worker")
     sub = parser.add_subparsers(dest="cmd")
@@ -149,8 +137,6 @@ def run() -> None:
     p_enq.add_argument("kind", choices=sorted(jobs.KINDS))
     p_enq.add_argument("vod_id")
     p_enq.add_argument("payload", nargs="?", help="JSON object, e.g. '{\"start_part\": 2}'")
-    p_conv = sub.add_parser("convert-splices", help="turn active merges into synthetic VODs (ADR 0004)")
-    p_conv.add_argument("--apply", action="store_true", help="convert; without it, a dry run that changes nothing")
     args = parser.parse_args()
 
     logs.setup(get_settings().log_level, get_settings().log_format)
@@ -159,8 +145,6 @@ def run() -> None:
         print("YouTube refresh token imported.")
     elif args.cmd == "enqueue":
         asyncio.run(_enqueue(args.kind, args.vod_id, args.payload))
-    elif args.cmd == "convert-splices":
-        asyncio.run(_convert_splices(args.apply))
     else:
         asyncio.run(serve(dry_run=getattr(args, "dry_run", False)))
 

@@ -13,7 +13,7 @@ import pytest
 import respx
 from archive_common.config import Settings
 from archive_common.db import get_sessionmaker
-from archive_common.models import BotLog, Job, Log, Stream, Vod, VodSplice
+from archive_common.models import BotLog, Job, Log, Stream, Vod
 from archive_worker import jobs
 from archive_worker.context import StepError, StepRefused
 from archive_worker.doomtp import Doomtp, v1_coverage, v1_entry
@@ -293,7 +293,6 @@ async def _clean():
             text("DELETE FROM procrastinate_jobs WHERE lock LIKE :vod OR lock = 'bot_chat_backfill'"),
             {"vod": "vod:test-bot-chat%"},
         )
-        await s.execute(delete(VodSplice).where(VodSplice.vod_id.in_((VOD, VOD2))))
         for model in (BotLog, Log):
             await s.execute(delete(model).where(model.vod_id.in_((VOD, VOD2))))
         await s.execute(delete(Vod).where(Vod.id.in_((VOD, VOD2))))
