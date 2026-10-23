@@ -37,11 +37,14 @@ curl -s "${H[@]}" -X PATCH "$A/api/v2/settings" -d '{"keep_hls":true}'   # DELET
 curl -s "${H[@]}" "$A/api/v2/storage?refresh=true"                 # DELETE /api/v2/storage/vods/123 frees one
 curl -s "${H[@]}" "$A/api/v2/vods?q=title&hidden=false"            # also cursor=, limit= (at most 200); rows say uploaded, active_jobs
 curl -s "${H[@]}" -X PATCH "$A/api/v2/vods/123" -d '{"title":"…","thumbnail_url":null}'
+curl -s "${H[@]}" "$A/api/v2/vods/123/games"                       # PUT {"games":[...]} replaces them; GET's items can be sent back
+curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/chapters" -d '{"chapters":[{"name":"…","gameId":"…","start":0,"length":600,"restricted":false}],"locked":true}'
+curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/youtube" -d '{"youtube":[{"id":"…","type":"vod","part":1}]}'   # also /drive {"drive"}, /censor {"censor"}
 ```
 
-`/api/v2/jobs` covers the job runtime's runs only. Jobs from the old `jobs` table (all finished) are still listed by `/admin/jobs`, with their logs, but nothing runs them any more and actions on them answer 409. A VOD's games, chapters, YouTube and Drive lists are still `/admin` only. Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
+`/api/v2/jobs` covers the job runtime's runs only. Jobs from the old `jobs` table (all finished) are still listed by `/admin/jobs`, with their logs, but nothing runs them any more and actions on them answer 409. A VOD's games, chapters, YouTube and Drive lists and censor ranges are in both, with the same rules (`/api/v2` answers `vod_merged`, `vod_synthetic` or `invalid_<list>`). Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
 
-A v2 change writes its audit row in the same transaction as the change (`setting.update`, `setting.reset`, `vod.update`), with the fields before and after, so the two never disagree. A storage delete is files, so its row (`storage.delete`, with what it freed) comes right after.
+A v2 change writes its audit row in the same transaction as the change (`setting.update`, `setting.reset`, `vod.update`, `vod.games.replace`, `vod.chapters.replace`, `vod.youtube.replace`, `vod.drive.replace`, `vod.censor.replace`), with the fields before and after, so the two never disagree. A storage delete is files, so its row (`storage.delete`, with what it freed) comes right after.
 
 ## Jobs
 
@@ -286,6 +289,7 @@ curl -s "${H[@]}" -X POST "$A/admin/vods/A/unsplit" -d '{}'               # the 
 These `/admin` routes move rows. `/api/v2` merges and splits without touching either VOD: it makes [synthetic VODs](#synthetic-vods) that supersede the original, so undoing one is deleting it.
 
 ```bash
+curl -s "${H[@]}" "$A/api/v2/vods/A/merge-candidates"                   # what to offer: {id, gap, titles_match, …}
 curl -s "${H[@]}" -X POST "$A/api/v2/vods/A/merge" -d '{"source":"B"}'    # synthetic A+B; also "gap"
 curl -s "${H[@]}" -X POST "$A/api/v2/vods/A/split" -d '{"at":3605}'       # synthetic A-1 and A-2, at any second
 curl -s "${H[@]}" -X DELETE "$A/api/v2/synthetic/A+B"                     # undo: A and B list and play as before
@@ -332,7 +336,6 @@ A web dashboard logs in instead of carrying the API key: with Twitch through [ve
 | `POST /admin/session` `{"password"}` | Logs in: the same shape plus the `archive_admin` cookie. `401` wrong password, `403` from outside `ARCHIVE_ADMIN_PASSWORD_NETWORKS`, `429` + `Retry-After` after 5 failed logins in 5 minutes from one address, `404` when password login is off |
 | `GET /admin/signin?next=/admin/...` | Starts a Twitch sign-in: redirects to vex-auth, which comes back to `/admin/signin/callback`. That sets the same cookie and redirects to `next`, or to `/admin/login?auth_error=<denied\|expired\|twitch\|not_allowed\|unavailable\|misconfigured>&next=...`. `404` when Twitch sign-in is off |
 | `POST /admin/session` `{"code"}` | A Twitch sign-in from a code the site's page got from vex-auth, with no redirect: see [Sign-in from a site's page](#sign-in-from-a-sites-page-post-adminsession-code) |
-| `GET /admin/signin?quiet=1&next=/...` | A quiet sign-in (the older way to do what `POST /admin/session {code}` does; it stays until the sites have moved): the site checking whether someone already signed in to it is an admin. The same trip, but the callback never shows the login page: it redirects to `next` with `admin=1` added when it made a session, or `admin=0` for anything else (not listed, denied, unavailable). vex-auth answers a signed-in browser at once, so nobody sees Twitch |
 | `DELETE /admin/session` | Logs out (`204`) and clears the cookie |
 
 Only `ARCHIVE_ADMIN_TWITCH_IDS` get in through Twitch. A Twitch session is checked with vex-auth again every minute, so signing out everywhere on any vexoul.net site ends it too; if vex-auth can't be reached, the session stands until it can.

@@ -16,8 +16,10 @@ from archive_api.invalidation import asyncpg_dsn
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
 from archive_common.db import ROWS_MOVED, VOD_CHANGED, get_sessionmaker
-from archive_common.models import BotLog, Emote, Game, Job, Log, Vod, VodSplice
+from archive_common.models import BotLog, Emote, Game, Job, Log, Vod, VodSegment, VodSplice
+from archive_common.segments import Segment
 from archive_common.timeutil import hhmmss_to_seconds
+from archive_worker import convert_splices, synthetic
 from archive_worker.admin import create_admin_app
 from archive_worker.context import StepRefused
 from archive_worker.job_rows import RUNS, subject_of
@@ -27,6 +29,7 @@ from sqlalchemy import delete, func, or_, select, text
 
 A, B, C = "test-splice-a", "test-splice-b", "test-splice-c"
 A2 = f"{A}-2"
+AB, USER = f"{A}+{B}", "test-splice-user"  # convert_splices' synthetic VOD, and a hand-made one playing A
 IDS = (A, B, C, A2)
 KEY = {"Authorization": "Bearer k"}
 START = dt.datetime(2001, 2, 3, 20, 0, tzinfo=dt.UTC)  # before any real VOD
@@ -86,6 +89,8 @@ async def _clean():
             text("DELETE FROM procrastinate_jobs WHERE split_part(lock, ':', 2) = ANY(:ids)"), {"ids": list(IDS)}
         )
         await s.execute(delete(VodSplice).where(or_(VodSplice.vod_id.in_(IDS), VodSplice.other_id.in_(IDS))))
+        await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_([AB, USER])))
+        await s.execute(delete(Vod).where(Vod.id.in_([AB, USER])))
         for model in (Log, BotLog, Emote, Game):
             await s.execute(delete(model).where(model.vod_id.in_(IDS)))
         await s.execute(delete(Vod).where(Vod.id.in_(IDS)))
@@ -500,3 +505,66 @@ async def test_merge_candidates(vods, admin):
         ]
         assert (await c.get(f"/admin/vods/{B}/merge-candidates", headers=KEY)).json()["candidates"] == []
         assert (await c.get("/admin/vods/nope/merge-candidates", headers=KEY)).status_code == 404
+
+
+# ── Converting merges to synthetic VODs (ADR 0004) ─────────────────────────
+
+
+async def _mine(*, apply: bool = False) -> list[convert_splices.Report]:
+    return [r for r in await convert_splices.run(apply=apply) if r.target in IDS]
+
+
+async def _segments(vod_id: str) -> list[dict[str, Any]]:
+    async with get_sessionmaker()() as s:
+        return [x.json() for x in await synthetic._segments(s, vod_id)]
+
+
+async def test_convert_splices_dry_run_changes_nothing_then_apply_converts(vods, admin):
+    c, _ = admin
+    async with c:
+        assert (await c.post(f"/admin/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 200
+    async with get_sessionmaker()() as s:  # what a previews backfill adds after the merge
+        a = await s.get(Vod, A)
+        a.youtube = [{**e, "preview": {"sheets": 1}} for e in a.youtube]
+        await s.commit()
+    # Hand-made, across the join: A from 7000 s, past its end (7200 s), into B (from 7500 s).
+    await synthetic.create(USER, [Segment(A, 7000.0, 8000.0, 0.0)], title="user")
+    before = await _state()
+
+    [report] = await _mine()
+    assert (report.synthetic, report.refused, report.carried, report.repointed) == (AB, None, 3, [USER])
+    assert await _state() == before  # a dry run is rolled back
+    async with get_sessionmaker()() as s:
+        assert await s.get(Vod, AB) is None
+
+    [report] = await _mine(apply=True)
+    assert report.refused is None
+    async with get_sessionmaker()() as s:
+        a, b, ab = await s.get(Vod, A), await s.get(Vod, B), await s.get(Vod, AB)
+        assert (a.duration, a.merged_into, b.duration, b.merged_into) == ("02:00:00", None, "01:00:00", None)
+        assert [(e["id"], e.get("preview")) for e in a.youtube + b.youtube] == [
+            ("a1", {"sheets": 1}),
+            ("a2", {"sheets": 1}),
+            ("b1", {"sheets": 1}),
+        ]
+        assert (ab.title, ab.synthetic["supersedes"]) == ("big stream", True)
+        actions = set(
+            (
+                await s.execute(select(AUDIT_LOG.c.action).where(AUDIT_LOG.c.target.in_([f"vod:{A}", f"vod:{AB}"])))
+            ).scalars()
+        )
+    assert {"splice.convert", "synthetic.create"} <= actions
+    assert await _segments(AB) == [Segment(A, 0.0, None, 0.0).json(), Segment(B, 0.0, None, float(OFFSET)).json()]
+    assert await _segments(USER) == [Segment(A, 7000.0, 7200.0, 0.0).json(), Segment(B, 0.0, 500.0, 500.0).json()]
+    assert await _mine() == []  # nothing left to convert
+
+
+async def test_convert_splices_leaves_an_edited_merge_alone(vods, admin):
+    c, _ = admin
+    async with c:
+        await c.post(f"/admin/vods/{A}/merge", headers=KEY, json={"source": B})
+        await c.patch(f"/admin/vods/{A}", headers=KEY, json={"title": "renamed"})
+    before = await _state()
+    [report] = await _mine(apply=True)
+    assert report.synthetic is None and f"{A}.title" in (report.refused or "")
+    assert await _state() == before

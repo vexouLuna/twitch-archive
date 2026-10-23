@@ -92,10 +92,14 @@ WHERE sp.undone_at IS NULL AND sp.snapshot->'result' ? v.id AND d.now_part IS DI
 ORDER BY sp.id, v.id, d.ord;
 ```
 
+**Result (2026-10-23):** only `preview` changed, on 12 parts, all on the merge targets. No uploads were
+added or removed, and nothing changed `gaps`. So the conversion goes ahead as written.
+
 ### Phase 1: stop making splices
 
 - Port `GET /admin/vods/{id}/merge-candidates` to `/api/v2` (the logic is `splices.merge_candidates`;
-  it moves to `synthetic.py`). It is read-only and the dashboard's merge dialog needs it.
+  it moves to `synthetic.py`). It is read-only and the dashboard's merge dialog needs it. **Done:**
+  `GET /api/v2/vods/{id}/merge-candidates`.
 - The dashboard (Manage, in the site's repository) uses `/api/v2/vods/{id}/merge|split` and
   `DELETE /api/v2/synthetic/{id}` for undo. That is a change in the site, not here.
 - `POST /admin/vods/{id}/merge` and `/split` answer **410** with a pointer to the `/api/v2` route.
@@ -106,6 +110,10 @@ ORDER BY sp.id, v.id, d.ord;
 Add a committed, documented command: `archive-worker convert-splices` (docs/operations.md). It is a dry run
 unless `--apply` is given, and it is safe to run again: a converted splice is undone, so it is not
 picked up a second time.
+
+**Built for merges only** (`convert_splices.py`): production has no splits or chains, so the command
+reports those and leaves them for an undo by hand instead of converting them. The dry run does the
+whole conversion and rolls it back, so it hits every refusal `--apply` would.
 
 For each group of connected active splices (query 2), newest splice first:
 
