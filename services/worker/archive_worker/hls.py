@@ -213,10 +213,17 @@ def muted_name(uri: str) -> str:
     return re.sub(r"-unmuted(?=\.[a-z0-9]+$)", "-muted", uri)
 
 
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
 def local_name(uri: str) -> str:
-    """File name for a segment URI (drop any query string / path)."""
+    """File name for a segment URI (drop any query string / path). The playlist comes from Twitch and
+    ffmpeg reads the local copy with ``-allowed_extensions ALL``, so anything but letters, digits,
+    ``.``, ``_`` and ``-`` becomes ``_``: a name like ``file:x`` or ``data:...`` can't make it open
+    something else. Twitch's own names (``12.ts``, ``12-muted.ts``, ``init-0.mp4``) are unchanged."""
     path = urlparse(uri).path if "://" in uri else uri.split("?", 1)[0]
-    return path.rsplit("/", 1)[-1]
+    name = _UNSAFE_NAME.sub("_", path.rsplit("/", 1)[-1])
+    return name if name.strip(".") else f"_{name}"
 
 
 # ── Writing local playlists ───────────────────────────────────────────────

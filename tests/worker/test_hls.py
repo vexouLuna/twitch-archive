@@ -127,6 +127,12 @@ def test_segment_names():
     assert hls.unmuted_name("12.ts") == "12.ts"
     assert hls.local_name("https://h/x/y/5.ts?token=1") == "5.ts"
     assert hls.local_name("5-muted.ts") == "5-muted.ts"
+    assert hls.local_name("init-0.mp4") == "init-0.mp4"
+    # From Twitch's playlist, read by ffmpeg with -allowed_extensions ALL: never a protocol or another path.
+    assert hls.local_name("file:secret") == "file_secret"
+    assert hls.local_name("data:text/plain,x") == "plain_x"
+    assert hls.local_name("..") == "_.."
+    assert hls.local_name("") == "_"
 
 
 def test_write_local_playlist():

@@ -1,7 +1,7 @@
 """Replay golden responses captured from the legacy API against archive-api.
 
 Needs a Postgres restored from the same data the golden file was captured from
-(see README "Development"). Set ARCHIVE_DATABASE_URL; the test is skipped when
+(see docs/development.md). Set ARCHIVE_DATABASE_URL; the test is skipped when
 the database is unreachable.
 """
 

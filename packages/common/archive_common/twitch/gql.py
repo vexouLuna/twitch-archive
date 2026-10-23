@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from .. import http
-from ..config import Settings, get_settings
+from ..config import TwitchSettings, get_settings
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class ViewerAuth:
 
 
 class Gql:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: TwitchSettings | None = None) -> None:
         self.settings = settings or get_settings()
         # The linked account for live playback tokens (the worker's TwitchViewer.auth), if any.
         self.viewer: Callable[[], Awaitable[ViewerAuth | None]] | None = None

@@ -15,7 +15,7 @@ import signal
 from pathlib import Path
 
 import uvicorn
-from archive_common import audit, http, logs
+from archive_common import http, logs
 from archive_common.config import get_settings
 from archive_common.twitch.gql import Gql
 from archive_common.twitch.helix import Helix
@@ -42,7 +42,7 @@ async def serve(dry_run: bool = False) -> None:
     events.install()  # job log lines -> GET /admin/jobs/{id}/events
     deps = Deps(settings, Helix(settings), Gql(settings), youtube.YouTube(settings), events)
     service = jobs.JobService.create(deps)
-    monitor = Monitor(deps.helix, service)
+    monitor = Monitor(deps.helix, service, settings)
     admin = uvicorn.Server(
         uvicorn.Config(
             create_admin_app(deps, service, sessions=DbSessionStore(), runtime=runtime),
@@ -71,13 +71,9 @@ async def serve(dry_run: bool = False) -> None:
         settings.youtube_upload,
         settings.dry_run,
     )
-    copied = await audit.copy_admin_audit()  # what the previous release audited while it was replaced
-    if copied:
-        log.info("copied %d admin_audit rows into audit_log", copied)
     await service.runtime.open()
-    await service.runtime.start()  # new jobs; the legacy runner below finishes the old table's
+    await service.runtime.start()
     tasks = [
-        asyncio.create_task(service.legacy.run_forever(), name="legacy-runner"),  # type: ignore[union-attr]
         asyncio.create_task(monitor.run_forever(), name="monitor"),
         asyncio.create_task(events.run_forever(), name="job-events"),  # flushes on cancel
     ]
@@ -105,7 +101,6 @@ async def serve(dry_run: bool = False) -> None:
     log.info("shutting down; interrupted jobs resume on next start")
     admin.should_exit = True  # uvicorn stops on its own; cancelling it logs a spurious traceback
     await service.runtime.stop()
-    await service.legacy.shutdown()  # type: ignore[union-attr]
     admin_task, others = tasks[-1], tasks[:-1]
     for t in others:
         t.cancel()

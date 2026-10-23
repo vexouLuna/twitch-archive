@@ -11,7 +11,7 @@ import httpx
 from cachetools import TTLCache
 
 from .. import http
-from ..config import Settings, get_settings
+from ..config import TwitchSettings, get_settings
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ IGDB_FIELDS = "name,themes.name,age_ratings.rating_content_descriptions.descript
 
 
 class Helix:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: TwitchSettings | None = None) -> None:
         self.settings = settings or get_settings()
         self._token: str | None = None
         self._expires_at = 0.0

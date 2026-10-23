@@ -76,7 +76,7 @@ async def test_missing_live_recording_fails(make_ctx, captured):
 async def test_resolve_vod_saves_the_final_duration_without_an_archive_job(
     make_ctx, settings, monkeypatch, archive_job, saved
 ):
-    from archive_worker import jobs
+    from archive_worker import job_rows
 
     settings.twitch_client_id, settings.twitch_client_secret = "id", SecretStr("secret")
     ctx = make_ctx("live", None, {"type": "live", "stream_id": "42"})
@@ -96,7 +96,7 @@ async def test_resolve_vod_saves_the_final_duration_without_an_archive_job(
 
     monkeypatch.setattr(media, "vod_id_for_stream", vod_id_for_stream)
     monkeypatch.setattr(ctx.deps.helix, "video_for_stream", video_for_stream)
-    monkeypatch.setattr(jobs, "exists_any", exists_any)
+    monkeypatch.setattr(job_rows, "exists_any", exists_any)
     monkeypatch.setattr(ctx, "update_vod", update_vod)
     await media.resolve_vod(ctx)
     assert ctx.vod_id == "100"

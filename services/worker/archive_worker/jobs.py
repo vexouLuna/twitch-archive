@@ -12,17 +12,14 @@ pauses at the next step boundary once. Gates are checked when a job moves on to 
 resuming, retrying or recovering a job runs its current step.
 
 A job's subject is ``vod:<id>``; one job per (VOD, video type) runs at a time (``_lock``). Jobs
-queued before the runtime existed are finished by legacy_jobs.py; ``JobService`` acts on either.
+queued before the runtime existed (the old ``jobs`` table) are still listed and their logs read, but
+nothing runs them or acts on them any more (ADR 0003, step 1).
 
-Every action on a job is audited (``audit_log``): by the runtime, in the transaction that makes it,
-or for a legacy job by ``JobService`` once it is made.
+Every action on a job is audited (``audit_log``) by the runtime, in the transaction that makes it.
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,13 +29,12 @@ from archive_common.db import get_sessionmaker
 from sqlalchemy import Row, select
 from sqlalchemy.engine import make_url
 from vex_platform.actor import SYSTEM, Actor
-from vex_platform.audit import AuditEntry
 from vex_platform.jobs import InvalidJob, JobConflict, JobNotFound, JobRun, JobRuntime, Registry
 
-from . import legacy_jobs
 from .context import Deps, JobContext
 from .events import event_json, iso_utc
-from .job_rows import ACTIVE, ALL_JOBS, STATES, subject_of, vod_of
+from .job_rows import ACTIVE, ALL_JOBS, STATES, active_by_vod, exists_any, find_active, subject_of, vod_of
+from .kinds import KINDS
 from .steps import STEPS
 
 __all__ = [
@@ -49,6 +45,7 @@ __all__ = [
     "JobConflict",
     "JobNotFound",
     "JobService",
+    "active_by_vod",
     "apply_settings",
     "build_registry",
     "check_steps",
@@ -57,118 +54,6 @@ __all__ = [
     "find_active",
     "get",
 ]
-
-KINDS: dict[str, list[str]] = {
-    # Stream went live (or /admin/hls/download): follow the VOD playlist, then process.
-    "archive": [
-        "capture",
-        "finalize",
-        "chapters",
-        "chat",
-        "emotes",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # /admin/download: full VOD (or a given file), split + upload, optional part range.
-    "download": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "chapters",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    "reupload": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # Recording of the live stream itself (unmuted), uploaded as type "live". It saves the VOD's
-    # chat and emotes too: without multi_track no archive job runs for the stream.
-    "live": [
-        "live_record",
-        "resolve_vod",
-        "finalize",
-        "chapters",
-        "chat",
-        "emotes",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # /v2/live callback from an external recorder.
-    "live_file": ["ensure_source", "chapters", "censor_check", "censor", "split", "upload", "describe", "previews"],
-    "dmca": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "dmca_edit",
-        "censor_check",
-        "censor",
-        "split",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    "part_dmca": [
-        "ensure_source",
-        "fetch_vod",
-        "finalize",
-        "censor_check",
-        "censor",
-        "split",
-        "dmca_edit",
-        "upload",
-        "describe",
-        "previews",
-        "cleanup",
-    ],
-    # A synthetic VOD as one file, uploaded as type "compiled" with compile_youtube_upload on (steps/compile.py).
-    "compile": ["compile_sources", "compile", "split", "upload", "compiled", "describe", "cleanup"],
-    "chat": ["chat"],
-    "logs_manual": ["logs_manual"],
-    "chapters": ["chapters"],
-    "emotes": ["emotes"],
-    # One-off: give every emotes row saved before global sets were captured the current ones.
-    "global_emotes_backfill": ["global_emotes_backfill"],
-    # One-off: add 7TV's zero-width flags to channel sets saved before flags were kept.
-    "seventv_flags_backfill": ["seventv_flags_backfill"],
-    # One-off: the ad breaks (gaps) of live uploads made before they were saved, from their live jobs.
-    "live_gaps_backfill": ["live_gaps_backfill"],
-    "describe": ["describe"],
-    # A pipeline's cleanup, queued by its own cleanup step to run keep_files_days later.
-    "cleanup": ["cleanup"],
-    # Chat from doomtp-bot into bot_logs, beside the archive job of the same VOD.
-    "bot_chat": ["bot_chat"],
-    # Queues a bot_chat run per VOD without bot chat (or per given VOD), newest first; they run one at a time.
-    "bot_chat_backfill": ["bot_chat_backfill"],
-    # Seek-bar previews for a VOD's uploads that have none, from a small download of each (steps/previews.py).
-    "previews_fetch": ["previews_fetch"],
-    # Queues a previews_fetch run per VOD with uploads without previews, newest first; they run one at a time.
-    "previews_backfill": ["previews_backfill"],
-}
 
 # The old runner waited 60·2^n seconds after the n-th failure; the runtime waits base·2^(n-1).
 RETRY_BASE_SECONDS = 120
@@ -241,42 +126,6 @@ def create_runtime(deps: Deps, **options: Any) -> JobRuntime:
     )
 
 
-# ── Reading jobs of both tables ────────────────────────────────────────────
-
-
-def _matching(stmt, kind: str, vod_id: str | None, stream_id: str | None):  # type: ignore[no-untyped-def]
-    stmt = stmt.where(ALL_JOBS.c.kind == kind)
-    if vod_id is not None:
-        stmt = stmt.where(ALL_JOBS.c.vod_id == vod_id)
-    if stream_id is not None:
-        stmt = stmt.where(ALL_JOBS.c.payload["stream_id"].astext == str(stream_id))
-    return stmt.limit(1)
-
-
-async def find_active(kind: str, *, vod_id: str | None = None, stream_id: str | None = None) -> Row | None:  # type: ignore[type-arg]
-    stmt = _matching(select(ALL_JOBS).where(ALL_JOBS.c.state.in_(ACTIVE)), kind, vod_id, stream_id)
-    async with get_sessionmaker()() as s:
-        return (await s.execute(stmt)).first()  # type: ignore[no-any-return]
-
-
-async def active_by_vod(vod_ids: list[str]) -> dict[str, list[Row]]:  # type: ignore[type-arg]
-    """The queued, running and paused jobs of each of ``vod_ids`` that has any, oldest first."""
-    if not vod_ids:
-        return {}
-    stmt = select(ALL_JOBS).where(ALL_JOBS.c.state.in_(ACTIVE), ALL_JOBS.c.vod_id.in_(vod_ids)).order_by(ALL_JOBS.c.id)
-    out: dict[str, list[Row]] = {}  # type: ignore[type-arg]
-    async with get_sessionmaker()() as s:
-        for row in (await s.execute(stmt)).all():
-            out.setdefault(row.vod_id, []).append(row)
-    return out
-
-
-async def exists_any(kind: str, *, vod_id: str | None = None, stream_id: str | None = None) -> bool:
-    """Any job (including finished/failed) — used so the monitor enqueues once per stream."""
-    async with get_sessionmaker()() as s:
-        return (await s.execute(_matching(select(ALL_JOBS.c.id), kind, vod_id, stream_id))).first() is not None
-
-
 async def get(job_id: int) -> Row:  # type: ignore[type-arg]
     async with get_sessionmaker()() as s:
         row = (
@@ -289,46 +138,32 @@ async def get(job_id: int) -> Row:  # type: ignore[type-arg]
 
 # ── Acting on jobs ─────────────────────────────────────────────────────────
 
-_RUN_CONFLICT = re.compile(r"run \d+ is (\w+); only (.+) runs can be (\w+)")
 
-
-@contextmanager
-def _v1_conflicts() -> Iterator[None]:
-    """The runtime's conflicts ("run 7 is succeeded; only paused runs can be resumed") worded as the
-    admin API always has ("Job is done; only paused jobs can be resumed")."""
-    try:
-        yield
-    except JobConflict as exc:
-        m = _RUN_CONFLICT.fullmatch(str(exc))
-        if m is None:
-            raise
-        state = "done" if m[1] == "succeeded" else m[1]
-        raise JobConflict(f"Job is {state}; only {m[2]} jobs can be {m[3]}") from exc
+async def _not_legacy(job_id: int) -> None:
+    """Nothing runs the old table's jobs any more: they can be read, not acted on."""
+    if (await get(job_id)).legacy:
+        raise JobConflict(f"Job {job_id} is from the old jobs table, which no longer runs; queue a new job instead")
 
 
 @dataclass
 class JobService:
-    """What the admin API, the monitor and the CLI do with jobs: new ones go to the runtime, and the
-    actions reach a job in whichever table it is. Each returns the job as ``get`` reads it."""
+    """What the admin API, the monitor and the CLI do with jobs: new ones go to the runtime, and so do
+    the actions on them. Each returns the job as ``get`` reads it."""
 
     deps: Deps
     runtime: JobRuntime
-    legacy: legacy_jobs.Runner | None = None
 
     @classmethod
     def create(cls, deps: Deps) -> JobService:
-        runtime = create_runtime(deps)
-        return cls(deps, runtime, legacy_jobs.Runner(deps, runtime.registry))
+        return cls(deps, create_runtime(deps))
 
     @property
     def running(self) -> int:
         """Jobs running in this worker now."""
-        return self.runtime.limiter.active + (len(self.legacy.running) if self.legacy else 0)  # type: ignore[no-any-return]
+        return self.runtime.limiter.active  # type: ignore[no-any-return]
 
     def apply_settings(self) -> None:
         apply_settings(self.runtime, self.deps.settings)
-        if self.legacy:
-            self.legacy.poke()  # a higher concurrency starts waiting jobs now
 
     async def enqueue(
         self,
@@ -348,65 +183,34 @@ class JobService:
         return await get(enqueued.run.id)
 
     async def resume(self, job_id: int, *, once: bool = False, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().resume(job_id, once=once)
-            return await self._legacy_audit("job.resume", job, actor)
-        with _v1_conflicts():
-            await self.runtime.resume(job_id, once=once, actor=actor)
+        await _not_legacy(job_id)
+        await self.runtime.resume(job_id, once=once, actor=actor)
         return await get(job_id)
 
     async def pause(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await legacy_jobs.pause(job_id)
-            return await self._legacy_audit("job.pause", job, actor)
-        with _v1_conflicts():
-            await self.runtime.pause(job_id, actor=actor)
+        await _not_legacy(job_id)
+        await self.runtime.pause(job_id, actor=actor)
         return await get(job_id)
 
     async def retry(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().retry(job_id)
-            return await self._legacy_audit("job.retry", job, actor)
-        with _v1_conflicts():
-            await self.runtime.retry(job_id, actor=actor)
+        await _not_legacy(job_id)
+        await self.runtime.retry(job_id, actor=actor)
         return await get(job_id)
 
     async def cancel(self, job_id: int, *, actor: Actor = SYSTEM) -> Row:  # type: ignore[type-arg]
-        if (job := await get(job_id)).legacy:
-            await self._legacy().cancel(job_id)
-            return await self._legacy_audit("job.cancel", job, actor)
-        with _v1_conflicts():
-            await self.runtime.cancel(job_id, actor=actor)
+        await _not_legacy(job_id)
+        await self.runtime.cancel(job_id, actor=actor)
         return await get(job_id)
 
     async def update(self, job_id: int, *, actor: Actor = SYSTEM, **values: Any) -> Row:  # type: ignore[type-arg]
         """``pause_before`` (None: back to the kind's default) and/or ``pause_next``."""
-        if (job := await get(job_id)).legacy:
-            await legacy_jobs.set_control(self.runtime.registry, job_id, **values)
-            return await self._legacy_audit("job.update", job, actor, fields=("pause_before", "pause_next"))
-        with _v1_conflicts():
-            await self.runtime.update(job_id, actor=actor, **values)
+        await _not_legacy(job_id)
+        await self.runtime.update(job_id, actor=actor, **values)
         return await get(job_id)
-
-    async def _legacy_audit(self, action: str, before: Row, actor: Actor, fields: tuple[str, ...] = ("state",)) -> Row:  # type: ignore[type-arg]
-        """The audit row of an action on a legacy job, as the runtime writes one for a run."""
-        after = await get(before.id)
-        await audit.write(
-            AuditEntry(
-                action,
-                actor,
-                f"job:{before.id}",
-                before={f: getattr(before, f) for f in fields},
-                after={f: getattr(after, f) for f in fields},
-                detail={"legacy": True},
-            )
-        )
-        return after
 
     def note(self, job: Row, message: str) -> None:  # type: ignore[type-arg]
         """A line in the job's event log (an admin action on it)."""
-        events = self.deps.events if job.legacy else self.runtime.events
-        events.add(job.id, "info", job.step, message)
+        self.runtime.events.add(job.id, "info", job.step, message)
 
     async def events(self, job_id: int, *, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         """The job's log lines, step changes and progress, oldest first, as ``event_json`` shapes them."""
@@ -423,8 +227,3 @@ class JobService:
             }
             for e in await self.runtime.events.list(job_id, after=after, limit=limit)
         ]
-
-    def _legacy(self) -> legacy_jobs.Runner:
-        if self.legacy is None:
-            raise JobConflict("legacy jobs are run by the worker")
-        return self.legacy

@@ -12,9 +12,10 @@ from archive_common.timeutil import format_hhmmss, parse_helix_duration
 from vex_platform.actor import Actor
 from vex_platform.jobs import JobRun, SkipTo
 
-from .. import ffmpeg, planning
+from .. import ffmpeg, job_rows, planning
 from ..context import JobContext, StepError
 from ..job_rows import ACTIVE, vod_of
+from ..kinds import KINDS
 from ..vods import upsert_vod, vod_id_for_stream
 from .capture import capture
 from .metadata import file_chapters, vod_duration
@@ -49,10 +50,8 @@ async def _save_final_duration(ctx: JobContext) -> None:
     """The stream is over, so Helix has the VOD's final length. An archive job measures it from its
     own file; without one (live_record without multi_track) the row would keep the length it had
     when the monitor first saw the VOD."""
-    from .. import jobs  # jobs imports the steps
-
     stream_id = str(ctx.payload["stream_id"])
-    if not ctx.deps.helix.configured or await jobs.exists_any("archive", stream_id=stream_id):
+    if not ctx.deps.helix.configured or await job_rows.exists_any("archive", stream_id=stream_id):
         return
     video = await ctx.deps.helix.video_for_stream(ctx.settings.twitch_id, stream_id)
     seconds = parse_helix_duration((video or {}).get("duration", ""))
@@ -116,8 +115,6 @@ async def split(ctx: JobContext) -> None:
     duration = await vod_duration(ctx, vod)
     all_parts = planning.plan_parts(duration, file_chapters(ctx, vod), s.restricted_games, s.split_duration)
     if not all_parts:
-        from ..jobs import KINDS  # jobs imports the steps
-
         # Not a failure: nothing to do but clean up (a kind without cleanup just ends).
         then = "cleanup" if "cleanup" in KINDS[ctx.kind] else None
         raise SkipTo("nothing to upload (VOD is empty or entirely restricted)", then)

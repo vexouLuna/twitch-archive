@@ -11,6 +11,10 @@ state-changing request that succeeds is written to the audit log (``audit_log``,
 archive_common/audit.py): its body, or what the route put in ``request.state.audit_detail`` (e.g. a
 VOD edit's before and after). Actions on jobs are audited by the job runtime (and ``JobService`` for
 the legacy table's) instead, as every other way of acting on a job is.
+
+This module builds the app: errors, auth and sessions, sign-in, the audit and CORS middleware, and
+the helpers the routes share (``AdminContext``, admin_shared.py). The routes are in admin_status,
+admin_site, admin_jobs, admin_vods, admin_twitch, admin_pipelines and admin_youtube.
 """
 
 from __future__ import annotations
@@ -19,42 +23,32 @@ import asyncio
 import datetime as dt
 import hmac
 import json
-import logging
 import secrets
-import time
-from contextvars import ContextVar
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 
-from archive_common import http
-from archive_common import site_options as site_options_common
-from archive_common import site_tags as site_tags_common
-from archive_common.audit import AUDIT_LOG, actor_of, legacy_actor, route_entry
+from archive_common.audit import actor_of, route_entry
 from archive_common.audit import write as write_audit
 from archive_common.db import get_sessionmaker
-from archive_common.models import Emote, Game, Log, Stream, Vod
-from archive_common.serialize import EMOTES, GAMES, box_art_template, duration_seconds, vod_json
-from archive_common.timeutil import format_hhmmss, hhmmss_to_seconds, parse_helix_duration
+from archive_common.models import Vod
 from fastapi import Body, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from sqlalchemy import delete, func, insert, or_, select, text, tuple_, update
 from starlette.middleware.base import RequestResponseEndpoint
-from vex_platform.actor import SYSTEM, Actor
 from vex_platform.api import ApiError, problem
 
 from . import (
+    admin_jobs,
+    admin_pipelines,
+    admin_site,
+    admin_status,
+    admin_twitch,
+    admin_vods,
+    admin_youtube,
     api_v2,
     api_v2_routes,
     jobs,
-    site_options,
-    site_tags,
     splices,
-    svg_clean,
-    twitch_viewer,
     vod_edits,
-    youtube,
-    youtube_check,
-    youtube_quota,
 )
 from .admin_auth import (
     CSRF_HEADER,
@@ -64,10 +58,31 @@ from .admin_auth import (
     Session,
     SessionStore,
     client_address,
+    forwarded_untrusted,
     parse_networks,
     parse_password_networks,
     password_allowed,
     plain_http,
+)
+from .admin_shared import (
+    AUDITED_PREFIXES,
+    CORS_HEADERS,
+    JOB_ROUTES,
+    LAN_SESSION_COOKIE_ARGS,
+    SAFE_METHODS,
+    SESSION_COOKIE_ARGS,
+    SESSION_PATH,
+    STATE_COOKIE_ARGS,
+    TWITCH_STEPS,
+    YOUTUBE_CHECK_MAX_AGE,
+    AdminContext,
+    AdminError,
+    Unauthenticated,
+    _actor,
+    _ok,
+    log,
+    login_of,
+    origin_of,
 )
 from .admin_signin import (
     CHECK_S,
@@ -83,145 +98,9 @@ from .admin_signin import (
 )
 from .context import Deps
 from .events import iso_utc
-from .job_rows import ALL_JOBS
 from .runtime_settings import RuntimeSettings
-from .steps import content_check
 from .storage import Storage, StorageError
-from .vods import drop_youtube_entries, notify_rows_moved, splice_reason, upsert_vod
-
-log = logging.getLogger(__name__)
-READY_TIMEOUT_S = 5  # /readyz: a database slower than this counts as down
-
-SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
-SESSION_COOKIE_ARGS = {"path": "/", "secure": True, "httponly": True, "samesite": "strict"}
-# The password login over plain HTTP (a LAN address with no TLS): a browser drops a Secure cookie
-# set over HTTP, so there it goes without. The password only works from the local network anyway.
-LAN_SESSION_COOKIE_ARGS = {**SESSION_COOKIE_ARGS, "secure": False}
-STATE_COOKIE_ARGS = {"path": "/", "secure": True, "httponly": True, "samesite": "lax"}
-SESSION_PATH = "/admin/session"  # the one route a site's page may call from its own origin (CORS)
-CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE",
-    "Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token",
-    "Access-Control-Max-Age": "600",
-}
-AUDITED_PREFIXES = ("/admin/", "/v2/")
-JOB_ROUTES = "/admin/jobs"  # audited by the runtime (and JobService), not by the request
-YOUTUBE_CHECK_MAX_AGE = 600  # /admin/health refreshes the YouTube token at most this often
-RECENT_JOBS = 20  # jobs shown with a VOD
-VOD_LIST_MAX = 200  # GET /admin/vods?limit=
-# Steps that refetch from Twitch by VOD id; a job with any of them is refused on a merged/split VOD.
-TWITCH_STEPS = {"capture", "fetch_vod", "finalize", "chapters", "chat", "emotes", "bot_chat"}
-
-
-class AdminError(Exception):
-    def __init__(
-        self, status: int, msg: str, headers: dict[str, str] | None = None, extra: dict[str, Any] | None = None
-    ) -> None:
-        self.status, self.msg, self.headers, self.extra = status, msg, headers, extra or {}
-
-
-class Unauthenticated(AdminError):
-    """No credentials, or a session that has ended: 403 in v1 as always, 401 in v2."""
-
-    def __init__(self, msg: str) -> None:
-        super().__init__(403, msg)
-
-
-def _ok(msg: str, job: Any = None, **extra: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"error": False, "msg": msg, **extra}
-    if job is not None:
-        out["jobId"] = job.id
-    return out
-
-
-def _step_names(value: Any, msg: str) -> list[str] | None:
-    """``pauseBefore``: a list of step names, or None."""
-    if value is not None and not (isinstance(value, list) and all(isinstance(s, str) for s in value)):
-        raise AdminError(400, msg)
-    return value
-
-
-async def _job_counts(s) -> dict[str, int]:  # type: ignore[no-untyped-def]
-    counts = dict((await s.execute(select(ALL_JOBS.c.state, func.count()).group_by(ALL_JOBS.c.state))).all())
-    return {st: counts.get(st, 0) for st in jobs.STATES}
-
-
-def _require(body: dict[str, Any], *keys: str) -> None:
-    for key in keys:
-        if body.get(key) in (None, ""):
-            raise AdminError(400, f"Missing parameter: {key}")
-
-
-# Shorthands accepted by GET /admin/jobs?state=
-STATE_GROUPS = {
-    "waiting": ("queued",),  # will run on its own (possibly after a retry backoff)
-    "stopped": ("paused", "failed", "cancelled"),  # needs someone to resume/retry
-    "active": jobs.ACTIVE,
-    "finished": ("done", "failed", "cancelled"),
-}
-
-
-def _states(value: str) -> list[str]:
-    out: list[str] = []
-    for name in (v.strip() for v in value.split(",") if v.strip()):
-        group = STATE_GROUPS.get(name, (name,))
-        for state in group:
-            if state not in jobs.STATES:
-                raise AdminError(
-                    400, f"Unknown state {state!r}; states: {', '.join(jobs.STATES)}, groups: {', '.join(STATE_GROUPS)}"
-                )
-            out.append(state)
-    return out
-
-
-def login_of(session: Session) -> str | None:
-    """The Twitch login behind a session, for the audit log (None for the password)."""
-    return (session.user or {}).get("login") or None
-
-
-def _audit_json(row: Any) -> dict[str, Any]:
-    """An ``audit_log`` row as GET /admin/audit has always shown one (``admin_audit``'s shape)."""
-    detail = row.detail
-    if row.before is not None or row.after is not None:
-        detail = {"before": row.before, "after": row.after}
-    return {
-        "id": row.id,
-        "at": iso_utc(row.at),
-        "actor": legacy_actor(row.actor_kind, row.actor_id),
-        "actorLogin": row.actor_login,
-        "action": row.action,
-        "target": row.target,
-        "detail": detail,
-    }
-
-
-# Who the request being handled is (set by ``verify``), for the jobs it queues or acts on.
-_actor: ContextVar[Actor] = ContextVar("admin_actor", default=SYSTEM)
-
-
-def _job_json(job: Any) -> dict[str, Any]:
-    return {
-        "id": job.id,
-        "kind": job.kind,
-        "vodId": job.vod_id,
-        "state": job.state,
-        "step": job.step,
-        "attempts": job.attempts,
-        "lastError": job.last_error,
-        "payload": job.payload,
-        "notBefore": iso_utc(job.not_before),
-        "pauseBefore": job.pause_before,
-        "pauseNext": job.pause_next,
-        "steps": jobs.KINDS.get(job.kind, []),
-        "createdAt": iso_utc(job.created_at),
-        "updatedAt": iso_utc(job.updated_at),
-    }
-
-
-def origin_of(url: str) -> str:
-    """``scheme://host[:port]`` of an absolute URL, lowercased; empty for anything else."""
-    parts = urlsplit(url.strip())
-    return f"{parts.scheme}://{parts.netloc}".lower() if parts.scheme and parts.netloc else ""
+from .vods import splice_reason
 
 
 def create_admin_app(
@@ -314,14 +193,23 @@ def create_admin_app(
         await passwords.checked(session, now)
         return session
 
+    legacy_schemes: set[str] = set()  # the non-Bearer words already warned about
+
     async def verify(request: Request) -> None:
         header = request.headers.get("authorization")
         if header:
-            # Legacy parser: "<anything> <key>"; "Bearer <key>" is the documented form.
-            key = header.split(" ", 1)[1] if " " in header else ""
+            # Legacy parser: "<anything> <key>"; "Bearer <key>" is the documented form (ADR 0003).
+            scheme, _, key = header.partition(" ")
             expected = settings.admin_api_key.get_secret_value()
             if not expected or not hmac.compare_digest(key.encode(), expected.encode()):
                 raise AdminError(403, "Not authorized")
+            if scheme.lower() != "bearer" and scheme not in legacy_schemes:
+                legacy_schemes.add(scheme)  # once per word per process: scripts call often
+                log.warning(
+                    "an API-key request used 'Authorization: %s <key>'; only 'Bearer <key>' will be "
+                    "accepted from the next release",
+                    scheme[:20],
+                )
             request.state.actor = "api-key"
             _actor.set(actor_of("api-key"))
             return
@@ -420,7 +308,11 @@ def create_admin_app(
     # ── Session (browser login) ───────────────────────────────────────────
 
     def password_here(request: Request) -> bool:
-        return passwords.enabled and password_allowed(client_address(request, trusted_proxies), password_networks)
+        return (
+            passwords.enabled
+            and not forwarded_untrusted(request, trusted_proxies)
+            and password_allowed(client_address(request, trusted_proxies), password_networks)
+        )
 
     def session_json(request: Request, session: Session | None) -> dict[str, Any]:
         return {
@@ -443,6 +335,16 @@ def create_admin_app(
         if not passwords.enabled:
             raise AdminError(404, "Password login is off (ARCHIVE_ADMIN_PASSWORD is not set)")
         address = client_address(request, trusted_proxies)
+        if forwarded_untrusted(request, trusted_proxies):
+            # Fail closed: through an unlisted proxy every client would pass as the proxy's own address.
+            log.warning(
+                "admin password refused: %s forwards requests but is not in ARCHIVE_ADMIN_TRUSTED_PROXIES", address
+            )
+            raise AdminError(
+                403,
+                "The password is off through this proxy until it is listed in ARCHIVE_ADMIN_TRUSTED_PROXIES; "
+                "sign in with Twitch",
+            )
         if not password_allowed(address, password_networks):
             log.warning("admin password refused from %s (not in ARCHIVE_ADMIN_PASSWORD_NETWORKS)", address)
             raise AdminError(403, "The password only works from the local network; sign in with Twitch")
@@ -478,7 +380,9 @@ def create_admin_app(
             log.warning("admin code sign-in refused from origin %s (not in ARCHIVE_ADMIN_SITE_ORIGINS)", origin)
             return refused(403, "origin_not_allowed", "This origin is not one of ARCHIVE_ADMIN_SITE_ORIGINS")
         if signin is None:
-            return refused(404, "signin_off", "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            return refused(
+                404, "signin_off", "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)"
+            )
         if not isinstance(code, str) or not code:
             return refused(400, "invalid_code", "Missing parameter: code")
         try:
@@ -513,7 +417,7 @@ def create_admin_app(
     @app.get("/admin/signin")
     async def signin_start(next: str | None = None, quiet: bool = False) -> Response:
         if signin is None:
-            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)")
         state = pending.start(safe_next(next), quiet)
         response = RedirectResponse(signin.authorize_url(state), status_code=302)
         response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_S, **STATE_COOKIE_ARGS)  # type: ignore[arg-type]
@@ -524,7 +428,7 @@ def create_admin_app(
         request: Request, code: str | None = None, state: str | None = None, error: str | None = None
     ) -> Response:
         if signin is None:
-            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in the README)")
+            raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)")
         cookie = request.cookies.get(STATE_COOKIE) or ""
         started = pending.finish(state)
         # The state must be one this worker handed out, to this browser.
@@ -649,1080 +553,6 @@ def create_admin_app(
         payload.update(start_part=part, end_part=part)
         return part
 
-    # ── Health / jobs ─────────────────────────────────────────────────────
-
-    @app.get("/healthz")
-    async def healthz() -> dict[str, Any]:
-        """Liveness: the process answers. No dependency checks."""
-        return {"status": "ok", "runningJobs": service.running}
-
-    @app.get("/readyz", response_model=None)
-    async def readyz() -> dict[str, Any] | JSONResponse:
-        """Readiness: the database answers too, within READY_TIMEOUT_S. 503 with the error's type when it
-        doesn't."""
-        try:
-            async with asyncio.timeout(READY_TIMEOUT_S), get_sessionmaker()() as s:
-                await s.execute(text("select 1"))
-        except Exception as exc:
-            log.warning("not ready: database %s", type(exc).__name__)
-            body = {"status": "unavailable", "error": f"database: {type(exc).__name__}", "runningJobs": service.running}
-            return JSONResponse(body, status_code=503)
-        return {"status": "ok", "runningJobs": service.running}
-
-    async def api_ok() -> bool:
-        """Whether the api can serve: its /readyz, which checks its database too."""
-        url = (settings.api_internal_url or f"http://127.0.0.1:{settings.api_port}").rstrip("/")
-        try:
-            resp = await http.get_client().get(f"{url}/readyz", timeout=3)
-            return resp.status_code == 200
-        except Exception:  # connection refused, timeout, ...
-            return False
-
-    @app.get("/admin/health", dependencies=auth)
-    async def health() -> dict[str, Any]:
-        """One call for the dashboard's status bar. The YouTube token is refreshed at
-        most every 10 minutes here; /admin/youtube/status always refreshes it."""
-
-        async def db_state() -> tuple[dict[str, int], list[Any], Stream | None] | None:
-            try:
-                async with get_sessionmaker()() as s:
-                    counts = await _job_counts(s)
-                    failures = list(
-                        (
-                            await s.execute(
-                                select(ALL_JOBS)
-                                .where(ALL_JOBS.c.state == "failed")
-                                .order_by(ALL_JOBS.c.updated_at.desc(), ALL_JOBS.c.id.desc())
-                                .limit(5)
-                            )
-                        ).all()
-                    )
-                    live = (
-                        await s.execute(
-                            select(Stream).where(Stream.is_live.is_(True)).order_by(Stream.started_at.desc()).limit(1)
-                        )
-                    ).scalar_one_or_none()
-                    return counts, failures, live
-            except Exception:
-                log.exception("health: database query failed")
-                return None
-
-        async def quota() -> dict[str, Any] | None:
-            try:
-                return await youtube_quota.today(settings.youtube_daily_quota)
-            except Exception:
-                log.exception("health: YouTube quota lookup failed")
-                return None
-
-        db, api, yt, viewer, used, bot = await asyncio.gather(
-            db_state(),
-            api_ok(),
-            deps.youtube.cached_check(YOUTUBE_CHECK_MAX_AGE),
-            viewer_check(),
-            quota(),
-            deps.doomtp.status(),
-        )
-        db_ok = db is not None
-        counts, failures, live = db or ({st: 0 for st in jobs.STATES}, [], None)
-        return {
-            "worker": {"ok": db_ok, "runningJobs": service.running, "startedAt": iso_utc(started_at)},
-            "api": {"ok": api},
-            "youtube": {
-                "authorized": yt["authorized"],
-                "valid": yt["valid"],
-                "error": yt.get("error"),
-                "channel": yt.get("channel"),
-                "connectedAt": yt.get("connectedAt"),
-                "refreshTokenExpiresAt": yt.get("refreshTokenExpiresAt"),
-                "checkedAt": iso_utc(yt["checkedAt"]),
-                "quota": used,
-            },
-            "twitchViewer": viewer,
-            "doomtp": bot,
-            "live": {
-                "live": live is not None,
-                "streamId": str(live.id) if live else None,
-                "startedAt": iso_utc(live.started_at) if live else None,
-            },
-            "jobs": {
-                "counts": counts,
-                "recentFailures": [_job_json(j) for j in failures],
-            },
-        }
-
-    @app.get("/admin/kinds", dependencies=auth)
-    async def list_kinds() -> dict[str, Any]:
-        """Job kinds, their steps, and the steps each pauses before by default."""
-        return {
-            kind: {"steps": steps, "manualSteps": settings.manual_steps.get(kind, [])}
-            for kind, steps in jobs.KINDS.items()
-        }
-
-    # ── Runtime settings ──────────────────────────────────────────────────
-
-    def settings_json() -> dict[str, Any]:
-        return {"data": runtime.describe()}
-
-    async def edited_async(pending) -> Any:  # type: ignore[no-untyped-def]
-        try:
-            return await pending
-        except ValueError as exc:
-            raise AdminError(400, str(exc)) from exc
-
-    def changed_by(request: Request) -> str:
-        return getattr(request.state, "actor_login", None) or request.state.actor  # type: ignore[no-any-return]
-
-    @app.get("/admin/settings", dependencies=auth)
-    async def list_settings() -> dict[str, Any]:
-        """Each setting the dashboard can change: value, env default, whether overridden, type, when it applies."""
-        return settings_json()
-
-    @app.patch("/admin/settings", dependencies=auth)
-    async def patch_settings(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{key: value, ...}``: all of them, or none when one is refused. Audited with before and after."""
-        before, after = await edited_async(runtime.update(body, changed_by(request)))
-        request.state.audit_detail = {"before": before, "after": after}
-        service.apply_settings()  # concurrency, attempts and gates, now
-        return settings_json()
-
-    @app.delete("/admin/settings/{key}", dependencies=auth)
-    async def reset_setting(key: str, request: Request) -> dict[str, Any]:
-        """Back to the env value (or the default)."""
-        try:
-            before, after = await runtime.reset(key)
-        except KeyError:
-            raise AdminError(404, f"No setting {key}") from None
-        request.state.audit_detail = {"before": before, "after": after}
-        service.apply_settings()
-        return settings_json()
-
-    # ── Site tags (how vods.vexoul.net shows each VOD tag; archive-api serves them) ──
-
-    async def site_tags_view() -> dict[str, Any]:
-        async with get_sessionmaker()() as s:
-            return site_tags.view(await site_tags_common.load(s))
-
-    async def site_tags_change(pending) -> tuple[dict[str, Any], dict[str, Any]]:  # type: ignore[no-untyped-def]
-        """The audit detail (before and after; never the SVG) and the GET body."""
-        try:
-            before, after, view = await pending
-        except site_tags.SiteTagError as exc:
-            raise AdminError(
-                exc.status, exc.msg, extra={"tag": exc.tag, "field": exc.field} if exc.status == 400 else None
-            ) from None
-        return {"before": before, "after": after}, view
-
-    @app.get("/admin/site/tags", dependencies=auth)
-    async def get_site_tags() -> dict[str, Any]:
-        """The tags in display order, with when and by whom they were last saved."""
-        return await site_tags_view()
-
-    @app.put("/admin/site/tags", dependencies=auth)
-    async def put_site_tags(request: Request, body: Any = Body(...)) -> dict[str, Any]:
-        """``{"tags": [...]}``: the whole list, or nothing when a tag is refused. A tag no longer listed
-        loses its shape; ``shape`` in the body is ignored (PUT .../{tag}/shape sets it)."""
-        try:
-            tags = site_tags.validate(body)
-        except site_tags.SiteTagError as exc:
-            raise AdminError(400, exc.msg, extra={"tag": exc.tag, "field": exc.field}) from None
-        request.state.audit_target = "site:tags"
-        request.state.audit_detail, view = await site_tags_change(site_tags.save(tags, changed_by(request)))
-        return view
-
-    @app.put("/admin/site/tags/{tag}/shape", dependencies=auth)
-    async def put_site_tag_shape(tag: str, request: Request) -> dict[str, Any]:
-        """The tag's shape: the raw SVG (``content-type: image/svg+xml``), cleaned (svg_clean.py)."""
-        media = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if media != "image/svg+xml":
-            raise AdminError(415, "Send the SVG as content-type: image/svg+xml")
-        raw = await request.body()
-        if len(raw) > site_tags_common.SHAPE_MAX_BYTES:
-            raise AdminError(413, f"The SVG is over {site_tags_common.SHAPE_MAX_BYTES // 1024} KB")
-        try:
-            svg = svg_clean.clean(raw)
-        except svg_clean.UnsafeSvg as exc:
-            raise AdminError(400, f"Refused SVG: {exc}") from None
-        request.state.audit_target = f"site-tag:{tag}"
-        request.state.audit_detail, view = await site_tags_change(site_tags.set_shape(tag, svg))
-        return view
-
-    @app.delete("/admin/site/tags/{tag}/shape", dependencies=auth)
-    async def delete_site_tag_shape(tag: str, request: Request) -> dict[str, Any]:
-        """No shape: the site draws the tag's label only."""
-        request.state.audit_target = f"site-tag:{tag}"
-        request.state.audit_detail, view = await site_tags_change(site_tags.set_shape(tag, None))
-        return view
-
-    # ── Site options (the homepage's cards; archive-api serves them) ──
-
-    @app.get("/admin/site/options", dependencies=auth)
-    async def get_site_options() -> dict[str, Any]:
-        """``{homeCards, playDefault, updatedAt, updatedBy}``; an option never saved reads as its default."""
-        async with get_sessionmaker()() as s:
-            return site_options.view(await site_options_common.load(s))
-
-    @app.put("/admin/site/options", dependencies=auth)
-    async def put_site_options(request: Request, body: Any = Body(...)) -> dict[str, Any]:
-        """Any of the options; the others keep their value. All or nothing."""
-        try:
-            before, after, view = await site_options.save(body, changed_by(request))
-        except site_options.SiteOptionError as exc:
-            raise AdminError(400, exc.msg) from None
-        request.state.audit_target = "site:options"
-        request.state.audit_detail = {"before": before, "after": after}
-        return view
-
-    # ── Storage ───────────────────────────────────────────────────────────
-
-    @app.get("/admin/storage", dependencies=auth)
-    async def get_storage(refresh: bool = False) -> dict[str, Any]:
-        """The disk, and each job folder (vods/<id>, live/<stream id>) with its size, VOD, jobs and whether
-        it is stale. Sizes are cached for a short while; ``refresh=true`` scans again."""
-        return await storage.view(refresh)
-
-    @app.delete("/admin/storage/{area}/{name}", dependencies=auth)
-    async def delete_storage(area: str, name: str, request: Request) -> dict[str, Any]:
-        """Delete a folder's files; refused while a job for it is queued, running or paused."""
-        freed = await storage.delete(area, name)
-        request.state.audit_detail = freed
-        return freed
-
-    @app.get("/admin/jobs", dependencies=auth)
-    async def list_jobs(
-        state: str | None = None,
-        vodId: str | None = None,
-        kind: str | None = None,
-        limit: int = 50,
-        before: int | None = None,
-    ) -> dict[str, Any]:
-        """``state`` takes a comma-separated list of states and/or groups (see STATE_GROUPS).
-        Newest first; ``before`` (a job id) pages back through older ones."""
-        states = _states(state) if state else None
-        c = ALL_JOBS.c
-        async with get_sessionmaker()() as s:
-            stmt = select(ALL_JOBS).order_by(c.id.desc(), c.legacy).limit(min(max(limit, 1), 500))
-            if before is not None:
-                stmt = stmt.where(c.id < before)
-            if states:
-                stmt = stmt.where(c.state.in_(states))
-            if vodId:
-                stmt = stmt.where(c.vod_id == vodId)
-            if kind:
-                stmt = stmt.where(c.kind == kind)
-            rows = (await s.execute(stmt)).all()
-            counts = await _job_counts(s)
-        return {"counts": counts, "data": [_job_json(j) for j in rows]}
-
-    @app.post("/admin/jobs", dependencies=auth)
-    async def launch_job(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Start any job kind. Body: kind, vodId?, payload?, fromStep?, pauseBefore?, paused?"""
-        _require(body, "kind")
-        vod_id = str(body["vodId"]) if body.get("vodId") not in (None, "") else None
-        if vod_id is not None:
-            await require_vod(vod_id)
-        pause_before = _step_names(body.get("pauseBefore"), "pauseBefore must be a list of step names")
-        payload = body.get("payload") or {}
-        if not isinstance(payload, dict):
-            raise AdminError(400, "payload must be an object")
-        job = await enqueue(
-            str(body["kind"]),
-            vod_id,
-            payload,
-            step=body.get("fromStep") or None,
-            pause_before=pause_before,
-            paused=bool(body.get("paused")),
-        )
-        return _ok(f"Job {job.id} {job.kind} {job.state} at step {job.step}", job)
-
-    @app.post("/admin/jobs/{job_id}/resume", dependencies=auth)
-    async def resume_job(job_id: int, body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """Run a paused job from its current step. ``{"once": true}`` pauses again after it."""
-        job = await service.resume(job_id, once=bool((body or {}).get("once")), actor=_actor.get())
-        return job_action(f"Job {job_id} resumed at step {job.step}", job)
-
-    @app.post("/admin/jobs/{job_id}/pause", dependencies=auth)
-    async def pause_job(job_id: int) -> dict[str, Any]:
-        job = await service.pause(job_id, actor=_actor.get())
-        if job.state == "running":
-            return job_action(f"Job {job_id} will pause when step {job.step} finishes", job)
-        return job_action(f"Job {job_id} paused at step {job.step}", job)
-
-    @app.get("/admin/jobs/{job_id}", dependencies=auth)
-    async def get_job(job_id: int) -> dict[str, Any]:
-        return _job_json(await jobs.get(job_id))
-
-    @app.patch("/admin/jobs/{job_id}", dependencies=auth)
-    async def patch_job(job_id: int, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``pauseBefore`` (step names, or null for the ARCHIVE_MANUAL_STEPS default) and/or
-        ``pauseNext``. Like any gate, they apply when the job next moves on to a step."""
-        unknown = sorted(set(body) - {"pauseBefore", "pauseNext"})
-        if unknown or not body:
-            raise AdminError(
-                400, "Body takes pauseBefore and/or pauseNext" + (f"; unknown: {', '.join(unknown)}" if unknown else "")
-            )
-        values: dict[str, Any] = {}
-        if "pauseBefore" in body:
-            values["pause_before"] = _step_names(
-                body["pauseBefore"], "pauseBefore must be a list of step names or null"
-            )
-        if "pauseNext" in body:
-            if not isinstance(body["pauseNext"], bool):
-                raise AdminError(400, "pauseNext must be true or false")
-            values["pause_next"] = body["pauseNext"]
-        job = await service.update(job_id, actor=_actor.get(), **values)
-        service.note(job, f"manual steps set: pauseBefore={job.pause_before}, pauseNext={job.pause_next}")
-        return _job_json(job)
-
-    @app.get("/admin/jobs/{job_id}/events", dependencies=auth)
-    async def job_events(job_id: int, after: int = 0, limit: int = 200) -> dict[str, Any]:
-        """The job's log lines, step changes and progress, oldest first. Poll with
-        ``after=<next>`` from the previous answer to get only what is new."""
-        rows = await service.events(job_id, after=after, limit=min(max(limit, 1), 1000))
-        return {"data": rows, "next": rows[-1]["seq"] if rows else after}
-
-    @app.post("/admin/jobs/{job_id}/retry", dependencies=auth)
-    async def retry_job(job_id: int) -> dict[str, Any]:
-        job = await service.retry(job_id, actor=_actor.get())
-        return job_action(f"Job {job_id} re-queued from step {job.step}", job)
-
-    @app.post("/admin/jobs/{job_id}/cancel", dependencies=auth)
-    async def cancel_job(job_id: int) -> dict[str, Any]:
-        job = await service.cancel(job_id, actor=_actor.get())
-        return job_action(f"Job {job_id} cancelled", job)
-
-    # ── VOD rows ──────────────────────────────────────────────────────────
-
-    @app.post("/admin/generate/vod", dependencies=auth)
-    async def generate_vod(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId")
-        if await vod_exists(body["vodId"]):
-            raise AdminError(400, "This VOD is already in the archive")
-        video = await helix_video(body["vodId"])
-        await upsert_vod(video)
-        await enqueue("chapters", video["id"])
-        job = await enqueue("emotes", video["id"])
-        return _ok(f"Created vod {video['id']}", job)
-
-    @app.post("/admin/create", dependencies=auth)
-    async def create_vod(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId", "title", "createdAt", "duration")
-        if await vod_exists(body["vodId"]):
-            raise AdminError(400, f"{body['vodId']} already exists!")
-        created = dt.datetime.fromisoformat(str(body["createdAt"]))
-        async with get_sessionmaker()() as s:
-            s.add(
-                Vod(
-                    id=str(body["vodId"]),
-                    title=body["title"],
-                    created_at=created,
-                    duration=body["duration"],
-                    drive=[body["drive"]] if body.get("drive") else [],
-                    platform=body.get("platform") or "twitch",
-                )
-            )
-            await s.commit()
-        return _ok(f"Created {body['vodId']} in vods DB!")
-
-    @app.delete("/admin/delete", dependencies=auth)
-    async def delete_vod(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId")
-        vod_id = str(body["vodId"])
-        await refuse_spliced(vod_id, "deleting it (with the chat rows it holds)")
-        async with get_sessionmaker()() as s:
-            for model in (Log, Emote, Game):
-                await s.execute(delete(model).where(model.vod_id == vod_id))
-            await s.execute(delete(Vod).where(Vod.id == vod_id))
-            await s.commit()
-        return _ok(f"Deleted {vod_id} (vod, logs, emotes, games)")
-
-    @app.post("/admin/duration", dependencies=auth)
-    async def save_duration(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId")
-        await require_vod(body["vodId"])
-        await refuse_spliced(body["vodId"], "setting its duration from Twitch")
-        video = await helix_video(body["vodId"])
-        duration = format_hhmmss(parse_helix_duration(video.get("duration", "")))
-        await save_vod(str(body["vodId"]), duration=duration)
-        return _ok("Saved duration!", duration=duration)
-
-    # ── VOD editing (dashboard) ───────────────────────────────────────────
-
-    async def save_vod(vod_id: str, **values: Any) -> None:
-        """Update a VOD row (a database trigger tells archive-api to drop its cached copies).
-        Hiding or showing it also drops its cached chat and emotes, which the trigger doesn't cover."""
-        async with get_sessionmaker()() as s:
-            res = await s.execute(update(Vod).where(Vod.id == vod_id).values(**values))
-            if res.rowcount == 0:
-                raise AdminError(404, "No such VOD")
-            if "hidden" in values:
-                await notify_rows_moved(s, vod_id)
-            await s.commit()
-
-    async def admin_vod(vod_id: str) -> dict[str, Any]:
-        """The VOD as GET /vods/{id} renders it, plus what only the dashboard needs."""
-        async with get_sessionmaker()() as s:
-            vod = await vod_json(await s.connection(), vod_id)
-            if vod is None:
-                raise AdminError(404, "No such VOD")
-            locked, bot_chat, hidden, censor = (
-                await s.execute(
-                    select(Vod.chapters_locked, Vod.bot_chat, Vod.hidden, Vod.censor).where(Vod.id == vod_id)
-                )
-            ).one()
-            recent = (
-                await s.execute(
-                    select(ALL_JOBS)
-                    .where(ALL_JOBS.c.vod_id == vod_id)
-                    .order_by(ALL_JOBS.c.id.desc())
-                    .limit(RECENT_JOBS)
-                )
-            ).all()
-            recent = [_job_json(j) for j in recent]
-        return {
-            **vod,
-            "hidden": hidden,
-            "chaptersLocked": locked,
-            "botChat": bot_chat,
-            "censor": censor,
-            "cut_reason": vod.get("cut_reason"),  # the public JSON leaves it out while NULL
-            "jobs": recent,
-            "splices": await splices.active_splices(vod_id),
-        }
-
-    def edited(parse, *args) -> Any:  # type: ignore[no-untyped-def]
-        try:
-            return parse(*args)
-        except ValueError as exc:
-            raise AdminError(400, str(exc)) from exc
-
-    def refuse_merged(vod: Vod, what: str) -> None:
-        if vod.merged_into is not None:
-            raise AdminError(
-                409,
-                f"{vod.id} was merged into {vod.merged_into.get('id')}; its {what} are that VOD's "
-                "now. Undo the merge first",
-            )
-
-    def vod_row_json(vod: Vod) -> dict[str, Any]:
-        """A row of GET /admin/vods, and the fields PATCH changes (named as the public API names them)."""
-        return {
-            "id": vod.id,
-            "title": vod.title,
-            "createdAt": iso_utc(vod.created_at),
-            "duration": vod.duration,
-            "duration_seconds": duration_seconds(vod.duration),
-            "thumbnail_url": vod.thumbnail_url,
-            "stream_id": vod.stream_id,
-            "hidden": vod.hidden,
-            "merged_into": vod.merged_into,
-            "tags": list(vod.tags or []),
-            "cut_reason": vod.cut_reason,
-        }
-
-    def fields_json(vod: Vod, keys) -> dict[str, Any]:  # type: ignore[no-untyped-def]
-        row = vod_row_json(vod)
-        return {k: row[{"thumbnailUrl": "thumbnail_url", "cutReason": "cut_reason"}.get(k, k)] for k in keys}
-
-    @app.get("/admin/vods", dependencies=auth)
-    async def list_vods(
-        q: str = "", hidden: bool | None = None, limit: int = 50, before: str | None = None
-    ) -> dict[str, Any]:
-        """Every VOD, hidden and merged ones too, newest first. ``q`` matches the id exactly or the title
-        (case-insensitive substring); ``hidden`` filters; ``before`` (a VOD id, from ``next``) pages back."""
-        limit = min(max(limit, 1), VOD_LIST_MAX)
-        stmt = select(Vod).order_by(Vod.created_at.desc(), Vod.id.desc()).limit(limit + 1)
-        if q.strip():
-            term = q.strip()
-            like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            stmt = stmt.where(or_(Vod.id == term, Vod.title.ilike(like, escape="\\")))
-        if hidden is not None:
-            stmt = stmt.where(Vod.hidden.is_(hidden))
-        async with get_sessionmaker()() as s:
-            if before:
-                after = await s.get(Vod, before)
-                if after is None:
-                    raise AdminError(400, f"before: no VOD {before}")
-                stmt = stmt.where(tuple_(Vod.created_at, Vod.id) < tuple_(after.created_at, after.id))
-            vods = (await s.execute(stmt)).scalars().all()
-        more = len(vods) > limit
-        vods = vods[:limit]
-        return {"data": [vod_row_json(v) for v in vods], "next": vods[-1].id if more else None}
-
-    @app.get("/admin/vods/{vod_id}", dependencies=auth)
-    async def get_vod(vod_id: str) -> dict[str, Any]:
-        return await admin_vod(vod_id)
-
-    @app.patch("/admin/vods/{vod_id}", dependencies=auth)
-    async def patch_vod(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Any of ``title``, ``hidden``, ``thumbnailUrl`` (null: the default), ``duration`` (HH:MM:SS),
-        ``createdAt`` (ISO), ``tags`` (the site's, site_tags.vod_tags) and ``cutReason`` (text, null: none).
-        A merged VOD takes only ``hidden`` and ``tags``. Audited with the fields before and after."""
-        vod = await require_vod(vod_id)
-        values = edited(vod_edits.vod_fields, body, await known_tags(vod) if "tags" in body else ())
-        if set(body) - vod_edits.MERGED_EDITABLE:
-            refuse_merged(vod, "contents")
-        if "duration" in values:
-            await check_fits(vod, hhmmss_to_seconds(values["duration"]))
-        before = fields_json(vod, body)
-        if values:
-            await save_vod(vod.id, **values)
-        after = await admin_vod(vod.id)
-        request.state.audit_detail = {"before": before, "after": fields_json(await require_vod(vod.id), body)}
-        return after
-
-    async def known_tags(vod: Vod) -> tuple[str, ...]:
-        async with get_sessionmaker()() as s:
-            return await site_tags.vod_tags(s, vod.tags)
-
-    async def check_fits(vod: Vod, seconds: float) -> None:
-        """A new duration must still hold the VOD's chapters and games rows."""
-        async with get_sessionmaker()() as s:
-            games_end = (await s.execute(select(func.max(Game.end_time)).where(Game.vod_id == vod.id))).scalar()
-        edited(vod_edits.check_fits, vod.chapters, float(games_end or 0), seconds)
-
-    async def games_json(vod_id: str) -> list[dict[str, Any]]:
-        async with get_sessionmaker()() as s:
-            rows = await s.execute(
-                select(*GAMES.columns())
-                .where(GAMES.table.c.vod_id == vod_id)
-                .order_by(GAMES.table.c.start_time, GAMES.table.c.id)
-            )
-        return [GAMES.to_json(r) for r in rows.mappings()]
-
-    def game_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The editable part of each games row (for the audit)."""
-        keep = ("start_time", "end_time", *vod_edits.GAME_TEXT, *vod_edits.GAME_URLS)
-        return [{k: r.get(k) for k in keep} for r in rows]
-
-    @app.get("/admin/vods/{vod_id}/games", dependencies=auth)
-    async def get_games(vod_id: str) -> list[dict[str, Any]]:
-        """The VOD's games rows as GET /games renders them, by start."""
-        await require_vod(vod_id)
-        return await games_json(vod_id)
-
-    @app.put("/admin/vods/{vod_id}/games", dependencies=auth)
-    async def put_games(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Replace the games rows: ``{"games": [...]}`` in the shape GET returns (ids and dates ignored)."""
-        vod = await require_vod(vod_id)
-        refuse_merged(vod, "games rows")
-        rows = edited(vod_edits.games, body.get("games"), hhmmss_to_seconds(vod.duration))
-        before = await games_json(vod.id)
-        async with get_sessionmaker()() as s:
-            await s.execute(delete(Game).where(Game.vod_id == vod.id))
-            if rows:
-                await s.execute(insert(Game), [{"vod_id": vod.id, **r} for r in rows])
-            await s.commit()
-        request.state.audit_detail = {"before": game_fields(before), "after": game_fields(await games_json(vod.id))}
-        return await admin_vod(vod.id)
-
-    @app.put("/admin/vods/{vod_id}/chapters", dependencies=auth)
-    async def put_chapters(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Replace the chapters. ``locked: true`` keeps the automatic chapters step from
-        overwriting them (unless that job's payload has ``"force": true``)."""
-        vod = await require_vod(vod_id)
-        if not isinstance(body.get("locked"), bool):
-            raise AdminError(400, "locked must be true or false")
-        chapters = edited(vod_edits.chapters, body.get("chapters"), hhmmss_to_seconds(vod.duration))
-        await save_vod(vod.id, chapters=chapters, chapters_locked=body["locked"])
-        return await admin_vod(vod.id)
-
-    @app.put("/admin/vods/{vod_id}/youtube", dependencies=auth)
-    async def put_youtube(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        vod = await require_vod(vod_id)
-        await save_vod(vod.id, youtube=edited(vod_edits.youtube, body.get("youtube"), vod.youtube))
-        return await admin_vod(vod.id)
-
-    @app.put("/admin/vods/{vod_id}/drive", dependencies=auth)
-    async def put_drive(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        vod = await require_vod(vod_id)
-        await save_vod(vod.id, drive=edited(vod_edits.drive, body.get("drive")))
-        return await admin_vod(vod.id)
-
-    @app.put("/admin/vods/{vod_id}/censor", dependencies=auth)
-    async def put_censor(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Replace the ranges blurred, blacked out or muted in the uploads (vod_edits.censor). Uploads made from
-        now on carry them; re-archive the VOD to replace the ones already on YouTube."""
-        vod = await require_vod(vod_id)
-        refuse_merged(vod, "uploads")
-        if vod.synthetic is not None:
-            raise AdminError(409, f"{vod.id} is synthetic: it has no uploads of its own to edit")
-        ranges = edited(vod_edits.censor, body.get("censor"), hhmmss_to_seconds(vod.duration))
-        before = list(vod.censor or [])
-        await save_vod(vod.id, censor=ranges)
-        request.state.audit_detail = {"before": before, "after": ranges}
-        return await admin_vod(vod.id)
-
-    @app.post("/admin/jobs/{job_id}/censor-review", dependencies=auth)
-    async def censor_review(job_id: int, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Answer a job the ``censor_check`` step paused: ``{"decision": "upload"}`` resumes it (with whatever
-        censor ranges are set by now), ``"cut"`` first marks the flagged games' chapters restricted (and locks
-        the chapters) so ``split`` leaves them out of the uploads."""
-        decision = body.get("decision")
-        if decision not in ("upload", "cut"):
-            raise AdminError(400, 'decision must be "upload" or "cut"')
-        job = await jobs.get(job_id)
-        review = (job.payload or {}).get("censor_review") or {}
-        if job.state != "paused" or not review.get("games"):
-            raise AdminError(409, f"Job {job_id} is not paused for a censor review")
-        if decision == "cut":
-            ids = {str(g["gameId"]) for g in review["games"] if g.get("gameId")}
-            if not ids:
-                raise AdminError(409, "IGDB could not be checked, so there are no games to cut; set censor ranges")
-            vod = await require_vod(str(job.vod_id))
-            chapters = content_check.cut_games(vod.chapters, ids)
-            await save_vod(vod.id, chapters=chapters, chapters_locked=True)
-            request.state.audit_detail = {"vod": vod.id, "cut": sorted(ids)}
-        job = await service.resume(job_id, actor=_actor.get())
-        return job_action(f"Job {job_id} resumed at step {job.step} ({decision})", job)
-
-    @app.post("/admin/vods/{vod_id}/youtube/delete", dependencies=auth)
-    async def delete_uploads(vod_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Delete ``videos`` (ids from the VOD's ``youtube`` list) from YouTube, 50 quota units each, and take
-        them off the list; one already gone from YouTube is just taken off. The remaining parts' descriptions
-        are rewritten (a describe job per type) so they stop linking to the deleted ones."""
-        vod = await require_vod(vod_id)
-        ids = body.get("videos")
-        if not isinstance(ids, list) or not ids or not all(isinstance(v, str) and v for v in ids):
-            raise AdminError(400, "videos must be a list of YouTube video ids")
-        listed = {str(e.get("id")): e for e in vod.youtube or []}
-        unknown = [v for v in ids if v not in listed]
-        if unknown:
-            raise AdminError(400, f"Not uploads of {vod.id}: {', '.join(unknown)}")
-        deleted: list[str] = []
-        failed: list[dict[str, str]] = []
-        for video_id in dict.fromkeys(ids):
-            try:
-                await deps.youtube.delete(video_id)
-            except youtube.YouTubeNotAuthorized as exc:
-                raise AdminError(409, str(exc)) from exc
-            except Exception as exc:
-                log.warning("could not delete %s from YouTube: %s", video_id, exc)
-                failed.append({"id": video_id, "error": f"{type(exc).__name__}: {exc}"})
-                continue
-            deleted.append(video_id)
-        dropped = await drop_youtube_entries(vod.id, set(deleted))
-        after = await require_vod(vod.id)
-        described = []
-        for typ in sorted({e.get("type") or "vod" for e in dropped}):
-            if any((e.get("type") or "vod") == typ for e in after.youtube or []):
-                described.append((await enqueue("describe", vod.id, type_payload(after, {"type": typ}))).id)
-        request.state.audit_detail = {"deleted": dropped, "failed": failed}
-        msg = f"Deleted {len(deleted)} upload(s) from YouTube" + (f", {len(failed)} failed" if failed else "")
-        return {**_ok(msg, deleted=deleted, failed=failed, describeJobs=described), "vod": await admin_vod(vod.id)}
-
-    @app.post("/admin/vods/{vod_id}/rearchive", dependencies=auth)
-    async def rearchive(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Upload the VOD (``type`` vod or live; one ``part``, or all) again with today's settings and censor
-        ranges, deleting each upload it replaces from YouTube once the new one is in place: a ``download``
-        job (``reupload`` for one part) with ``replace``. The source is a local copy if there is one
-        (or ``path``), else the VOD is downloaded from Twitch again."""
-        vod = await require_vod(vod_id)
-        refuse_merged(vod, "uploads")
-        if vod.synthetic is not None:
-            raise AdminError(409, f"{vod.id} is synthetic: it has no uploads of its own")
-        payload = {**source_payload(vod, body), "replace": True}
-        if body.get("part") not in (None, ""):
-            part = single_part(payload, body)
-            job = await enqueue("reupload", vod.id, payload)
-            return _ok(f"Re-archiving {vod.id} part {part}; the old upload goes once the new one is up", job)
-        job = await enqueue("download", vod.id, payload)
-        return _ok(f"Re-archiving {vod.id}; the old uploads go once the new ones are up", job)
-
-    @app.get("/admin/vods/{vod_id}/emotes", dependencies=auth)
-    async def get_vod_emotes(vod_id: str) -> dict[str, Any] | None:
-        """The saved emotes row as GET /emotes renders it, or null if none was saved."""
-        await require_vod(vod_id)
-        async with get_sessionmaker()() as s:
-            row = (await s.execute(select(*EMOTES.columns()).where(EMOTES.table.c.vod_id == vod_id))).mappings().first()
-        return EMOTES.to_json(row) if row else None
-
-    # ── Merging and splitting VODs (see splices) ─────────────────────────
-
-    def force(body: dict[str, Any]) -> bool:
-        if body.get("force") not in (None, True, False):
-            raise AdminError(400, "force must be true or false")
-        return body.get("force") is True
-
-    @app.get("/admin/vods/{vod_id}/merge-candidates", dependencies=auth)
-    async def merge_candidates(vod_id: str) -> dict[str, Any]:
-        """VODs that started within ARCHIVE_MERGE_CANDIDATE_MINUTES after this one ended."""
-        return await splices.merge_candidates(vod_id, settings.merge_candidate_minutes)
-
-    @app.post("/admin/vods/{vod_id}/merge", dependencies=auth)
-    async def merge_vods(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"source": id, "gap"?: seconds}``: append ``source`` (the later VOD) to this one."""
-        _require(body, "source")
-        source = str(body["source"])
-        result = await splices.merge(vod_id, source, body.get("gap"))
-        return _ok(
-            f"Merged {source} into {vod_id} at {result['splice']['offset']}s", **result, vod=await admin_vod(vod_id)
-        )
-
-    @app.post("/admin/vods/{vod_id}/unmerge", dependencies=auth)
-    async def unmerge_vods(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"source": id, "force"?: true}``: restore both VODs as they were before the merge."""
-        _require(body, "source")
-        source = str(body["source"])
-        result = await splices.unmerge(vod_id, source, force(body))
-        return _ok(f"Unmerged {source} from {vod_id}", **result, vod=await admin_vod(vod_id))
-
-    @app.post("/admin/vods/{vod_id}/split", dependencies=auth)
-    async def split_vod(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"at": seconds}``: the rest of the VOD from ``at`` becomes a new VOD, or, at a
-        merge's join, that merge is undone. 409 with ``validPoints`` inside an upload."""
-        _require(body, "at")
-        result = await splices.split(vod_id, body["at"], force(body))
-        if result.get("undid") == "merge":
-            msg = f"{body['at']}s is where {result['splice']['otherId']} was merged in; undid that merge"
-        else:
-            msg = f"Split {vod_id} at {result['splice']['offset']}s; the rest is {result['newVodId']}"
-        return _ok(msg, **result, vod=await admin_vod(vod_id))
-
-    @app.post("/admin/vods/{vod_id}/unsplit", dependencies=auth)
-    async def unsplit_vod(vod_id: str, body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """``{"source"?: second half's id, "force"?: true}``: join the halves again (default: the latest split)."""
-        body = body or {}
-        other = str(body["source"]) if body.get("source") not in (None, "") else None
-        result = await splices.unsplit(vod_id, other, force(body))
-        return _ok(f"Joined {result['splice']['otherId']} back into {vod_id}", **result, vod=await admin_vod(vod_id))
-
-    @app.get("/admin/twitch/games", dependencies=auth)
-    async def search_games(query: str = "") -> list[dict[str, Any]]:
-        """Twitch categories matching ``query`` (for picking a chapter's game)."""
-        if not query.strip():
-            raise AdminError(400, "Missing parameter: query")
-        require_helix()
-        return [
-            {"gameId": c.get("id"), "name": c.get("name"), "imageTemplate": box_art_template(c.get("box_art_url"))}
-            for c in await helix.search_categories(query.strip())
-        ]
-
-    async def channel_videos() -> list[dict[str, Any]]:
-        """The channel's past broadcasts still on Twitch, newest first."""
-        require_helix()
-        return await helix.all_videos(str(settings.twitch_id))
-
-    @app.get("/admin/twitch/videos", dependencies=auth)
-    async def twitch_videos() -> dict[str, Any]:
-        """The channel's past broadcasts still on Twitch, each with what the archive has of it: a row
-        (``inArchive``), uploads (``uploaded``) and a queued, running or paused archive job (``archiveJob``)."""
-        videos = await channel_videos()
-        ids = [str(v["id"]) for v in videos]
-        async with get_sessionmaker()() as s:
-            rows = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_(ids)))).scalars()}
-        out = []
-        for video in videos:
-            row = rows.get(str(video["id"]))
-            job = await jobs.find_active("archive", vod_id=str(video["id"]))
-            out.append(
-                {
-                    "id": str(video["id"]),
-                    "title": video.get("title"),
-                    "createdAt": video.get("created_at"),
-                    "duration": format_hhmmss(parse_helix_duration(video.get("duration", ""))),
-                    "thumbnailUrl": video.get("thumbnail_url") or None,
-                    "inArchive": row is not None,
-                    "uploaded": bool(row is not None and row.youtube),
-                    "archiveJob": None if job is None else {"id": job.id, "state": job.state, "step": job.step},
-                }
-            )
-        return {"data": out}
-
-    @app.post("/admin/twitch/import", dependencies=auth)
-    async def twitch_import(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Queue an archive job for each of ``vodIds`` (creating its row from Twitch when missing), paused
-        before its first step unless ``paused`` is false. A VOD no longer on Twitch, or with an archive
-        job already queued, running or paused, is skipped."""
-        vod_ids = body.get("vodIds")
-        if not (isinstance(vod_ids, list) and vod_ids and all(isinstance(v, str) and v for v in vod_ids)):
-            raise AdminError(400, "vodIds must be a list of VOD ids")
-        paused = body.get("paused", True) is not False
-        videos = {str(v["id"]): v for v in await channel_videos()}
-        added: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
-        for vod_id in dict.fromkeys(vod_ids):
-            video = videos.get(vod_id)
-            if video is None:
-                skipped.append({"vodId": vod_id, "reason": "Not on Twitch"})
-                continue
-            active = await jobs.find_active("archive", vod_id=vod_id)
-            if active is not None:
-                skipped.append({"vodId": vod_id, "reason": f"Archive job {active.id} is already {active.state}"})
-                continue
-            if await vod_exists(vod_id) is None:
-                await upsert_vod(video)
-            vod = await require_vod(vod_id)
-            payload = {"type": "vod", "stream_id": vod.stream_id, "manual": True}
-            job = await enqueue("archive", vod.id, payload, paused=paused)
-            added.append({"vodId": vod_id, "jobId": job.id})
-        state = "paused" if paused else "queued"
-        return _ok(f"{len(added)} archive job(s) {state}, {len(skipped)} skipped", added=added, skipped=skipped)
-
-    # ── Audit log ─────────────────────────────────────────────────────────
-
-    @app.get("/admin/audit", dependencies=auth)
-    async def list_audit(before: int | None = None, limit: int = 50) -> dict[str, Any]:
-        """Newest first; ``before`` (an entry id) pages back. What admins did: the worker's own actions
-        (the monitor queueing a job) are left out."""
-        c = AUDIT_LOG.c
-        stmt = (
-            select(AUDIT_LOG)
-            .where(c.actor_kind.in_(("user", "api_key")))
-            .order_by(c.id.desc())
-            .limit(min(max(limit, 1), 500))
-        )
-        if before is not None:
-            stmt = stmt.where(c.id < before)
-        async with get_sessionmaker()() as s:
-            rows = (await s.execute(stmt)).all()
-        return {"data": [_audit_json(r) for r in rows]}
-
-    # ── Download / upload pipelines ───────────────────────────────────────
-
-    @app.post("/admin/download", dependencies=auth)
-    async def download(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Download the whole VOD (or use ``path``), split, upload. Optional part range."""
-        _require(body, "vodId")
-        vod = await require_vod(body["vodId"])
-        payload = source_payload(vod, body)
-        for src, dst in (("startPart", "start_part"), ("endPart", "end_part")):
-            if body.get(src) not in (None, ""):
-                payload[dst] = int(body[src])
-        job = await enqueue("download", vod.id, payload)
-        await enqueue("emotes", vod.id)
-        return _ok("Starting the download…", job)
-
-    @app.post("/admin/hls/download", dependencies=auth)
-    async def hls_download(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Full archive pipeline for a VOD (creates the row from Helix if needed)."""
-        _require(body, "vodId")
-        vod = await vod_exists(body["vodId"])
-        if vod is None:
-            await upsert_vod(await helix_video(body["vodId"]))
-            vod = await require_vod(body["vodId"])
-        if await jobs.find_active("archive", vod_id=vod.id):
-            raise AdminError(409, f"An archive job for {vod.id} is already running")
-        job = await enqueue("archive", vod.id, {"type": "vod", "stream_id": vod.stream_id, "manual": True})
-        return _ok(f"Downloading {vod.id} via HLS…", job)
-
-    @app.post("/admin/reupload", dependencies=auth)
-    async def reupload(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId", "part")
-        vod = await require_vod(body["vodId"])
-        payload = source_payload(vod, body)
-        part = single_part(payload, body)
-        job = await enqueue("reupload", vod.id, payload)
-        return _ok(f"Re-uploading {vod.id} part {part}…", job)
-
-    @app.post("/admin/dmca", dependencies=auth)
-    async def dmca(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId", "receivedClaims")
-        vod = await require_vod(body["vodId"])
-        payload = source_payload(vod, body)
-        payload["claims"] = body["receivedClaims"]
-        job = await enqueue("dmca", vod.id, payload)
-        return _ok(f"Muting the DMCA content in {vod.id}…", job)
-
-    @app.post("/admin/part/dmca", dependencies=auth)
-    async def part_dmca(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId", "part", "receivedClaims")
-        vod = await require_vod(body["vodId"])
-        payload = source_payload(vod, body)
-        payload["claims"] = body["receivedClaims"]
-        part = single_part(payload, body)
-        job = await enqueue("part_dmca", vod.id, payload)
-        return _ok(f"Trimming the DMCA content from {vod.id} part {part}…", job)
-
-    # ── Metadata ──────────────────────────────────────────────────────────
-
-    @app.post("/admin/logs", dependencies=auth)
-    async def logs(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId")
-        await require_vod(body["vodId"])
-        job = await enqueue("chat", str(body["vodId"]))
-        return _ok("Getting the chat logs…", job)
-
-    @app.post("/admin/logs/manual", dependencies=auth)
-    async def logs_manual(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId", "path")
-        await require_vod(body["vodId"])
-        job = await enqueue("logs_manual", str(body["vodId"]), {"path": body["path"]})
-        return _ok("Getting the chat logs…", job)
-
-    @app.post("/admin/chapters", dependencies=auth)
-    async def chapters(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Chapters from Twitch; ``{"force": true}`` also replaces chapters edited by hand."""
-        _require(body, "vodId")
-        vod = await require_vod(body["vodId"])
-        await refuse_spliced(vod.id, "Twitch's chapters")  # before asking Twitch; enqueue would refuse after
-        video = await helix_video(vod.id)
-        payload: dict[str, Any] = {"duration": parse_helix_duration(video.get("duration", ""))}
-        if body.get("force") is True:
-            payload["force"] = True
-        job = await enqueue("chapters", vod.id, payload)
-        return _ok(f"Saving Chapters for {vod.id}", job)
-
-    @app.post("/admin/emotes", dependencies=auth)
-    async def emotes(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Fill the VOD's missing emote sets; ``{"force": true}`` replaces the saved ones."""
-        _require(body, "vodId")
-        await require_vod(body["vodId"])
-        force = body.get("force") is True
-        job = await enqueue("emotes", str(body["vodId"]), {"force": True} if force else None)
-        return _ok("Saving emotes (overwriting)…" if force else "Saving emotes…", job)
-
-    async def backfill(kind: str, what: str, body: dict[str, Any] | None) -> dict[str, Any]:
-        """One ``kind`` job over every VOD it applies to, or only ``body["vodIds"]``."""
-        vod_ids = (body or {}).get("vodIds")
-        if vod_ids is not None and not (isinstance(vod_ids, list) and vod_ids):
-            raise AdminError(400, "vodIds must be a non-empty list")
-        if await jobs.find_active(kind):
-            raise AdminError(409, f"A {what} backfill is already running")
-        job = await enqueue(kind, None, {"vod_ids": [str(v) for v in vod_ids]} if vod_ids else None)
-        return _ok(f"Backfilling {what}…", job)
-
-    @app.post("/admin/emotes/backfill", dependencies=auth)
-    async def emotes_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """Current global sets onto every emotes row that has none (optionally only ``vodIds``)."""
-        return await backfill("global_emotes_backfill", "global emotes", body)
-
-    @app.post("/admin/live-gaps/backfill", dependencies=auth)
-    async def live_gaps_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """``gaps`` on the live uploads saved without them, from their live jobs (optionally only ``vodIds``)."""
-        return await backfill("live_gaps_backfill", "live gaps", body)
-
-    @app.post("/admin/bot-chat", dependencies=auth)
-    async def bot_chat(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Read the VOD's chat from doomtp-bot into bot_logs (adds or updates rows only)."""
-        _require(body, "vodId")
-        if not settings.doomtp_url:
-            raise AdminError(500, "ARCHIVE_DOOMTP_URL is not set")
-        vod = await require_vod(body["vodId"])
-        if await jobs.find_active("bot_chat", vod_id=vod.id):
-            raise AdminError(409, f"A bot chat job for {vod.id} is already running")
-        job = await enqueue("bot_chat", vod.id)
-        return _ok(f"Reading bot chat for {vod.id}…", job)
-
-    @app.post("/admin/bot-chat/backfill", dependencies=auth)
-    async def bot_chat_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """Bot chat for every VOD without it (optionally only ``vodIds``); merged or split VODs are skipped."""
-        if not settings.doomtp_url:
-            raise AdminError(500, "ARCHIVE_DOOMTP_URL is not set")
-        return await backfill("bot_chat_backfill", "bot chat", body)
-
-    @app.post("/admin/previews", dependencies=auth)
-    async def previews(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Seek-bar previews for the VOD's uploads that have none (optionally only ``youtubeIds``), downloaded
-        from YouTube."""
-        _require(body, "vodId")
-        vod = await require_vod(body["vodId"])
-        ids = body.get("youtubeIds")
-        if ids is not None and not (isinstance(ids, list) and ids and all(isinstance(i, str) for i in ids)):
-            raise AdminError(400, "youtubeIds must be a non-empty list of video ids")
-        if await jobs.find_active("previews_fetch", vod_id=vod.id):
-            raise AdminError(409, f"A previews job for {vod.id} is already running")
-        job = await enqueue("previews_fetch", vod.id, {"youtube_ids": ids} if ids else None)
-        return _ok(f"Making previews for {vod.id}…", job)
-
-    @app.post("/admin/previews/backfill", dependencies=auth)
-    async def previews_backfill(body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """Seek-bar previews for every VOD with uploads that have none (optionally only ``vodIds``)."""
-        return await backfill("previews_backfill", "previews", body)
-
-    @app.post("/admin/youtube/parts", dependencies=auth)
-    @app.post("/admin/youtube/chapters", dependencies=auth)
-    async def youtube_describe(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "vodId")
-        vod = await require_vod(body["vodId"])
-        job = await enqueue("describe", vod.id, type_payload(vod, body))
-        return _ok(f"Updating YouTube descriptions for {vod.id}", job)
-
-    # ── Live recordings (external recorder callback) ──────────────────────
-
-    @app.post("/v2/live", dependencies=auth)
-    async def live(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        _require(body, "streamId", "path")
-        stream_id = str(body["streamId"])
-        async with get_sessionmaker()() as s:
-            vod = (await s.execute(select(Vod).where(Vod.stream_id == stream_id).limit(1))).scalar_one_or_none()
-            if vod is None:
-                raise AdminError(404, "No VOD has that stream id")
-            if body.get("driveId"):
-                vod.drive = [*(vod.drive or []), {"id": body["driveId"], "type": "live"}]
-                await s.commit()
-        # Non-200 tells the recorder to delete its file (legacy contract).
-        if not settings.multi_track:
-            raise AdminError(404, "multiTrack is disabled")
-        # Not the guarded enqueue: a refusal here would make the recorder delete its file.
-        job = await service.enqueue(
-            "live_file", vod.id, {"type": "live", "stream_id": stream_id, "path": body["path"]}, actor=_actor.get()
-        )
-        return _ok("Starting the upload to YouTube…", job)
-
-    # ── YouTube OAuth ─────────────────────────────────────────────────────
-
-    # Who started each consent flow, by its state, so the callback (which has no session) can audit
-    # the connect as them. In memory: after a restart the connect is audited as the system.
-    connecting: dict[str, tuple[float, Actor]] = {}
-
-    @app.get("/admin/youtube/auth", dependencies=auth)
-    async def youtube_auth(redirect: bool = False):  # type: ignore[no-untyped-def]
-        if not settings.google_client_id:
-            raise AdminError(500, "google_client_id is not configured")
-        state = youtube.new_state(settings)
-        now = time.monotonic()
-        for key in [k for k, (at, _) in connecting.items() if now - at > 900]:
-            del connecting[key]
-        connecting[state] = (now, _actor.get())
-        url = youtube.consent_url(settings, state)
-        if redirect:
-            return RedirectResponse(url)
-        return {"error": False, "url": url, **await youtube.token_status()}
-
-    @app.get("/admin/youtube/status", dependencies=auth)
-    async def youtube_status() -> dict[str, Any]:
-        # A real refresh against Google, not just "is a token stored".
-        return await deps.youtube.check()
-
-    # Whether every upload is still on YouTube and whole (youtube_check.py); the timer runs it every
-    # youtube_check_hours, and the dashboard can run it now.
-    @app.get("/admin/youtube/videos", dependencies=auth)
-    async def youtube_videos() -> dict[str, Any]:
-        return {"running": deps.youtube_check.running, "last": await youtube_check.last()}
-
-    @app.post("/admin/youtube/videos/check", dependencies=auth)
-    async def youtube_videos_check() -> dict[str, Any]:
-        if deps.youtube_check.running:
-            raise AdminError(409, "A YouTube check is already running")
-        return {"running": False, "last": await deps.youtube_check.run()}
-
-    # With the slash too (the old app's redirect URI): FastAPI would answer it with a redirect built from
-    # the Host header, which behind the site's proxy loses the /backend-admin prefix and lands on the site.
-    @app.get("/admin/refreshtoken")
-    @app.get("/admin/refreshtoken/", include_in_schema=False)
-    async def refresh_token(code: str | None = None, state: str | None = None) -> dict[str, Any]:
-        # Google redirects the browser here, so this cannot carry the API key;
-        # the HMAC-signed ``state`` from /admin/youtube/auth proves the request.
-        if not code or not state or not youtube.verify_state(settings, state):
-            raise AdminError(403, "Invalid or expired OAuth state; start again at /admin/youtube/auth")
-        actor = connecting.pop(state, (0.0, SYSTEM))[1]
-        before = youtube.token_summary(await youtube.load_token())
-        if before is not None and deps.youtube.last_check:
-            before["channel"] = deps.youtube.last_check.get("channel")
-        try:
-            token = await youtube.exchange_code(settings, code)
-        except Exception as exc:
-            await youtube.audit_connect(actor, before, None, error=f"{type(exc).__name__}: {exc}")
-            raise
-        status = await deps.youtube.check()
-        after = {**(youtube.token_summary(token) or {}), "channel": status.get("channel")}
-        await youtube.audit_connect(actor, before, after, error=None if status["valid"] else status["error"])
-        if not status["valid"]:
-            raise AdminError(500, f"Token stored but not usable: {status['error']}")
-        return _ok("YouTube authorized. You can close this tab.")
-
-    # ── Twitch viewer account (live playback tokens without stitched ads) ─
-
     async def viewer_check(fresh: bool = False) -> dict[str, Any] | None:
         """The linked account for the dashboard (``twitchViewer`` in /admin/health), or None if the
         check itself failed."""
@@ -1733,87 +563,31 @@ def create_admin_app(
             return None
         return {**st, "checkedAt": iso_utc(st["checkedAt"])}
 
-    # Device flows in progress, by an id the dashboard polls with; the device code never leaves the worker.
-    linking: dict[str, tuple[float, str, Actor]] = {}  # id -> (monotonic expiry, device code, who started it)
-
-    @app.get("/admin/twitch/viewer", dependencies=auth)
-    async def twitch_viewer_status() -> dict[str, Any] | None:
-        """The linked account and whether Twitch still accepts its token (checked now)."""
-        return await viewer_check(fresh=True)
-
-    @app.post("/admin/twitch/viewer/device", dependencies=auth)
-    async def twitch_viewer_device(request: Request) -> dict[str, Any]:
-        """Start linking: the code to enter at ``verificationUri`` (twitch.tv/activate), signed in as the
-        account to link. Poll ``GET /admin/twitch/viewer/device/{flowId}`` every ``interval`` seconds."""
-        try:
-            flow = await twitch_viewer.start_device(settings)
-        except twitch_viewer.ViewerTokenError as exc:
-            # Not a 5xx: Cloudflare puts its own page in place of a 502, and the dashboard would lose why.
-            raise AdminError(400, str(exc)) from exc
-        now = time.monotonic()
-        for key in [k for k, (until, _, _) in linking.items() if until < now]:
-            del linking[key]
-        flow_id = secrets.token_urlsafe(16)
-        linking[flow_id] = (now + int(flow["expires_in"]), flow["device_code"], _actor.get())
-        request.state.audit_target = twitch_viewer.AUDIT_TARGET
-        return {
-            "flowId": flow_id,
-            "userCode": flow["user_code"],
-            "verificationUri": flow["verification_uri"],
-            "expiresIn": int(flow["expires_in"]),
-            "interval": int(flow.get("interval") or 5),
-        }
-
-    @app.get("/admin/twitch/viewer/device/{flow_id}", dependencies=auth)
-    async def twitch_viewer_device_poll(flow_id: str) -> dict[str, Any]:
-        """``state``: ``pending`` until the code is entered, then ``linked`` (with ``status``), or ``failed``
-        (with ``error``: expired, refused, or a token Twitch won't validate)."""
-        found = linking.get(flow_id)
-        if found is None or found[0] < time.monotonic():
-            linking.pop(flow_id, None)
-            return {"state": "failed", "error": "This link expired; start again"}
-        _, device_code, actor = found
-        before = twitch_viewer.token_summary(await twitch_viewer.load_token())
-        try:
-            token = await twitch_viewer.poll_device(settings, device_code)
-        except twitch_viewer.ViewerTokenError as exc:
-            linking.pop(flow_id, None)
-            await twitch_viewer.audit_link(actor, before, None, error=str(exc))
-            return {"state": "failed", "error": str(exc)}
-        if token is None:
-            return {"state": "pending"}
-        linking.pop(flow_id, None)
-        deps.viewer.forget()
-        await twitch_viewer.audit_link(actor, before, twitch_viewer.token_summary(token))
-        return {"state": "linked", "status": await viewer_check(fresh=True)}
-
-    @app.put("/admin/twitch/viewer", dependencies=auth)
-    async def twitch_viewer_paste(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any] | None:
-        """Link by pasting a token (``{"token": ...}``): the ``auth-token`` cookie of twitch.tv signed in as
-        the account, when the device flow's token doesn't get an ad-free stream. Audited without it."""
-        raw = str(body.get("token") or "").strip().removeprefix("OAuth ").strip()
-        if not raw:
-            raise AdminError(400, "token is required")
-        before = twitch_viewer.token_summary(await twitch_viewer.load_token())
-        try:
-            token = await twitch_viewer.store(raw, method="paste")
-        except twitch_viewer.ViewerTokenError as exc:
-            raise AdminError(400, str(exc)) from exc
-        deps.viewer.forget()
-        request.state.audit_target = twitch_viewer.AUDIT_TARGET
-        request.state.audit_detail = {"before": before, "after": twitch_viewer.token_summary(token)}
-        return await viewer_check(fresh=True)
-
-    @app.delete("/admin/twitch/viewer", dependencies=auth)
-    async def twitch_viewer_unlink(request: Request) -> dict[str, Any]:
-        """Forget the linked account: live playback tokens are asked for anonymously again. The token is
-        not revoked (a pasted one is the account's website sign-in); sign out on Twitch to end it."""
-        before = twitch_viewer.token_summary(await twitch_viewer.load_token())
-        await twitch_viewer.clear_token()
-        deps.viewer.forget()
-        request.state.audit_target = twitch_viewer.AUDIT_TARGET
-        request.state.audit_detail = {"before": before, "after": None}
-        return _ok("Twitch account unlinked")
+    ctx = AdminContext(
+        deps=deps,
+        settings=settings,
+        service=service,
+        runtime=runtime,
+        storage=storage,
+        helix=helix,
+        auth=auth,
+        started_at=started_at,
+        enqueue=enqueue,
+        job_action=job_action,
+        vod_exists=vod_exists,
+        require_vod=require_vod,
+        refuse_spliced=refuse_spliced,
+        require_helix=require_helix,
+        helix_video=helix_video,
+        type_payload=type_payload,
+        source_payload=source_payload,
+        single_part=single_part,
+        viewer_check=viewer_check,
+    )
+    # In this order: FastAPI matches routes in the order they were added (e.g. /admin/jobs/{job_id}
+    # after the fixed paths under it, all within admin_jobs).
+    for module in (admin_status, admin_site, admin_jobs, admin_vods, admin_twitch, admin_pipelines, admin_youtube):
+        module.register(app, ctx)
 
     # ── /api/v2 ───────────────────────────────────────────────────────────
 

@@ -138,3 +138,18 @@ async def test_concat(clip, tmp_path):
     joined = await ffmpeg.concat([a, b], tmp_path / "ab.mp4")
     assert abs(await ffmpeg.probe_duration(joined) - 8) < 2.2
     assert not (tmp_path / "ab.mp4.txt").exists()
+
+
+async def test_concat_takes_a_path_with_a_quote(clip, tmp_path):
+    folder = tmp_path / "it's"
+    folder.mkdir()
+    a = await ffmpeg.cut(clip, folder / "a.mp4", 0, 4, faststart=False)
+    b = await ffmpeg.cut(clip, folder / "b.mp4", 6, 4, faststart=False)
+    joined = await ffmpeg.concat([a, b], folder / "ab.mp4")
+    assert abs(await ffmpeg.probe_duration(joined) - 8) < 2.2
+
+
+def test_concat_listing_escapes_quotes_and_refuses_line_breaks(tmp_path):
+    assert ffmpeg.concat_listing([tmp_path / "a'b.mp4"]) == f"file '{tmp_path.as_posix()}/a'\\''b.mp4'\n"
+    with pytest.raises(ValueError):
+        ffmpeg.concat_listing([tmp_path / "a\nfile 'x'"])

@@ -19,7 +19,7 @@ from archive_common.db import get_sessionmaker
 from archive_common.models import Vod
 from sqlalchemy import select
 
-from .. import ffmpeg
+from .. import ffmpeg, job_rows
 from ..context import JobContext, StepError
 
 
@@ -174,8 +174,6 @@ async def previews_fetch(ctx: JobContext) -> None:
 async def previews_backfill(ctx: JobContext) -> None:
     """Queue a ``previews_fetch`` per VOD with uploads that have no previews (``payload.vod_ids``: only those),
     newest first. They are its children and run one at a time; VODs with one queued already are skipped."""
-    from .. import jobs  # jobs imports the steps
-
     stmt = select(Vod).order_by(Vod.created_at.desc())
     if ctx.payload.get("vod_ids"):
         stmt = stmt.where(Vod.id.in_([str(v) for v in ctx.payload["vod_ids"]]))
@@ -188,7 +186,7 @@ async def previews_backfill(ctx: JobContext) -> None:
     queued = 0
     for i, vod in enumerate(vods):
         ctx.progress(100 * i / len(vods), 100, "percent", f"previews backfill: {vod.id} ({i + 1}/{len(vods)})")
-        if await jobs.find_active("previews_fetch", vod_id=vod.id):
+        if await job_rows.find_active("previews_fetch", vod_id=vod.id):
             ctx.log.info("skipping %s: a previews_fetch job is already queued or running", vod.id)
             continue
         job_id = await ctx.enqueue("previews_fetch", vod.id, {"backfill": True})

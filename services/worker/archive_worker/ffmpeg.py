@@ -289,7 +289,7 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
         if pos < total - 0.05:
             pieces.append(await cut(src, work / "bo-tail.mp4", pos, faststart=False))
         listing = work / "bo-list.txt"
-        listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces), encoding="utf-8")
+        listing.write_text(concat_listing(pieces), encoding="utf-8")
         pieces.append(listing)
         return await _ffmpeg_to(
             out, ["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart"]
@@ -342,11 +342,24 @@ async def encode(
     )
 
 
+def concat_listing(paths: list[Path]) -> str:
+    """A concat-demuxer list of ``paths``: each quoted, a ``'`` written as ``'\\''`` (ffmpeg's escape),
+    so a path can't end its own line early and add directives. A newline can't be quoted at all."""
+    lines = []
+    for p in paths:
+        text = p.as_posix()
+        if "\n" in text or "\r" in text:
+            raise ValueError(f"a concat list can't hold a path with a line break: {text!r}")
+        quoted = text.replace("'", "'\\''")
+        lines.append(f"file '{quoted}'\n")
+    return "".join(lines)
+
+
 @_one_at_a_time("concat")
 async def concat(parts: list[Path], out: Path) -> Path:
     """Join stream-copied clips of the same encoding end to end (the concat demuxer), index in front."""
     listing = out.with_name(out.name + ".txt")
-    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+    listing.write_text(concat_listing(parts), encoding="utf-8")
     try:
         return await _ffmpeg_to(
             out,
