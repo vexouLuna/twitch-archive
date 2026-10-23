@@ -52,7 +52,7 @@ async def test_previous_download_is_reused(make_ctx, captured, monkeypatch):
         pass
 
     monkeypatch.setattr(ctx, "update_vod", update_vod)
-    monkeypatch.setattr(ctx, "refuse_if_spliced", not_spliced)  # its DB check: test_splices.py
+    monkeypatch.setattr(ctx, "refuse_if_spliced", not_spliced)  # its DB check: vods.splice_reason
     await _source_steps(ctx)
     assert captured == []
     assert ctx.source_mp4 == ctx.default_mp4

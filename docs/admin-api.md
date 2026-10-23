@@ -275,18 +275,7 @@ Paths in request bodies are **inside the worker container**, where `/data` is `A
 
 ## Merging and splitting VODs
 
-When a stream drops for technical reasons, Twitch makes two VODs of one broadcast: A, then B a few minutes later. Merging makes them one VOD on the site; the time between them becomes a cut chapter named `Technical difficulties` with `kind: "gap"`. Nothing is downloaded, re-encoded or re-uploaded: rows are moved, in one transaction.
-
-```bash
-curl -s "${H[@]}" "$A/admin/vods/A/merge-candidates"                     # VODs that started soon after A ended
-curl -s "${H[@]}" -X POST "$A/admin/vods/A/merge" -d '{"source":"B"}'     # B (the later one) into A
-curl -s "${H[@]}" -X POST "$A/admin/vods/A/merge" -d '{"source":"B","gap":120}'  # when the start times are wrong
-curl -s "${H[@]}" -X POST "$A/admin/vods/A/unmerge" -d '{"source":"B"}'   # both VODs back as they were
-curl -s "${H[@]}" -X POST "$A/admin/vods/A/split" -d '{"at":3605}'        # from 3605 s on becomes A-2
-curl -s "${H[@]}" -X POST "$A/admin/vods/A/unsplit" -d '{}'               # the latest split of A, or {"source":"A-2"}
-```
-
-These `/admin` routes move rows. `/api/v2` merges and splits without touching either VOD: it makes [synthetic VODs](#synthetic-vods) that supersede the original, so undoing one is deleting it.
+When a stream drops for technical reasons, Twitch makes two VODs of one broadcast: A, then B a few minutes later. Merging makes them one VOD on the site: a [synthetic VOD](#synthetic-vods) `A+B` that plays A, then B where it started, and supersedes both, so their pages redirect into it. A split makes `A-1` and `A-2`, at any second. Neither touches A or B, so undoing one is deleting it.
 
 ```bash
 curl -s "${H[@]}" "$A/api/v2/vods/A/merge-candidates"                   # what to offer: {id, gap, titles_match, …}
@@ -295,19 +284,9 @@ curl -s "${H[@]}" -X POST "$A/api/v2/vods/A/split" -d '{"at":3605}'       # synt
 curl -s "${H[@]}" -X DELETE "$A/api/v2/synthetic/A+B"                     # undo: A and B list and play as before
 ```
 
-Both are audited as `synthetic.create`, with `detail` naming the merge or split.
+Both are audited as `synthetic.create`, with `detail` naming the merge or split. `GET /admin/vods/{id}/merge-candidates` gives the same list in the `/admin` shape.
 
-**Merge** (`/admin`). B's offset in A is `B.createdAt − A.createdAt`, in whole seconds (chat offsets are whole seconds), and the gap is that minus A's duration; `gap` in the body replaces it. A keeps its id. Its duration becomes offset + B's duration; its chapters are A's, the gap chapter, then B's shifted by the offset; its YouTube parts are A's then B's, renumbered per type (and `drive` is A's then B's). B's `games` rows, emotes (A's set becomes the union, no duplicate ids) and chat rows move to A, every offset shifted by the offset, so a comment keeps its place against the video. A gets `chaptersLocked`. B's row stays with `merged_into: {id, offset}` and empty chapters and uploads; see [Public API reference](public-api.md).
-
-The gap chapter runs from the end of A to where B's first uploaded frame lands: offset + B's delay (B's footage missing at its start, plus any cut at its start). That keeps the site's formula, `duration − Σ parts − Σ cuts = delay`, equal to A's own delay. A's uploads always end at A's duration in that model (any shortfall reads as delay at A's start, which stays where it is). The site plays `live` uploads when a VOD has any, so the gap is fitted to them; when a VOD also has `vod` uploads whose delay differs, the response has a warning with the difference. The merge record (`splices[].detail` on `GET /admin/vods/{id}`) has every number.
-
-Refused (409, with the reason and the numbers): B started before A, the VODs overlap, either is already merged into another VOD, either has a queued, running or paused job, the two have uploads of different types, or a part has no duration. One exception: either VOD (not both) may have no uploads at all, and its time still counts on the site. When the first section of a stream was lost, merge the rest into its VOD: A's whole length is missing footage before B's uploads. When the last section was lost, merge it into A: B's whole length lands under the gap chapter after A's uploads. A lost section in the middle: merge the last VOD into the lost one first, then that into the first.
-
-**Split** (`/admin`). A VOD can only be split where an upload ends: between two parts (anywhere across a cut or gap chapter there), or inside a cut before the first part or after the last. Anywhere else is a 409 with `validPoints` (`[{at, from, to}]`, nearest first). At a merge's join (inside its gap chapter) the split undoes that merge instead. Otherwise the rest becomes a new VOD `<id>-2` (`-3`, … if taken) starting at `createdAt + at`, with the chapters, parts (renumbered), `games` rows and chat rows from `at` on, shifted back by `at`, and a copy of the emotes. A chapter cut in two keeps its name and `kind` on both sides. `drive` entries have no times, so they stay on the first half.
-
-**Undo** (`unmerge`, `unsplit`) restores every row as it was, chat included. Only the latest merge or split touching either VOD can be undone: undo them in reverse order. An undo that would throw away edits made since (title, duration, chapters, uploads) is refused unless the body has `"force": true`.
-
-**Jobs.** A merged or split VOD no longer matches Twitch's VOD of that id. `/admin/logs`, `/admin/chapters` (even with `force`), `/admin/emotes`, `/admin/duration`, `/admin/download`, `/admin/hls/download`, `/admin/reupload`, `/admin/dmca`, `/admin/part/dmca`, `/admin/delete`, and `POST /admin/jobs` of a kind with a `capture`, `fetch_vod`, `finalize`, `chapters`, `chat` or `emotes` step, answer 409 for it. The same steps also refuse at run time (the job fails at once, no retries), for jobs queued another way. `/admin/youtube/parts` still works: run it after a merge or split so the descriptions list the new parts.
+The older merge and split moved rows between the VODs. They are gone (ADR 0004): every one was converted into a synthetic VOD, and `POST /admin/vods/{id}/merge`, `unmerge`, `split` and `unsplit` answer `410` with the `/api/v2` route to use. A VOD merged away by them still has `merged_into` in the public API.
 
 ## Synthetic VODs
 
@@ -404,7 +383,7 @@ curl -s "${H[@]}" "$A/admin/jobs?before=120&limit=50"   # older jobs: ids below 
 curl -s "${H[@]}" -X PATCH "$A/admin/jobs/42" -d '{"pauseBefore":["upload"],"pauseNext":false}'
 curl -s "${H[@]}" "$A/admin/jobs/42/events?after=0&limit=200"   # log lines, step changes, progress; poll with after=<next>
 curl -s "${H[@]}" "$A/admin/vods?q=title&hidden=true&limit=50"   # every VOD (hidden, merged too); page with before=<next>
-curl -s "${H[@]}" "$A/admin/vods/123"                   # as GET /vods/123, plus hidden, chaptersLocked, botChat, recent jobs, splices
+curl -s "${H[@]}" "$A/admin/vods/123"                   # as GET /vods/123, plus hidden, chaptersLocked, botChat, censor, recent jobs
 curl -s "${H[@]}" -X PATCH "$A/admin/vods/123" -d '{"title":"...","hidden":true}'
 curl -s "${H[@]}" -X PATCH "$A/admin/vods/123" -d '{"thumbnailUrl":null,"duration":"05:12:00","createdAt":"2026-09-30T18:00:00Z"}'
 curl -s "${H[@]}" -X PUT "$A/admin/vods/123/chapters" \

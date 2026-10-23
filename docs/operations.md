@@ -22,26 +22,3 @@
 **YouTube `uploadLimitExceeded` / `quotaExceeded`.** The job isn't retried; it is rescheduled: it stays `queued`, with `notBefore` set to when the limit should lift and the reason in `lastError`. The API quota (`quotaExceeded`) starts again at midnight Pacific, so it waits until then. Google doesn't say when a channel's upload limit (`uploadLimitExceeded`) lifts, so it waits a day. It resumes with the parts not yet uploaded. After 3 reschedules in a row with nothing uploaded in between, it fails; a manual retry then gets 3 more. The dashboard's quota count leaves out calls YouTube refused this way.
 
 **The API returns stale data after a worker update.** Responses are cached for `ARCHIVE_CACHE_TTL_SECONDS` (5 min). Chat cursor pages are cached for 24h, because finished VODs don't change.
-
-## Converting merges to synthetic VODs
-
-ADR 0004: the row-moving merges (`/admin/vods/{id}/merge`) become synthetic VODs. The command turns each
-active merge of B into A into a synthetic VOD `A+B` that supersedes both, so their pages redirect into it.
-It undoes the merge first, so A and B are again the VODs Twitch has.
-
-```bash
-docker compose exec worker archive-worker convert-splices          # dry run: what it would do; changes nothing
-docker compose exec worker archive-worker convert-splices --apply  # do it
-```
-
-Each merge is one transaction. It carries over what was added to their uploads since (seek-bar `preview`,
-live `gaps`) and moves hand-made synthetic VODs that play A onto A and B. Synthetic VODs that follow a
-game (`auto`) update themselves on the monitor's next round. A merge is left alone, with the reason
-printed, when it has an active job, censor ranges, a hidden VOD or other edits since the merge, and so
-are splits and chains of splices. Fix those by hand and run it again. It is audited as `splice.convert`
-and `synthetic.create`.
-
-Run the dry run on a restored copy first (docs/development.md). After `--apply`, open each converted
-VOD on the site: it should play the same, chat should line up, and the old `/vods/A` and `/vods/B` links
-(with `?t=`) should land on the same moment.
-
