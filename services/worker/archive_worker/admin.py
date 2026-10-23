@@ -94,7 +94,6 @@ from .admin_signin import (
     SignInError,
     VexAuth,
     safe_next,
-    with_admin,
 )
 from .context import Deps
 from .events import iso_utc
@@ -415,10 +414,10 @@ def create_admin_app(
     # it is set here and only read by the dashboard's own requests.
 
     @app.get("/admin/signin")
-    async def signin_start(next: str | None = None, quiet: bool = False) -> Response:
+    async def signin_start(next: str | None = None) -> Response:
         if signin is None:
             raise AdminError(404, "Twitch sign-in is off (see ARCHIVE_ADMIN_AUTH_* in docs/configuration.md)")
-        state = pending.start(safe_next(next), quiet)
+        state = pending.start(safe_next(next))
         response = RedirectResponse(signin.authorize_url(state), status_code=302)
         response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_S, **STATE_COOKIE_ARGS)  # type: ignore[arg-type]
         return response
@@ -434,39 +433,32 @@ def create_admin_app(
         # The state must be one this worker handed out, to this browser.
         if started is None or not secrets.compare_digest(cookie.encode(), (state or "").encode()):
             return signin_failed("expired", "/admin")
-        next_path, quiet = started.next, started.quiet
+        next_path = started.next
         if error or not code:
-            return signin_failed(error if error in ERRORS else "twitch", next_path, quiet)
+            return signin_failed(error if error in ERRORS else "twitch", next_path)
         try:
             signed_in = await signin.redeem(code)
         except SignInError as exc:
             log.warning("admin sign-in failed (%s): %s", exc.reason, exc)
-            return signin_failed(exc.reason, next_path, quiet)
+            return signin_failed(exc.reason, next_path)
         user_id = str(signed_in.user.get("id", ""))
         if user_id not in twitch_ids:
-            # A quiet check is every signed-in viewer's first visit: not worth a warning.
-            (log.info if quiet else log.warning)(
-                "admin sign-in refused for twitch:%s (%s)", user_id, signed_in.user.get("login")
-            )
-            return signin_failed("not_allowed", next_path, quiet)
+            log.warning("admin sign-in refused for twitch:%s (%s)", user_id, signed_in.user.get("login"))
+            return signin_failed("not_allowed", next_path)
         await passwords.logout(request.cookies.get(SESSION_COOKIE))
         session = await passwords.login(f"twitch:{user_id}", signed_in.user, signed_in.sid)
         try:
             await audit(request, session.actor, b"", login_of(session))
         except Exception:
             log.exception("could not write the audit log for a sign-in")
-        response = RedirectResponse(with_admin(next_path, True) if quiet else next_path, status_code=302)
+        response = RedirectResponse(next_path, status_code=302)
         response.set_cookie(SESSION_COOKIE, session.token, max_age=int(passwords.ttl_s), **SESSION_COOKIE_ARGS)  # type: ignore[arg-type]
         response.delete_cookie(STATE_COOKIE, **STATE_COOKIE_ARGS)  # type: ignore[arg-type]
         return response
 
-    def signin_failed(reason: str, next_path: str, quiet: bool = False) -> Response:
-        """Back to the dashboard's login page, which explains ``auth_error``; a quiet sign-in goes back to
-        ``next`` with ``admin=0`` instead."""
-        if quiet:
-            target = with_admin(next_path, False)
-        else:
-            target = f"/admin/login?{urlencode({'auth_error': reason, 'next': next_path})}"
+    def signin_failed(reason: str, next_path: str) -> Response:
+        """Back to the dashboard's login page, which explains ``auth_error``."""
+        target = f"/admin/login?{urlencode({'auth_error': reason, 'next': next_path})}"
         response = RedirectResponse(target, status_code=302)
         response.delete_cookie(STATE_COOKIE, **STATE_COOKIE_ARGS)  # type: ignore[arg-type]
         return response

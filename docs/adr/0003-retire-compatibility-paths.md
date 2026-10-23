@@ -39,6 +39,8 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
    logs; an action on one answers 409.
 2. **Quiet sign-in.** Exit: no site requests `GET /admin/signin?quiet=1` (the sites' repositories), and
    the worker log shows no quiet sign-ins for 30 days.
+   **Done:** the sites' code doesn't send it and the log showed none. The owner chose not to wait the
+   full 30 days. `quiet=1` is ignored now, so a stray one is an ordinary sign-in.
 3. **Duplicated `/admin` settings and storage routes.** Exit: none of their writes in 30 days.
    ```sql
    -- v1 rows come from audit.route_entry without a request id; /api/v2 rows always carry one
@@ -64,7 +66,7 @@ Run read-only on both production archives.
 | Step | Result | Next |
 |---|---|---|
 | 1. Legacy runner | No active rows (a few finished ones) | **Done** |
-| 2. Quiet sign-in | No site sends `quiet=1`; the sites' quiet check already uses `POST /admin/session {code}`. The worker log showed no quiet sign-ins, but covered only 4 days (the containers were recreated 2026-10-19), and the proxy keeps no access log | Check the worker log again on or after 2026-11-18 (30 days), provided the workers aren't recreated before then; then remove |
+| 2. Quiet sign-in | No site sends `quiet=1`; the sites' quiet check already uses `POST /admin/session {code}`. The worker log showed no quiet sign-ins, but covered only 4 days (the containers were recreated 2026-10-19), and the proxy keeps no access log | Removed without waiting for 30 days (owner's call) |
 | 3. Settings and storage | Written through the old routes in the last 30 days, all by the dashboard, which still calls `GET`/`PATCH`/`DELETE /admin/settings` and `GET`/`DELETE /admin/storage` | The dashboard moves to `/api/v2/settings` and `/api/v2/storage` (a site change; both exist) |
 | 4. VOD routes | The dashboard calls most `/admin/vods/{id}/*` routes; games, chapters and the VOD `PATCH` were written in the last 30 days. No scripts; nothing matches on error text | `/api/v2` routes for games and chapters first (`PATCH /api/v2/vods/{id}` exists), then YouTube, Drive, censor, emotes, re-archive and the YouTube delete; then the dashboard. `_v1_conflicts()`: removed |
 | 5. Merge and split | 4 active merges, on one archive (ADR 0004, phase 0) | ADR 0004 |
