@@ -22,6 +22,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
     DELETE /api/v2/synthetic/{vod_id}  the whole undo: its sources were never changed
     GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources: {overlapping, other}
+    GET    /api/v2/vods/{vod_id}/merge-candidates  VODs that started soon after it ended, oldest first
     POST   /api/v2/vods/{vod_id}/merge {source, gap?}: a synthetic VOD of both, superseding them
     POST   /api/v2/vods/{vod_id}/split {at}: two synthetic VODs, superseding it
     GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
@@ -35,6 +36,7 @@ from collections.abc import Callable
 from typing import Annotated, Any
 
 from archive_common import audit
+from archive_common.config import Settings
 from archive_common.db import get_sessionmaker
 from archive_common.models import Game, Vod
 from archive_common.segments import Segment
@@ -338,6 +340,18 @@ class ChaptersPut(ApiModel):
     locked: bool
 
 
+class MergeCandidate(ApiModel):
+    """A VOD that started soon after this one ended: ``gap`` seconds after (negative: they overlap)."""
+
+    id: str
+    stream_id: str | None = None
+    title: str | None = None
+    created_at: UtcDatetime
+    duration: str | None = None
+    gap: float
+    titles_match: bool  # the same title, ignoring case and spacing: likely the same broadcast
+
+
 class YoutubePut(ApiModel):
     """Every upload: ``{id, type ("vod" or "live"), part, duration?}``. A video already listed keeps its
     thumbnail, seek-bar previews and recording gaps."""
@@ -442,7 +456,8 @@ def _audited(vod: Vod, fields: set[str]) -> dict[str, Any]:
     return {k: utc_iso(row[k]) if k == "created_at" else row[k] for k in sorted(fields)}
 
 
-def vods_router(auth: Auth) -> APIRouter:
+def vods_router(auth: Auth, settings: Settings) -> APIRouter:
+    """``settings.merge_candidate_minutes``: how long after a VOD ends a merge candidate may start."""
     router = APIRouter(tags=["vods"], dependencies=[Depends(auth)])
 
     @router.get("/vods")
@@ -746,6 +761,30 @@ def vods_router(auth: Auth) -> APIRouter:
         view = await _synthetic(synthetic.remove, vod_id)  # type: ignore[no-untyped-call]
         await _audit(request, "synthetic.delete", vod_id, before=view)
         return SyntheticView(**view)
+
+    @router.get("/vods/{vod_id}/merge-candidates")
+    async def merge_candidates(vod_id: str) -> Page[MergeCandidate]:
+        """What to offer to merge this VOD with (``POST /vods/{vod_id}/merge``): VODs that started up to
+        ARCHIVE_MERGE_CANDIDATE_MINUTES after it ended and aren't merged into another."""
+        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes)
+        if found is None:
+            raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
+        a, rows = found
+        duration = hhmmss_to_seconds(a.duration)
+        return Page[MergeCandidate](
+            items=[
+                MergeCandidate(
+                    id=v.id,
+                    stream_id=v.stream_id,
+                    title=v.title,
+                    created_at=v.created_at,
+                    duration=v.duration,
+                    gap=round((v.created_at - a.created_at).total_seconds()) - duration,
+                    titles_match=synthetic.normal_title(v.title) == synthetic.normal_title(a.title),
+                )
+                for v in rows
+            ]
+        )
 
     @router.post("/vods/{vod_id}/merge", status_code=201)
     async def merge_vods(request: Request, vod_id: str, body: MergeBody) -> SyntheticView:

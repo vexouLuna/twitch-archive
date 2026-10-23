@@ -23,7 +23,7 @@ from archive_common.timeutil import format_hhmmss, hhmmss_to_seconds
 from sqlalchemy import delete, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import timeline
+from . import synthetic, timeline
 from .events import iso_utc
 from .job_rows import ACTIVE, ALL_JOBS
 from .timeline import Plan, PlanError, Side
@@ -566,35 +566,15 @@ async def active_splices(vod_id: str) -> list[dict[str, Any]]:
         return [{**splice_json(sp), "undoable": _blocker(sp, near) is None} for sp in mine]
 
 
-def _normal_title(title: str | None) -> str:
-    return " ".join((title or "").split()).casefold()
-
-
 async def merge_candidates(vod_id: str, minutes: int) -> dict[str, Any]:
-    """VODs that started after ``vod_id`` and no later than ``minutes`` after it ended."""
-    async with _session() as s:
-        a = await s.get(Vod, vod_id)
-        if a is None:
-            raise SpliceError(404, "No Vod Data")
-        duration = hhmmss_to_seconds(a.duration)
-        ends = a.created_at + dt.timedelta(seconds=duration)
-        rows = (
-            (
-                await s.execute(
-                    select(Vod)
-                    .where(
-                        Vod.id != a.id,
-                        Vod.merged_into.is_(None),
-                        Vod.created_at > a.created_at,
-                        Vod.created_at <= ends + dt.timedelta(minutes=minutes),
-                    )
-                    .order_by(Vod.created_at)
-                    .limit(20)
-                )
-            )
-            .scalars()
-            .all()
-        )
+    """VODs that started after ``vod_id`` and no later than ``minutes`` after it ended (``synthetic``'s
+    query, in the /admin shape)."""
+    found = await synthetic.merge_candidates(vod_id, minutes)
+    if found is None:
+        raise SpliceError(404, "No Vod Data")
+    a, rows = found
+    duration = hhmmss_to_seconds(a.duration)
+    ends = a.created_at + dt.timedelta(seconds=duration)
     out = []
     for v in rows:
         gap = round((v.created_at - a.created_at).total_seconds()) - duration
@@ -607,7 +587,7 @@ async def merge_candidates(vod_id: str, minutes: int) -> dict[str, Any]:
                 "duration": v.duration,
                 "gap": gap,
                 "overlaps": gap < 0,
-                "titlesMatch": _normal_title(v.title) == _normal_title(a.title),
+                "titlesMatch": synthetic.normal_title(v.title) == synthetic.normal_title(a.title),
             }
         )
     return {

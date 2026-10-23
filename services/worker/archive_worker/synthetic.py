@@ -473,6 +473,32 @@ async def recompose(*vod_ids: str) -> list[str]:
     return done
 
 
+async def merge_candidates(vod_id: str, minutes: int) -> tuple[Vod, list[Vod]] | None:
+    """The VOD and those that started after it and no later than ``minutes`` after it ended (oldest
+    first, at most 20, none merged away): what the dashboard offers to merge it with. None: no VOD."""
+    async with get_sessionmaker()() as s:
+        a = await s.get(Vod, vod_id)
+        if a is None:
+            return None
+        ends = a.created_at + dt.timedelta(seconds=hhmmss_to_seconds(a.duration))
+        rows = await s.execute(
+            select(Vod)
+            .where(
+                Vod.id != a.id,
+                Vod.merged_into.is_(None),
+                Vod.created_at > a.created_at,
+                Vod.created_at <= ends + dt.timedelta(minutes=minutes),
+            )
+            .order_by(Vod.created_at)
+            .limit(20)
+        )
+        return a, list(rows.scalars())
+
+
+def normal_title(title: str | None) -> str:
+    return " ".join((title or "").split()).casefold()
+
+
 async def stale_ids(limit: int = STALE_BATCH) -> list[str]:
     """Synthetic VODs with a source updated after they were last composed."""
     src = Vod.__table__.alias("src")

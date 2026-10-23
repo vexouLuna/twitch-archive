@@ -95,7 +95,8 @@ ORDER BY sp.id, v.id, d.ord;
 ### Phase 1: stop making splices
 
 - Port `GET /admin/vods/{id}/merge-candidates` to `/api/v2` (the logic is `splices.merge_candidates`;
-  it moves to `synthetic.py`). It is read-only and the dashboard's merge dialog needs it.
+  it moves to `synthetic.py`). It is read-only and the dashboard's merge dialog needs it. **Done:**
+  `GET /api/v2/vods/{id}/merge-candidates`.
 - The dashboard (Manage, in the site's repository) uses `/api/v2/vods/{id}/merge|split` and
   `DELETE /api/v2/synthetic/{id}` for undo. That is a change in the site, not here.
 - `POST /admin/vods/{id}/merge` and `/split` answer **410** with a pointer to the `/api/v2` route.

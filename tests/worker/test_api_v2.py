@@ -424,3 +424,22 @@ async def test_youtube_drive_and_censor_lists_replace_with_their_audit(admin):
         vod.synthetic, vod.merged_into = None, {"id": "other"}
         await s.commit()
     _problem(await admin.put(f"/api/v2/vods/{VOD}/censor", headers=KEY, json={"censor": []}), 409, "vod_merged")
+
+
+async def test_merge_candidates_are_the_vods_that_started_soon_after(admin):
+    async with get_sessionmaker()() as s:
+        vod = await s.get(Vod, VOD)
+        start = vod.created_at
+        s.add(Vod(id=f"{VOD}-b", title=" T ", created_at=start + dt.timedelta(minutes=12), duration="00:05:00"))
+        s.add(Vod(id=f"{VOD}-c", title="t", created_at=start + dt.timedelta(hours=5), duration="00:05:00"))
+        await s.commit()
+    try:
+        r = await admin.get(f"/api/v2/vods/{VOD}/merge-candidates", headers=KEY)
+        assert r.status_code == 200, r.text
+        mine = [c for c in r.json()["items"] if c["id"].startswith(VOD)]
+        assert [(c["id"], c["gap"], c["titles_match"]) for c in mine] == [(f"{VOD}-b", 120, True)]
+        _problem(await admin.get("/api/v2/vods/nope/merge-candidates", headers=KEY), 404, "vod_not_found")
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(delete(Vod).where(Vod.id.in_([f"{VOD}-b", f"{VOD}-c"])))
+            await s.commit()

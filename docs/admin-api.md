@@ -289,6 +289,7 @@ curl -s "${H[@]}" -X POST "$A/admin/vods/A/unsplit" -d '{}'               # the 
 These `/admin` routes move rows. `/api/v2` merges and splits without touching either VOD: it makes [synthetic VODs](#synthetic-vods) that supersede the original, so undoing one is deleting it.
 
 ```bash
+curl -s "${H[@]}" "$A/api/v2/vods/A/merge-candidates"                   # what to offer: {id, gap, titles_match, …}
 curl -s "${H[@]}" -X POST "$A/api/v2/vods/A/merge" -d '{"source":"B"}'    # synthetic A+B; also "gap"
 curl -s "${H[@]}" -X POST "$A/api/v2/vods/A/split" -d '{"at":3605}'       # synthetic A-1 and A-2, at any second
 curl -s "${H[@]}" -X DELETE "$A/api/v2/synthetic/A+B"                     # undo: A and B list and play as before
