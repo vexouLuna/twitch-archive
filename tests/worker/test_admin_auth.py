@@ -254,6 +254,17 @@ async def test_api_key_still_works_and_wrong_key_is_refused(admin):
         assert (await c.get("/admin/kinds", headers={"Authorization": "Bearer x"})).status_code == 403
 
 
+async def test_a_legacy_auth_word_still_works_and_is_warned_about_once(admin, caplog):
+    async with admin() as c:
+        assert (await c.get("/admin/kinds", headers={"Authorization": "Bearer k"})).status_code == 200
+        assert not [r for r in caplog.records if "Authorization" in r.getMessage()]
+        for _ in range(2):
+            assert (await c.get("/admin/kinds", headers={"Authorization": "Token k"})).status_code == 200
+        assert (await c.get("/admin/kinds", headers={"Authorization": "Token x"})).status_code == 403
+    warned = [r for r in caplog.records if "Authorization: Token" in r.getMessage()]
+    assert len(warned) == 1 and warned[0].levelname == "WARNING"
+
+
 async def test_failed_logins_are_rate_limited_per_address(admin):
     async with admin("192.168.1.7") as c:  # conventions:allow-infra
         for _ in range(5):

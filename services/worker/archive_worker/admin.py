@@ -193,14 +193,23 @@ def create_admin_app(
         await passwords.checked(session, now)
         return session
 
+    legacy_schemes: set[str] = set()  # the non-Bearer words already warned about
+
     async def verify(request: Request) -> None:
         header = request.headers.get("authorization")
         if header:
-            # Legacy parser: "<anything> <key>"; "Bearer <key>" is the documented form.
-            key = header.split(" ", 1)[1] if " " in header else ""
+            # Legacy parser: "<anything> <key>"; "Bearer <key>" is the documented form (ADR 0003).
+            scheme, _, key = header.partition(" ")
             expected = settings.admin_api_key.get_secret_value()
             if not expected or not hmac.compare_digest(key.encode(), expected.encode()):
                 raise AdminError(403, "Not authorized")
+            if scheme.lower() != "bearer" and scheme not in legacy_schemes:
+                legacy_schemes.add(scheme)  # once per word per process: scripts call often
+                log.warning(
+                    "an API-key request used 'Authorization: %s <key>'; only 'Bearer <key>' will be "
+                    "accepted from the next release",
+                    scheme[:20],
+                )
             request.state.actor = "api-key"
             _actor.set(actor_of("api-key"))
             return

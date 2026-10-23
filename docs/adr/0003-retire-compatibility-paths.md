@@ -50,7 +50,8 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
 5. **Row-moving merge and split.** Exit: a product decision to stop offering them, plus a one-off script
    (committed, documented) that turns each active splice into the equivalent synthetic VOD, after which
    `/admin/vods/*/merge|split|unmerge|unsplit` answer 410.
-6. **Legacy auth header.** Exit: every script sends `Bearer`. Log a warning for one release first.
+6. **Legacy auth header.** Exit: every script sends `Bearer`. Accepted: the worker logs a warning for any
+   other word (once per word per process) for one release, and the release after that accepts only `Bearer`.
 
 ## Consequences
 
