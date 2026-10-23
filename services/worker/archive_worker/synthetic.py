@@ -210,37 +210,51 @@ async def create(
 ) -> dict[str, Any]:
     """A new synthetic VOD; ``title`` defaults to the first source's. With ``auto``, its segments are
     that game's windows (``segments`` is not used)."""
-    _composed(compose.check_id, vod_id)  # type: ignore[no-untyped-call]
     async with get_sessionmaker()() as s, s.begin():
-        if auto is not None:
-            segments = await _auto_segments(s, auto)
-        tags = _composed(check_tags, list(tags), await vod_tags(s))  # type: ignore[no-untyped-call]
-        if await s.get(Vod, vod_id) is not None:
-            raise SyntheticError(409, f"There is already a VOD {vod_id}", vodId=vod_id)
-        sources = await _checked(s, vod_id, segments, supersedes)
-        first = sources[segments[0].source_id]
-        vod = Vod(
-            id=vod_id,
-            title=(title or "").strip() or first.title,
-            platform="twitch",
-            chapters_locked=True,
-            synthetic={
-                "supersedes": supersedes,
-                "madeAt": (now := _now()),
-                "changedAt": now,
-                **({"auto": auto} if auto is not None else {}),
-            },
-            tags=tags,
-            hidden=False,
-            youtube=[],
-            drive=[],
-        )
-        _apply(vod, compose.derive(segments, sources))
-        s.add(vod)
-        await s.flush()
-        await _write_segments(s, vod_id, segments)
-        await _notify(s, *sources)
-        return synthetic_json(vod, segments)
+        return await create_in(s, vod_id, segments, title=title, supersedes=supersedes, tags=tags, auto=auto)
+
+
+async def create_in(
+    s: AsyncSession,
+    vod_id: str,
+    segments: list[Segment],
+    *,
+    title: str | None = None,
+    supersedes: bool = False,
+    tags: Any = (),
+    auto: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """``create`` in the caller's transaction (convert_splices: with the undo of the splice it replaces)."""
+    _composed(compose.check_id, vod_id)  # type: ignore[no-untyped-call]
+    if auto is not None:
+        segments = await _auto_segments(s, auto)
+    tags = _composed(check_tags, list(tags), await vod_tags(s))  # type: ignore[no-untyped-call]
+    if await s.get(Vod, vod_id) is not None:
+        raise SyntheticError(409, f"There is already a VOD {vod_id}", vodId=vod_id)
+    sources = await _checked(s, vod_id, segments, supersedes)
+    first = sources[segments[0].source_id]
+    vod = Vod(
+        id=vod_id,
+        title=(title or "").strip() or first.title,
+        platform="twitch",
+        chapters_locked=True,
+        synthetic={
+            "supersedes": supersedes,
+            "madeAt": (now := _now()),
+            "changedAt": now,
+            **({"auto": auto} if auto is not None else {}),
+        },
+        tags=tags,
+        hidden=False,
+        youtube=[],
+        drive=[],
+    )
+    _apply(vod, compose.derive(segments, sources))
+    s.add(vod)
+    await s.flush()
+    await _write_segments(s, vod_id, segments)
+    await _notify(s, *sources)
+    return synthetic_json(vod, segments)
 
 
 async def change(
@@ -285,6 +299,22 @@ async def change(
         await _notify(s, *{x.source_id for x in old}, *sources)
         await s.flush()
         return before, synthetic_json(vod, new)
+
+
+async def resegment_in(s: AsyncSession, vod_id: str, segments: list[Segment]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """New segments for a synthetic VOD, in the caller's transaction, checked like ``change``'s (its own
+    ``supersedes`` kept). Before and after, as ``synthetic_json``."""
+    vod = await _locked(s, vod_id)
+    old = await _segments(s, vod_id)
+    before = synthetic_json(vod, old)
+    sources = await _checked(s, vod_id, segments, bool(before["supersedes"]))
+    _apply(vod, compose.derive(segments, sources))
+    if vod.duration != before["duration"] or [x.json() for x in segments] != before["segments"]:
+        _changed(vod)
+    await _write_segments(s, vod_id, segments)
+    await _notify(s, *{x.source_id for x in old}, *sources)
+    await s.flush()
+    return before, synthetic_json(vod, segments)
 
 
 async def remove(vod_id: str) -> dict[str, Any]:
