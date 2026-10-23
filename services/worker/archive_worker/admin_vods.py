@@ -1,8 +1,9 @@
-"""VOD rows and their editing: games, chapters, uploads, censor ranges, merging and splitting."""
+"""VOD rows and their editing: games, chapters, uploads and censor ranges, and merge candidates."""
 
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from archive_common.db import get_sessionmaker
@@ -15,7 +16,7 @@ from sqlalchemy import delete, func, insert, or_, select, tuple_, update
 from . import (
     jobs,
     site_tags,
-    splices,
+    synthetic,
     vod_edits,
     youtube,
 )
@@ -137,7 +138,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             "censor": censor,
             "cut_reason": vod.get("cut_reason"),  # the public JSON leaves it out while NULL
             "jobs": recent,
-            "splices": await splices.active_splices(vod_id),
+            "splices": [],  # merges and splits are synthetic VODs now (ADR 0004); kept for the dashboard
         }
 
     def edited(parse, *args) -> Any:  # type: ignore[no-untyped-def]
@@ -387,52 +388,59 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             row = (await s.execute(select(*EMOTES.columns()).where(EMOTES.table.c.vod_id == vod_id))).mappings().first()
         return EMOTES.to_json(row) if row else None
 
-    # ── Merging and splitting VODs (see splices) ─────────────────────────
-
-    def force(body: dict[str, Any]) -> bool:
-        if body.get("force") not in (None, True, False):
-            raise AdminError(400, "force must be true or false")
-        return body.get("force") is True
+    # ── Merging and splitting VODs: synthetic VODs, in /api/v2 (ADR 0004) ──
 
     @app.get("/admin/vods/{vod_id}/merge-candidates", dependencies=auth)
     async def merge_candidates(vod_id: str) -> dict[str, Any]:
         """VODs that started within ARCHIVE_MERGE_CANDIDATE_MINUTES after this one ended."""
-        return await splices.merge_candidates(vod_id, settings.merge_candidate_minutes)
+        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes)
+        if found is None:
+            raise AdminError(404, "No Vod Data")
+        a, rows = found
+        duration = hhmmss_to_seconds(a.duration)
+        ends = a.created_at + dt.timedelta(seconds=duration)
+        candidates = []
+        for v in rows:
+            gap = round((v.created_at - a.created_at).total_seconds()) - duration
+            candidates.append(
+                {
+                    "id": v.id,
+                    "streamId": v.stream_id,
+                    "title": v.title,
+                    "createdAt": iso_utc(v.created_at),
+                    "duration": v.duration,
+                    "gap": gap,
+                    "overlaps": gap < 0,
+                    "titlesMatch": synthetic.normal_title(v.title) == synthetic.normal_title(a.title),
+                }
+            )
+        return {
+            "vod": {
+                "id": a.id,
+                "streamId": a.stream_id,
+                "title": a.title,
+                "createdAt": iso_utc(a.created_at),
+                "duration": a.duration,
+                "endsAt": iso_utc(ends),
+                "mergedInto": a.merged_into,
+            },
+            "withinMinutes": settings.merge_candidate_minutes,
+            "candidates": candidates,
+        }
 
-    @app.post("/admin/vods/{vod_id}/merge", dependencies=auth)
-    async def merge_vods(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"source": id, "gap"?: seconds}``: append ``source`` (the later VOD) to this one."""
-        _require(body, "source")
-        source = str(body["source"])
-        result = await splices.merge(vod_id, source, body.get("gap"))
-        return _ok(
-            f"Merged {source} into {vod_id} at {result['splice']['offset']}s", **result, vod=await admin_vod(vod_id)
-        )
+    # The row-moving merge and split are gone: every one was converted to a synthetic VOD.
+    GONE = {
+        "merge": "POST /api/v2/vods/{vod_id}/merge {source, gap?}",
+        "unmerge": "DELETE /api/v2/synthetic/{synthetic id}",
+        "split": "POST /api/v2/vods/{vod_id}/split {at}",
+        "unsplit": "DELETE /api/v2/synthetic/{synthetic id} (each half)",
+    }
 
-    @app.post("/admin/vods/{vod_id}/unmerge", dependencies=auth)
-    async def unmerge_vods(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"source": id, "force"?: true}``: restore both VODs as they were before the merge."""
-        _require(body, "source")
-        source = str(body["source"])
-        result = await splices.unmerge(vod_id, source, force(body))
-        return _ok(f"Unmerged {source} from {vod_id}", **result, vod=await admin_vod(vod_id))
+    def gone(route: str) -> Callable[[str], Awaitable[dict[str, Any]]]:
+        async def answer(vod_id: str) -> dict[str, Any]:
+            raise AdminError(410, f"Merging and splitting make synthetic VODs now: use {GONE[route]}")
 
-    @app.post("/admin/vods/{vod_id}/split", dependencies=auth)
-    async def split_vod(vod_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{"at": seconds}``: the rest of the VOD from ``at`` becomes a new VOD, or, at a
-        merge's join, that merge is undone. 409 with ``validPoints`` inside an upload."""
-        _require(body, "at")
-        result = await splices.split(vod_id, body["at"], force(body))
-        if result.get("undid") == "merge":
-            msg = f"{body['at']}s is where {result['splice']['otherId']} was merged in; undid that merge"
-        else:
-            msg = f"Split {vod_id} at {result['splice']['offset']}s; the rest is {result['newVodId']}"
-        return _ok(msg, **result, vod=await admin_vod(vod_id))
+        return answer
 
-    @app.post("/admin/vods/{vod_id}/unsplit", dependencies=auth)
-    async def unsplit_vod(vod_id: str, body: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
-        """``{"source"?: second half's id, "force"?: true}``: join the halves again (default: the latest split)."""
-        body = body or {}
-        other = str(body["source"]) if body.get("source") not in (None, "") else None
-        result = await splices.unsplit(vod_id, other, force(body))
-        return _ok(f"Joined {result['splice']['otherId']} back into {vod_id}", **result, vod=await admin_vod(vod_id))
+    for route in GONE:
+        app.post(f"/admin/vods/{{vod_id}}/{route}", dependencies=auth)(gone(route))

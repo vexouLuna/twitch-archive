@@ -11,8 +11,8 @@ from .config import get_settings
 # NOTIFY channel: payload is a vod id whose cached API responses are stale. Sent by
 # database triggers on every vods/games write (migration 0006), when the write commits.
 VOD_CHANGED = "vods_changed"
-# A VOD_CHANGED payload of ROWS_MOVED + id, sent by a merge or split (worker splices.py):
-# the VOD's chat rows and emotes moved, so their cached responses are stale too.
+# A VOD_CHANGED payload of ROWS_MOVED + id, sent when a VOD's chat or emotes change under it (hiding it,
+# a chat refetch, bot chat): their cached responses are stale too.
 ROWS_MOVED = "moved:"
 
 
