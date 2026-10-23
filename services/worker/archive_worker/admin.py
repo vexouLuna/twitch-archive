@@ -47,7 +47,6 @@ from . import (
     api_v2,
     api_v2_routes,
     jobs,
-    splices,
     vod_edits,
 )
 from .admin_auth import (
@@ -127,10 +126,6 @@ def create_admin_app(
     @app.exception_handler(AdminError)
     async def _admin_error(_req: Request, exc: AdminError) -> JSONResponse:
         return JSONResponse({"error": True, "msg": exc.msg, **exc.extra}, status_code=exc.status, headers=exc.headers)
-
-    @app.exception_handler(splices.SpliceError)
-    async def _splice_error(req: Request, exc: splices.SpliceError) -> JSONResponse:
-        return await _admin_error(req, AdminError(exc.status, exc.msg, extra=exc.extra))
 
     @app.exception_handler(StorageError)
     async def _storage_error(req: Request, exc: StorageError) -> JSONResponse:

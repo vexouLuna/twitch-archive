@@ -50,7 +50,7 @@ from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, decode_curso
 from vex_platform.audit import AuditEntry
 from vex_platform.audit.sqlalchemy import record
 
-from . import compose, jobs, site_tags, splices, synthetic, vod_edits
+from . import compose, jobs, site_tags, synthetic, vod_edits
 from .job_rows import ACTIVE, ALL_JOBS
 from .runtime_settings import RuntimeSettings
 from .storage import Storage, StorageError
@@ -269,7 +269,6 @@ class VodDetail(VodRow):
     censor: list[dict[str, Any]]  # ranges blurred, blacked out or muted in uploads made from now on
     bot_chat: dict[str, Any] | None = None  # the last bot chat read
     updated_at: UtcDatetime
-    splices: list[dict[str, Any]]  # merges and splits touching it, not undone
     segments: list[dict[str, Any]] | None = None  # a synthetic VOD's
     in_synthetic: list[dict[str, Any]]  # the synthetic VODs made with it: {id, title, tags, supersedes, segments}
 
@@ -444,7 +443,6 @@ async def _detail(vod: Vod) -> VodDetail:
         censor=vod.censor or [],
         bot_chat=vod.bot_chat,
         updated_at=vod.updated_at,
-        splices=await splices.active_splices(vod.id),
         active_jobs=_active((await jobs.active_by_vod([vod.id])).get(vod.id, [])),
         segments=_snake(segments) if segments is not None else None,
         in_synthetic=_snake(await synthetic.containing(vod.id)),

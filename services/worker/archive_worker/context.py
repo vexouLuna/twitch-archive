@@ -190,8 +190,8 @@ class JobContext:
         await execute(update(Vod).where(Vod.id == self.require_vod_id()).values(**values))
 
     async def refuse_if_spliced(self) -> None:
-        """For steps that fetch from Twitch by VOD id: the row of a merged or split VOD no
-        longer matches Twitch's VOD, and a refresh would overwrite (or add to) it."""
+        """For steps that fetch from Twitch by VOD id: a synthetic VOD (or one merged away before merges
+        became synthetic VODs) doesn't match Twitch's VOD, and a refresh would overwrite (or add to) it."""
         reason = await splice_reason(self.vod_id) if self.vod_id else None
         if reason:
             raise StepRefused(f"{reason}; step {self.step} refetches it from Twitch, so it is refused")
