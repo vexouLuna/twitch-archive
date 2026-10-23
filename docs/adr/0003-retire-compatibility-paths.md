@@ -47,9 +47,8 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
    Reads have no audit rows, so check the dashboard's code for `GET /admin/settings` and `/admin/storage` too.
 4. **`/admin` VOD routes and conflict rewording.** Exit: `/api/v2` covers games, chapters, YouTube and Drive
    lists, and the dashboard uses it. Then remove `_v1_conflicts()` with them.
-5. **Row-moving merge and split.** Exit: a product decision to stop offering them, plus a one-off script
-   (committed, documented) that turns each active splice into the equivalent synthetic VOD, after which
-   `/admin/vods/*/merge|split|unmerge|unsplit` answer 410.
+5. **Row-moving merge and split.** Decided: synthetic VODs replace them. The plan (stop making them,
+   convert the active splices, remove the code) is ADR 0004.
 6. **Legacy auth header.** Exit: every script sends `Bearer`. Accepted: the worker logs a warning for any
    other word (once per word per process) for one release, and the release after that accepts only `Bearer`.
 
