@@ -57,7 +57,6 @@ AUDITED_PREFIXES = ("/admin/", "/v2/")
 JOB_ROUTES = "/admin/jobs"  # audited by the runtime (and JobService), not by the request
 YOUTUBE_CHECK_MAX_AGE = 600  # /admin/health refreshes the YouTube token at most this often
 RECENT_JOBS = 20  # jobs shown with a VOD
-VOD_LIST_MAX = 200  # GET /admin/vods?limit=
 # Steps that refetch from Twitch by VOD id; a job with any of them is refused on a merged/split VOD.
 TWITCH_STEPS = {"capture", "fetch_vod", "finalize", "chapters", "chat", "emotes", "bot_chat"}
 

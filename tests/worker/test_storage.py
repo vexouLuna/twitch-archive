@@ -112,9 +112,9 @@ def app(deps):
 
 async def test_storage_view_and_delete(world, app, settings):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://admin") as c:
-        assert (await c.get("/admin/storage")).status_code == 403
-        body = (await c.get("/admin/storage", headers=KEY)).json()
-        assert set(body["disk"]) == {"total", "used", "free"} and body["cacheSeconds"] == 30
+        assert (await c.get("/api/v2/storage")).status_code == 401
+        body = (await c.get("/api/v2/storage", headers=KEY)).json()
+        assert set(body["disk"]) == {"total", "used", "free"} and body["cache_seconds"] == 30
         rows = {f["path"]: f for f in body["folders"]}
         assert str(settings.data_dir) not in str(body)
 
@@ -136,22 +136,22 @@ async def test_storage_view_and_delete(world, app, settings):
         assert live["vod"]["id"] == KEPT and live["stale"] is False
         assert [j["kind"] for j in live["jobs"]["active"]] == ["live"]
 
-        r = await c.delete(f"/admin/storage/live/{STREAM}", headers=KEY)
-        assert r.status_code == 409 and "cancel it" in r.json()["msg"]
+        r = await c.delete(f"/api/v2/storage/live/{STREAM}", headers=KEY)
+        assert r.status_code == 409 and "cancel it" in r.json()["detail"]
         assert (settings.data_dir / "live" / STREAM).exists()
-        assert (await c.delete("/admin/storage/vods/a%20b", headers=KEY)).status_code == 400
-        assert (await c.delete("/admin/storage/nope/x", headers=KEY)).status_code == 404
+        assert (await c.delete("/api/v2/storage/vods/a%20b", headers=KEY)).status_code == 400
+        assert (await c.delete("/api/v2/storage/nope/x", headers=KEY)).status_code == 404
 
         # Cached until refreshed; a delete drops the cache and reports the size the dashboard showed.
         put(settings.data_dir / "vods" / ORPHAN / "more.bin", 5)
-        assert {f["path"]: f for f in (await c.get("/admin/storage", headers=KEY)).json()["folders"]}[f"vods/{ORPHAN}"][
-            "bytes"
-        ] == 30
-        r = await c.delete(f"/admin/storage/vods/{ORPHAN}", headers=KEY)
+        assert {f["path"]: f for f in (await c.get("/api/v2/storage", headers=KEY)).json()["folders"]}[
+            f"vods/{ORPHAN}"
+        ]["bytes"] == 30
+        r = await c.delete(f"/api/v2/storage/vods/{ORPHAN}", headers=KEY)
         assert r.status_code == 200 and r.json() == {"path": f"vods/{ORPHAN}", "bytes": 30, "files": 1}
         assert not (settings.data_dir / "vods" / ORPHAN).exists()  # moved to the trash before answering
-        assert (await c.delete(f"/admin/storage/vods/{ORPHAN}", headers=KEY)).status_code == 404
-        paths = [f["path"] for f in (await c.get("/admin/storage", headers=KEY)).json()["folders"]]
+        assert (await c.delete(f"/api/v2/storage/vods/{ORPHAN}", headers=KEY)).status_code == 404
+        paths = [f["path"] for f in (await c.get("/api/v2/storage", headers=KEY)).json()["folders"]]
         assert f"vods/{ORPHAN}" not in paths and f"vods/{KEPT}" in paths
 
     async with get_sessionmaker()() as s:

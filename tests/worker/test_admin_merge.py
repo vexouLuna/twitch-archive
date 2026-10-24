@@ -59,10 +59,3 @@ async def test_merge_candidates(admin):
     ]
     assert (await admin.get(f"/admin/vods/{B}/merge-candidates", headers=KEY)).json()["candidates"] == []
     assert (await admin.get("/admin/vods/nope/merge-candidates", headers=KEY)).status_code == 404
-
-
-@pytest.mark.parametrize("route", ["merge", "unmerge", "split", "unsplit"])
-async def test_row_moving_merge_and_split_are_gone(admin, route):
-    r = await admin.post(f"/admin/vods/{A}/{route}", headers=KEY, json={"source": B, "at": 60})
-    assert r.status_code == 410 and "/api/v2/" in r.json()["msg"]
-    assert (await admin.post(f"/admin/vods/{A}/{route}", json={})).status_code == 403  # still behind auth (v1: 403)

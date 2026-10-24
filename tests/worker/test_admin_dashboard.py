@@ -199,16 +199,12 @@ async def test_vod_editing(vod, app, make_ctx, monkeypatch):
         assert [j["kind"] for j in got["jobs"]] == ["emotes"]
         assert (await c.get("/admin/vods/nope", headers=KEY)).status_code == 404
 
-        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": "  new title "})
-        assert r.status_code == 200 and r.json()["title"] == "new title"
-        assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": ""})).status_code == 400
-        assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"duration": "1"})).status_code == 400
-
+        # The edits are /api/v2's now; the chapters they store are the ones the dashboard reads here.
         chapters = [chapter(0, 3600), chapter(3600, 3600, "Artifact")]
-        r = await c.put(f"/admin/vods/{vod}/chapters", headers=KEY, json={"chapters": chapters, "locked": True})
+        r = await c.put(f"/api/v2/vods/{vod}/chapters", headers=KEY, json={"chapters": chapters, "locked": True})
         assert r.status_code == 200
-        saved = r.json()
-        assert saved["chaptersLocked"] is True
+        assert r.json()["chapters_locked"] is True
+        saved = (await c.get(f"/admin/vods/{vod}", headers=KEY)).json()
         assert [(ch["name"], ch["duration"], ch["start"], ch["end"], ch["length"]) for ch in saved["chapters"]] == [
             ("Just Chatting", "00:00:00", 0, 3600, 3600),
             ("Artifact", "01:00:00", 3600, 3600, 3600),
@@ -217,14 +213,14 @@ async def test_vod_editing(vod, app, make_ctx, monkeypatch):
         assert saved["chapters"][0]["imageTemplate"] == TEMPLATE
 
         too_long = await c.put(
-            f"/admin/vods/{vod}/chapters", headers=KEY, json={"chapters": [chapter(0, 7300)], "locked": False}
+            f"/api/v2/vods/{vod}/chapters", headers=KEY, json={"chapters": [chapter(0, 7300)], "locked": False}
         )
-        assert too_long.status_code == 400 and "after the end of the VOD" in too_long.json()["msg"]
-        no_lock = await c.put(f"/admin/vods/{vod}/chapters", headers=KEY, json={"chapters": []})
-        assert no_lock.status_code == 400
+        assert too_long.status_code == 422 and "after the end of the VOD" in too_long.json()["detail"]
+        no_lock = await c.put(f"/api/v2/vods/{vod}/chapters", headers=KEY, json={"chapters": []})
+        assert no_lock.status_code == 422
 
         r = await c.put(
-            f"/admin/vods/{vod}/youtube",
+            f"/api/v2/vods/{vod}/youtube",
             headers=KEY,
             json={
                 "youtube": [
@@ -243,18 +239,11 @@ async def test_vod_editing(vod, app, make_ctx, monkeypatch):
                 "thumbnail_url": "https://i.ytimg.com/vi/yt2/mqdefault.jpg",
             },
         ]
-        bad = await c.put(f"/admin/vods/{vod}/youtube", headers=KEY, json={"youtube": [{"id": "x", "type": "?"}]})
-        assert bad.status_code == 400
+        bad = await c.put(f"/api/v2/vods/{vod}/youtube", headers=KEY, json={"youtube": [{"id": "x", "type": "?"}]})
+        assert bad.status_code == 422
 
-        r = await c.put(f"/admin/vods/{vod}/drive", headers=KEY, json={"drive": [{"id": "d1", "type": "live"}]})
+        r = await c.put(f"/api/v2/vods/{vod}/drive", headers=KEY, json={"drive": [{"id": "d1", "type": "live"}]})
         assert r.json()["drive"] == [{"id": "d1", "type": "live"}]
-
-        assert (await c.get(f"/admin/vods/{vod}/emotes", headers=KEY)).json() is None
-        async with get_sessionmaker()() as s:
-            s.add(Emote(vod_id=vod, ffz_emotes=[{"id": 1, "code": "x"}]))
-            await s.commit()
-        emotes = (await c.get(f"/admin/vods/{vod}/emotes", headers=KEY)).json()
-        assert emotes["vodId"] == vod and emotes["ffz_emotes"] == [{"id": 1, "code": "x"}]
 
     # The automatic chapters step leaves locked chapters alone unless forced.
     calls = []
@@ -270,91 +259,6 @@ async def test_vod_editing(vod, app, make_ctx, monkeypatch):
     assert calls == [vod]
 
 
-async def test_vod_fields_and_the_admin_list(vod, app):
-    async with client(app) as c:
-        r = await c.patch(
-            f"/admin/vods/{vod}",
-            headers=KEY,
-            json={
-                "thumbnailUrl": "https://example.com/t.jpg",
-                "duration": "1:30:00",
-                "createdAt": "2026-01-02T03:04:05+02:00",
-            },
-        )
-        assert r.status_code == 200, r.text
-        got = r.json()
-        assert (got["thumbnail_url"], got["duration"], got["duration_seconds"], got["hidden"]) == (
-            "https://example.com/t.jpg",
-            "01:30:00",
-            5400,
-            False,
-        )
-        assert got["createdAt"] == "2026-01-02T01:04:05.000Z"
-        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"thumbnailUrl": None})
-        assert r.json()["thumbnail_url"] is None
-        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"cutReason": " Music claim "})
-        assert r.json()["cut_reason"] == "Music claim"
-        r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"cutReason": ""})
-        assert r.json()["cut_reason"] is None
-
-        for bad in (
-            {"thumbnailUrl": "javascript:alert(1)"},
-            {"duration": "90:00"},
-            {"duration": "01:61:00"},
-            {"createdAt": "2026-01-02T03:04:05"},
-            {"createdAt": "yesterday"},
-            {"hidden": "yes"},
-            {"title": "x", "views": 1},
-        ):
-            r = await c.patch(f"/admin/vods/{vod}", headers=KEY, json=bad)
-            assert r.status_code == 400, bad
-
-        await c.put(f"/admin/vods/{vod}/chapters", headers=KEY, json={"chapters": [chapter(0, 5000)], "locked": False})
-        short = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"duration": "01:00:00"})
-        assert short.status_code == 400 and "chapters run to 5000s" in short.json()["msg"]
-
-        # The list: every VOD, hidden ones too, searchable and paged
-        assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"hidden": True})).json()["hidden"] is True
-        rows = (await c.get("/admin/vods", headers=KEY, params={"q": "OLD TITLE"})).json()
-        assert [v["id"] for v in rows["data"]] == [vod] and rows["next"] is None
-        row = rows["data"][0]
-        assert (row["hidden"], row["duration"], row["merged_into"], row["createdAt"]) == (
-            True,
-            "01:30:00",
-            None,
-            "2026-01-02T01:04:05+00:00",
-        )
-        assert [v["id"] for v in (await c.get(f"/admin/vods?q={vod}", headers=KEY)).json()["data"]] == [vod]
-        assert (await c.get("/admin/vods", headers=KEY, params={"q": "old_title"})).json()["data"] == []  # _ is literal
-        shown = (await c.get("/admin/vods?hidden=false&limit=200", headers=KEY)).json()["data"]
-        assert vod not in [v["id"] for v in shown] and not any(v["hidden"] for v in shown)
-        assert all(v["hidden"] for v in (await c.get("/admin/vods?hidden=true", headers=KEY)).json()["data"])
-        first = (await c.get("/admin/vods?limit=1", headers=KEY)).json()
-        if first["next"]:
-            second = (await c.get(f"/admin/vods?limit=1&before={first['next']}", headers=KEY)).json()["data"]
-            assert second and second[0]["id"] != first["data"][0]["id"]
-        assert (await c.get("/admin/vods?before=nope", headers=KEY)).status_code == 400
-
-        # Merged: only hidden can change
-        await execute(update(Vod).where(Vod.id == vod).values(merged_into={"id": "other", "offset": 10}))
-        refused = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": "no"})
-        assert refused.status_code == 409 and "merged into other" in refused.json()["msg"]
-        assert (await c.put(f"/admin/vods/{vod}/games", headers=KEY, json={"games": []})).status_code == 409
-        assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"hidden": False})).json()["hidden"] is False
-
-        audit = (await c.get("/admin/audit?limit=20", headers=KEY)).json()["data"]
-        mine = [e["detail"] for e in audit if e["target"] == f"vod:{vod}" and e["action"] == "vod.update"]
-        assert mine[0] == {"before": {"hidden": True}, "after": {"hidden": False}}
-        assert mine[-1] == {
-            "before": {"thumbnailUrl": None, "duration": "02:00:00", "createdAt": mine[-1]["before"]["createdAt"]},
-            "after": {
-                "thumbnailUrl": "https://example.com/t.jpg",
-                "duration": "01:30:00",
-                "createdAt": "2026-01-02T01:04:05+00:00",
-            },
-        }
-
-
 def game(start, end, name="Elden Ring", **extra):
     return {
         "start_time": start,
@@ -365,54 +269,6 @@ def game(start, end, name="Elden Ring", **extra):
         "video_id": f"yt-{start}",
         **extra,
     }
-
-
-async def test_games_rows(vod, app):
-    async with client(app) as c:
-        assert (await c.get(f"/admin/vods/{vod}/games", headers=KEY)).json() == []
-        r = await c.put(
-            f"/admin/vods/{vod}/games",
-            headers=KEY,
-            json={
-                "games": [
-                    game(0, 3600, thumbnail_url="https://i.ytimg.com/vi/a/mqdefault.jpg"),
-                    game("3600", 7200.5, "Other"),
-                ]
-            },
-        )
-        assert r.status_code == 200, r.text
-        assert [(g["start_time"], g["end_time"], g["game_name"]) for g in r.json()["games"]] == [
-            ("0", "3600", "Elden Ring"),
-            ("3600", "7200.5", "Other"),
-        ]
-        rows = (await c.get(f"/admin/vods/{vod}/games", headers=KEY)).json()
-        assert rows[0]["thumbnail_url"] == "https://i.ytimg.com/vi/a/mqdefault.jpg" and rows[1]["title"] is None
-
-        # What GET returns goes straight back (ids and dates ignored)
-        rows[1]["game_name"] = "Renamed"
-        again = await c.put(f"/admin/vods/{vod}/games", headers=KEY, json={"games": rows})
-        assert [g["game_name"] for g in again.json()["games"]] == ["Elden Ring", "Renamed"]
-
-        for bad in (
-            [game(0, 7300)],
-            [game(100, 50)],
-            [game(0, 100), game(50, 200)],
-            [game(100, 200), game(0, 50)],
-            [game(0, 10, " ")],
-            [{"start_time": 0}],
-            [game(0, 10, thumbnail_url="ftp://x")],
-            {"x": 1},
-        ):
-            r = await c.put(f"/admin/vods/{vod}/games", headers=KEY, json={"games": bad})
-            assert r.status_code == 400, bad
-
-        short = await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"duration": "01:00:00"})
-        assert short.status_code == 400 and "games rows run to 7200.5s" in short.json()["msg"]
-
-        assert (await c.put(f"/admin/vods/{vod}/games", headers=KEY, json={"games": []})).json()["games"] == []
-        audit = (await c.get("/admin/audit?limit=5", headers=KEY)).json()["data"][0]
-        assert audit["action"] == "vod.games.replace" and audit["detail"]["after"] == []
-        assert [g["game_name"] for g in audit["detail"]["before"]] == ["Elden Ring", "Renamed"]
 
 
 async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
@@ -448,7 +304,7 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
         async with api:
             shown = await public()
             async with client(app) as c:
-                assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"hidden": True})).status_code == 200
+                assert (await c.patch(f"/api/v2/vods/{vod}", headers=KEY, json={"hidden": True})).status_code == 200
                 assert (await c.get(f"/admin/vods/{vod}", headers=KEY)).json()["hidden"] is True  # admin still sees it
             hidden = await public()
         # The trigger's notice, plus one that drops its cached chat and emotes
@@ -489,7 +345,7 @@ async def test_vod_edit_notifies_the_api(vod, app):
     conn, heard = await _listen()
     try:
         async with client(app) as c:
-            assert (await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": "x"})).status_code == 200
+            assert (await c.patch(f"/api/v2/vods/{vod}", headers=KEY, json={"title": "x"})).status_code == 200
         assert await asyncio.wait_for(heard.get(), 5) == vod
     finally:
         await conn.close()
@@ -697,11 +553,13 @@ async def test_healthz_and_readyz(app, monkeypatch):
 
 async def test_audit_log_records_state_changes_with_actor(vod, app):
     async with client(app) as c:
-        await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": "by key"})
+        r = await c.post("/admin/emotes", headers=KEY, json={"vodId": vod})
+        assert r.status_code == 200, r.text
         session = (await c.post("/admin/session", json={"password": "pw"})).json()
         assert c.cookies.get(SESSION_COOKIE)
-        await c.put(f"/admin/vods/{vod}/drive", headers={"X-CSRF-Token": session["csrf"]}, json={"drive": []})
-        await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"title": ""})  # 400: nothing changed
+        r = await c.post("/admin/emotes", headers={"X-CSRF-Token": session["csrf"]}, json={"vodId": vod, "force": True})
+        assert r.status_code == 200, r.text
+        await c.post("/admin/emotes", headers=KEY, json={})  # refused (no vodId): not audited
         await c.get(f"/admin/vods/{vod}", headers=KEY)  # reads are not audited
 
         mine = [
@@ -710,12 +568,12 @@ async def test_audit_log_records_state_changes_with_actor(vod, app):
             if e["target"] == f"vod:{vod}"
         ]
         assert [(e["actor"], e["action"], e["detail"]) for e in mine] == [
-            ("password", "vod.drive.replace", {"drive": []}),
-            ("api-key", "vod.update", {"before": {"title": "old title"}, "after": {"title": "by key"}}),
+            ("password", "vod.emotes.fetch", {"vodId": vod, "force": True}),
+            ("api-key", "vod.emotes.fetch", {"vodId": vod}),
         ]
         assert mine[0]["at"].endswith("+00:00")
-        older = (await c.get(f"/admin/audit?before={mine[0]['id']}&limit=1", headers=KEY)).json()["data"]
-        assert [e["action"] for e in older] == ["session.login"]  # the login, between the two
+        older = (await c.get(f"/admin/audit?before={mine[0]['id']}&limit=3", headers=KEY)).json()["data"]
+        assert "session.login" in [e["action"] for e in older]  # the login, between the two (with the jobs queued)
 
     async with get_sessionmaker()() as s:
         login = (
@@ -773,73 +631,3 @@ async def test_youtube_check_reports_removed_uploads_and_keeps_the_last(vod, app
 
 
 # ── Censor ranges, deleting uploads, re-archiving ─────────────────────────
-
-
-async def test_censor_ranges_are_saved_checked_and_audited(vod, app):
-    ranges = [{"start": 60, "end": 90, "video": "blur", "mute": True, "note": "nudity"}]
-    async with client(app) as c:
-        r = await c.put(f"/admin/vods/{vod}/censor", json={"censor": ranges}, headers=KEY)
-        assert r.status_code == 200, r.text
-        assert r.json()["censor"] == ranges
-        bad = await c.put(
-            f"/admin/vods/{vod}/censor", json={"censor": [{"start": 0, "end": 9000, "mute": True}]}, headers=KEY
-        )
-        assert bad.status_code == 400 and "after the end of the VOD" in bad.text
-        assert (await c.get(f"/admin/vods/{vod}", headers=KEY)).json()["censor"] == ranges
-    async with get_sessionmaker()() as s:
-        [row] = (await s.execute(select(AUDIT_LOG).where(AUDIT_LOG.c.target == f"vod:{vod}"))).all()
-    assert (row.action, row.before, row.after) == ("vod.censor.replace", [], ranges)
-
-
-async def test_deleting_uploads_takes_them_off_and_rewrites_the_rest(vod, app, deps, monkeypatch):
-    async with get_sessionmaker()() as s:
-        await s.execute(
-            update(Vod)
-            .where(Vod.id == vod)
-            .values(
-                youtube=[
-                    {"id": "yt1", "type": "vod", "duration": 3600, "part": 1},
-                    {"id": "yt2", "type": "vod", "duration": 3600, "part": 2},
-                    {"id": "yt3", "type": "vod", "duration": 3600, "part": 3},
-                ]
-            )
-        )
-        await s.commit()
-    asked: list[str] = []
-
-    async def delete_video(video_id: str) -> bool:
-        asked.append(video_id)
-        if video_id == "yt3":
-            raise RuntimeError("quota exceeded")
-        return video_id == "yt1"  # yt2 was already gone: just taken off
-
-    monkeypatch.setattr(deps.youtube, "delete", delete_video)
-    async with client(app) as c:
-        unknown = await c.post(f"/admin/vods/{vod}/youtube/delete", json={"videos": ["nope"]}, headers=KEY)
-        assert unknown.status_code == 400
-        assert (await c.post(f"/admin/vods/{vod}/youtube/delete", json={"videos": []}, headers=KEY)).status_code == 400
-        r = await c.post(
-            f"/admin/vods/{vod}/youtube/delete", json={"videos": ["yt1", "yt2", "yt3", "yt1"]}, headers=KEY
-        )
-        assert r.status_code == 200, r.text
-        got = r.json()
-    assert asked == ["yt1", "yt2", "yt3"]
-    assert got["deleted"] == ["yt1", "yt2"]
-    assert [f["id"] for f in got["failed"]] == ["yt3"]
-    assert [e["id"] for e in got["vod"]["youtube"]] == ["yt3"]
-    [job] = got["describeJobs"]
-    async with get_sessionmaker()() as s:
-        row = (await s.execute(select(RUNS).where(RUNS.c.id == job))).one()
-    assert (row.kind, row.payload["type"]) == ("describe", "vod")
-
-
-async def test_rearchive_queues_a_replacing_upload(vod, app):
-    async with client(app) as c:
-        whole = (await c.post(f"/admin/vods/{vod}/rearchive", json={"type": "vod"}, headers=KEY)).json()
-        part = (await c.post(f"/admin/vods/{vod}/rearchive", json={"type": "vod", "part": 2}, headers=KEY)).json()
-    async with get_sessionmaker()() as s:
-        rows = (await s.execute(select(RUNS).where(RUNS.c.id.in_([whole["jobId"], part["jobId"]])))).all()
-    a, b = sorted(rows, key=lambda r: r.id)
-    assert (a.kind, a.payload) == ("download", {"type": "vod", "manual": True, "replace": True})
-    assert b.kind == "reupload"
-    assert b.payload == {"type": "vod", "manual": True, "replace": True, "start_part": 2, "end_part": 2}
