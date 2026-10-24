@@ -7,7 +7,7 @@ import httpx
 import pytest
 from archive_common.audit import AUDIT_LOG
 from archive_common.db import get_sessionmaker
-from archive_common.models import Game, RuntimeSetting, Vod
+from archive_common.models import Emote, Game, RuntimeSetting, Vod
 from archive_worker import jobs
 from archive_worker.admin import create_admin_app
 from archive_worker.admin_auth import CSRF_HEADER, SESSION_COOKIE
@@ -30,6 +30,7 @@ async def _reset():
         await s.execute(text("SET LOCAL search_path TO jobs, public"))
         await s.execute(text("DELETE FROM procrastinate_jobs WHERE lock LIKE :vod"), {"vod": f"vod:{VOD}:%"})
         await s.execute(delete(Game).where(Game.vod_id == VOD))
+        await s.execute(delete(Emote).where(Emote.vod_id == VOD))
         await s.execute(delete(Vod).where(Vod.id == VOD))
         await s.commit()
 
@@ -443,3 +444,104 @@ async def test_merge_candidates_are_the_vods_that_started_soon_after(admin):
         async with get_sessionmaker()() as s:
             await s.execute(delete(Vod).where(Vod.id.in_([f"{VOD}-b", f"{VOD}-c"])))
             await s.commit()
+
+
+async def test_emotes_are_the_saved_row_or_null(admin):
+    assert (await admin.get(f"/api/v2/vods/{VOD}/emotes", headers=KEY)).json() is None
+    async with get_sessionmaker()() as s:
+        s.add(Emote(vod_id=VOD, ffz_emotes=[{"id": 1, "code": "x"}]))
+        await s.commit()
+    emotes = (await admin.get(f"/api/v2/vods/{VOD}/emotes", headers=KEY)).json()
+    assert (emotes["vod_id"], emotes["ffz_emotes"], emotes["7tv_emotes"]) == (VOD, [{"id": 1, "code": "x"}], [])
+    _problem(await admin.get("/api/v2/vods/nope/emotes", headers=KEY), 404, "vod_not_found")
+
+
+async def test_rearchive_queues_a_replacing_upload_with_its_audit(admin):
+    whole = await admin.post(f"/api/v2/vods/{VOD}/rearchive", headers=KEY, json={})
+    assert whole.status_code == 202, whole.text
+    part = await admin.post(f"/api/v2/vods/{VOD}/rearchive", headers=KEY, json={"type": "vod", "part": 2})
+    async with get_sessionmaker()() as s:
+        ids = [whole.json()["job_id"], part.json()["job_id"]]
+        a, b = sorted((await s.execute(select(RUNS).where(RUNS.c.id.in_(ids)))).all(), key=lambda r: r.id)
+    assert (a.kind, a.payload) == ("download", {"type": "vod", "manual": True, "replace": True})
+    assert (b.kind, b.payload) == (
+        "reupload",
+        {"type": "vod", "manual": True, "replace": True, "start_part": 2, "end_part": 2},
+    )
+    row = await _audit(part.headers["x-request-id"])
+    assert (row["action"], row["target"], row["detail"]) == (
+        "vod.rearchive",
+        f"vod:{VOD}",
+        {"job_id": b.id, "type": "vod", "part": 2},
+    )
+    _problem(await admin.post(f"/api/v2/vods/{VOD}/rearchive", headers=KEY, json={"type": "live"}), 400, "invalid")
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).synthetic = {"supersedes": False}
+        await s.commit()
+    _problem(await admin.post(f"/api/v2/vods/{VOD}/rearchive", headers=KEY, json={}), 409, "vod_synthetic")
+
+
+async def test_deleting_uploads_reports_each_and_rewrites_the_rest(admin, deps, monkeypatch):
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).youtube = [
+            {"id": "yt1", "type": "vod", "duration": 300, "part": 1},
+            {"id": "yt2", "type": "vod", "duration": 300, "part": 2},
+        ]
+        await s.commit()
+
+    async def delete_video(video_id: str) -> bool:
+        if video_id == "yt2":
+            raise RuntimeError("quota exceeded")
+        return True
+
+    monkeypatch.setattr(deps.youtube, "delete", delete_video)
+    url = f"/api/v2/vods/{VOD}/youtube/delete"
+    body = _problem(await admin.post(url, headers=KEY, json={"videos": ["nope"]}), 422, "not_uploads")
+    assert body["videos"] == ["nope"]
+    _problem(await admin.post(url, headers=KEY, json={"videos": []}), 422, "invalid")
+    r = await admin.post(url, headers=KEY, json={"videos": ["yt1", "yt2", "yt1"]})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert (got["deleted"], [f["id"] for f in got["failed"]]) == (["yt1"], ["yt2"])
+    assert [e["id"] for e in got["vod"]["youtube"]] == ["yt2"]
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], [e["id"] for e in row["after"]["youtube"]]) == ("vod.youtube.delete", ["yt2"])
+    async with get_sessionmaker()() as s:
+        [job] = (await s.execute(select(RUNS).where(RUNS.c.id.in_(got["describe_jobs"])))).all()
+    assert (job.kind, job.payload["type"]) == ("describe", "vod")
+
+
+async def test_censor_review_cuts_the_flagged_games_and_resumes(admin):
+    run = (
+        await admin.post("/api/v2/jobs", headers=KEY, json={"subject": f"vod:{VOD}", "kind": "test", "paused": True})
+    ).json()
+    url = f"/api/v2/jobs/{run['id']}/censor-review"
+    _problem(await admin.post(url, headers=KEY, json={"decision": "cut"}), 409, "not_in_review")
+    _problem(await admin.post(url, headers=KEY, json={"decision": "skip"}), 422, "invalid")
+    _problem(
+        await admin.post("/api/v2/jobs/999999999/censor-review", headers=KEY, json={"decision": "upload"}),
+        404,
+        "job_not_found",
+    )
+    chapters = [
+        {"name": "A", "gameId": "1", "start": 0, "end": 60},
+        {"name": "B", "gameId": "2", "start": 60, "end": 60},
+    ]
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).chapters = chapters
+        review = {"games": [{"gameId": "2", "name": "B"}]}
+        await s.execute(RUNS.update().where(RUNS.c.id == run["id"]).values(payload={"censor_review": review}))
+        await s.commit()
+
+    r = await admin.post(url, headers=KEY, json={"decision": "cut"})
+    assert r.status_code == 200, r.text
+    assert r.json()["job_id"] == run["id"]
+    vod = (await admin.get(f"/api/v2/vods/{VOD}", headers=KEY)).json()
+    assert ([c.get("restricted", False) for c in vod["chapters"]], vod["chapters_locked"]) == ([False, True], True)
+    assert (await admin.get(f"/api/v2/jobs/{run['id']}", headers=KEY)).json()["state"] == "queued"
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["action"], row["target"], row["detail"]) == (
+        "job.censor_review",
+        f"job:{run['id']}",
+        {"decision": "cut", "vod": VOD, "cut": ["2"]},
+    )

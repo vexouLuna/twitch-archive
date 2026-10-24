@@ -40,9 +40,13 @@ curl -s "${H[@]}" -X PATCH "$A/api/v2/vods/123" -d '{"title":"…","thumbnail_ur
 curl -s "${H[@]}" "$A/api/v2/vods/123/games"                       # PUT {"games":[...]} replaces them; GET's items can be sent back
 curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/chapters" -d '{"chapters":[{"name":"…","gameId":"…","start":0,"length":600,"restricted":false}],"locked":true}'
 curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/youtube" -d '{"youtube":[{"id":"…","type":"vod","part":1}]}'   # also /drive {"drive"}, /censor {"censor"}
+curl -s "${H[@]}" "$A/api/v2/vods/123/emotes"                      # the saved emotes row (snake_case keys), or null
+curl -s "${H[@]}" -X POST "$A/api/v2/vods/123/rearchive" -d '{"type":"vod","part":2}'   # 202 {job_id, message}; also "path"
+curl -s "${H[@]}" -X POST "$A/api/v2/vods/123/youtube/delete" -d '{"videos":["…"]}'     # {deleted, failed, describe_jobs, vod}
+curl -s "${H[@]}" -X POST "$A/api/v2/jobs/42/censor-review" -d '{"decision":"cut"}'     # or "upload"; {job_id, message}
 ```
 
-`/api/v2/jobs` covers the job runtime's runs only. Jobs from the old `jobs` table (all finished) are still listed by `/admin/jobs`, with their logs, but nothing runs them any more and actions on them answer 409. A VOD's games, chapters, YouTube and Drive lists and censor ranges are in both, with the same rules (`/api/v2` answers `vod_merged`, `vod_synthetic` or `invalid_<list>`). Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
+`/api/v2/jobs` covers the job runtime's runs only. Jobs from the old `jobs` table (all finished) are still listed by `/admin/jobs`, with their logs, but nothing runs them any more and actions on them answer 409. A VOD's games, chapters, YouTube and Drive lists, censor ranges and emotes, re-archiving, deleting uploads and answering a censor review are in both, with the same rules (`/api/v2` answers `vod_merged`, `vod_synthetic` or `invalid_<list>`; deleting uploads that aren't the VOD's answers `not_uploads`, a censor review of a job that isn't waiting for one `not_in_review`). Merging and splitting exist in both, done differently: see [Merging and splitting VODs](#merging-and-splitting-vods). The `/admin` routes stay until their clients have moved.
 
 A v2 change writes its audit row in the same transaction as the change (`setting.update`, `setting.reset`, `vod.update`, `vod.games.replace`, `vod.chapters.replace`, `vod.youtube.replace`, `vod.drive.replace`, `vod.censor.replace`), with the fields before and after, so the two never disagree. A storage delete is files, so its row (`storage.delete`, with what it freed) comes right after.
 
