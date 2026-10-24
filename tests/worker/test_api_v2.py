@@ -545,3 +545,18 @@ async def test_censor_review_cuts_the_flagged_games_and_resumes(admin):
         f"job:{run['id']}",
         {"decision": "cut", "vod": VOD, "cut": ["2"]},
     )
+
+
+async def test_cut_reason_is_patched_and_listed(admin):
+    r = await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"cut_reason": "DMCA"})
+    assert (r.status_code, r.json()["cut_reason"]) == (200, "DMCA"), r.text
+    row = await _audit(r.headers["x-request-id"])
+    assert (row["before"], row["after"]) == ({"cut_reason": None}, {"cut_reason": "DMCA"})
+    _problem(await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"cut_reason": "x" * 501}), 422, "invalid_vod")
+    async with get_sessionmaker()() as s:
+        (await s.get(Vod, VOD)).synthetic = {"supersedes": False}
+        await s.commit()
+    r = await admin.patch(f"/api/v2/vods/{VOD}", headers=KEY, json={"cut_reason": None})
+    assert (r.status_code, r.json()["cut_reason"]) == (200, None), r.text
+    row = (await admin.get(f"/api/v2/vods?q={VOD}", headers=KEY)).json()["items"][0]
+    assert row["cut_reason"] is None

@@ -12,7 +12,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     GET    /api/v2/vods                every VOD, hidden, merged and synthetic ones too, newest first, each
                                        with whether it is uploaded and its queued, running or paused jobs
     GET    /api/v2/vods/{vod_id}
-    PATCH  /api/v2/vods/{vod_id}       title, hidden, thumbnail_url, duration, created_at, tags
+    PATCH  /api/v2/vods/{vod_id}       title, hidden, thumbnail_url, duration, created_at, tags, cut_reason
     GET    /api/v2/vods/{vod_id}/games its games rows, by start
     PUT    /api/v2/vods/{vod_id}/games {games}: all of them replaced
     PUT    /api/v2/vods/{vod_id}/chapters {chapters, locked}: all of them replaced
@@ -263,6 +263,7 @@ class VodRow(ApiModel):
     merged_into: dict[str, Any] | None = None  # {id, offset} once merged into that VOD
     tags: list[str]  # [] = a regular VOD
     synthetic: dict[str, Any] | None = None  # {supersedes} on a synthetic VOD
+    cut_reason: str | None = None  # why the VOD was cut, when an admin gave a reason
     uploaded: bool = False  # it has YouTube parts
     active_jobs: list[ActiveJob] = []  # queued, running or paused, oldest first
 
@@ -290,6 +291,7 @@ class VodPatch(ApiModel):
     duration: str | None = None  # HH:MM:SS
     created_at: str | None = None  # ISO 8601 with an offset
     tags: list[str] | None = None
+    cut_reason: str | None = None  # 500 characters at most; null for none
 
 
 class GameRow(ApiModel):
@@ -414,7 +416,7 @@ async def _locked_vod(s: Any, vod_id: str) -> Vod:
 
 
 # VodPatch field -> vod_edits.vod_fields' key.
-_V1_FIELDS = {"thumbnail_url": "thumbnailUrl", "created_at": "createdAt"}
+_V1_FIELDS = {"thumbnail_url": "thumbnailUrl", "created_at": "createdAt", "cut_reason": "cutReason"}
 
 
 def _row(vod: Vod) -> dict[str, Any]:
@@ -430,6 +432,7 @@ def _row(vod: Vod) -> dict[str, Any]:
         "merged_into": vod.merged_into,
         "tags": list(vod.tags or []),
         "synthetic": vod.synthetic,
+        "cut_reason": vod.cut_reason,
         "uploaded": bool(vod.youtube),
     }
 
@@ -526,18 +529,19 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
             if vod is None:
                 raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
             known = await site_tags.vod_tags(s, vod.tags) if "tags" in sent else ()
+            v1 = {_V1_FIELDS.get(k, k): v for k, v in sent.items()}
             try:
-                values = vod_edits.vod_fields({_V1_FIELDS.get(k, k): v for k, v in sent.items()}, known)
+                values = vod_edits.vod_fields(v1, known)
             except ValueError as exc:
                 raise ApiError(422, "invalid_vod", str(exc)) from None
-            if vod.merged_into is not None and set(sent) - vod_edits.MERGED_EDITABLE:
+            if vod.merged_into is not None and set(v1) - vod_edits.MERGED_EDITABLE:
                 raise ApiError(
                     409,
                     "vod_merged",
                     f"{vod.id} was merged into {vod.merged_into.get('id')}; its "
                     "contents are that VOD's now. Undo the merge first",
                 )
-            if vod.synthetic is not None and set(sent) - vod_edits.SYNTHETIC_EDITABLE:
+            if vod.synthetic is not None and set(v1) - vod_edits.SYNTHETIC_EDITABLE:
                 raise ApiError(
                     409,
                     "vod_synthetic",

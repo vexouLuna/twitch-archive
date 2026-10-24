@@ -36,7 +36,7 @@ curl -s "${H[@]}" "$A/api/v2/settings"
 curl -s "${H[@]}" -X PATCH "$A/api/v2/settings" -d '{"keep_hls":true}'   # DELETE /api/v2/settings/keep_hls resets it
 curl -s "${H[@]}" "$A/api/v2/storage?refresh=true"                 # DELETE /api/v2/storage/vods/123 frees one
 curl -s "${H[@]}" "$A/api/v2/vods?q=title&hidden=false"            # also cursor=, limit= (at most 200); rows say uploaded, active_jobs
-curl -s "${H[@]}" -X PATCH "$A/api/v2/vods/123" -d '{"title":"…","thumbnail_url":null}'
+curl -s "${H[@]}" -X PATCH "$A/api/v2/vods/123" -d '{"title":"…","thumbnail_url":null}'   # also hidden, duration, created_at, tags, cut_reason
 curl -s "${H[@]}" "$A/api/v2/vods/123/games"                       # PUT {"games":[...]} replaces them; GET's items can be sent back
 curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/chapters" -d '{"chapters":[{"name":"…","gameId":"…","start":0,"length":600,"restricted":false}],"locked":true}'
 curl -s "${H[@]}" -X PUT "$A/api/v2/vods/123/youtube" -d '{"youtube":[{"id":"…","type":"vod","part":1}]}'   # also /drive {"drive"}, /censor {"censor"}
