@@ -87,3 +87,30 @@ def test_compiled_uploads_need_compile_youtube_upload(make_ctx, settings):
     assert _publishing_disabled(make_ctx("compile", payload={"type": "compiled"})) == "compile_youtube_upload is off"
     settings.compile_youtube_upload = True
     assert _publishing_disabled(make_ctx("compile", payload={"type": "compiled"})) is None
+
+
+async def test_a_403_on_upload_fails_at_once_with_the_channel_standing(vod, make_ctx, deps, settings, monkeypatch):
+    from types import SimpleNamespace
+
+    from archive_worker.context import StepRefused
+    from googleapiclient.errors import HttpError
+
+    settings.force_upload_manual = True
+    await vod([])
+    content = b'{"error": {"message": "Forbidden", "errors": [{"reason": "forbidden"}]}}'
+
+    async def upload(path, **_: Any) -> dict[str, Any]:
+        raise HttpError(SimpleNamespace(status=403, reason="Forbidden"), content)
+
+    async def own_channel() -> dict[str, Any]:
+        status = {"longUploadsStatus": "disallowed", "isLinked": True, "privacyStatus": "public"}
+        return {"id": "UC1", "title": "chan", "url": "u", "status": status}
+
+    async def cached_check() -> dict[str, Any]:
+        return {"grantedScopes": ["https://www.googleapis.com/auth/youtube"]}
+
+    monkeypatch.setattr(deps.youtube, "upload", upload)
+    monkeypatch.setattr(deps.youtube, "own_channel", own_channel)
+    monkeypatch.setattr(deps.youtube, "cached_check", cached_check)
+    with pytest.raises(StepRefused, match=r"403 forbidden: Forbidden\). channel chan: long uploads disallowed"):
+        await publish.upload(make_ctx("archive", VOD, _payload(manual=True)))
