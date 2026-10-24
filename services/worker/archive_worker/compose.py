@@ -9,7 +9,8 @@ of its sources' that lists, search and status read like any VOD's:
   space between two segments is a gap chapter (restricted, so the player skips it as it skips a
   merge's gap);
 * ``duration``: where the last segment ends, in whole seconds (rounded up);
-* ``created_at``: when the first segment's footage was live; ``thumbnail_url``: its source's.
+* ``created_at``: when the first segment's footage was live; ``thumbnail_url``: the first source (in
+  segment order) that has one.
 
 The site plays each segment with its source's own timeline (uploads, delay, cuts), so nothing
 here touches uploads: a segment may start or end anywhere, mid-upload included.
@@ -188,7 +189,7 @@ def derive(segments: list[Segment], sources: Mapping[str, Source]) -> dict[str, 
         "duration": format_hhmmss(math.ceil(total(resolved) - EPS)),
         "chapters": chapters,
         "created_at": first.created_at + dt.timedelta(seconds=segments[0].start) if first else None,
-        "thumbnail_url": first.thumbnail_url if first else None,
+        "thumbnail_url": next((t for x in segments if (t := sources[x.source_id].thumbnail_url)), None),
     }
 
 
@@ -196,21 +197,40 @@ def derive(segments: list[Segment], sources: Mapping[str, Source]) -> dict[str, 
 
 
 def merge_segments(a: Source, b: Source, gap: Any = None) -> list[Segment]:
-    """``a`` then ``b`` (a later VOD of the same broadcast), ``b`` placed where it started against ``a``
-    (or ``gap`` seconds after ``a`` ends). Where they overlap, ``a`` stops where ``b`` starts."""
+    """``a`` then ``b`` (a later VOD of the same broadcast): ``merge_all`` of the two."""
     if a.id == b.id:
         raise ComposeError("A VOD cannot be merged with itself")
     if b.created_at < a.created_at:
         raise ComposeError(f"{b.id} started before {a.id}; merge them the other way round")
-    if gap is None:
-        offset = float(round((b.created_at - a.created_at).total_seconds()))
-    elif not is_number(gap) or gap < 0:
-        raise ComposeError("gap must be a number of seconds >= 0")
-    else:
-        offset = a.duration + float(gap)
-    if offset <= EPS:
-        raise ComposeError(f"{b.id} starts with {a.id}; there is nothing of {a.id} to keep")
-    return [Segment(a.id, 0.0, None if offset >= a.duration else offset, 0.0), Segment(b.id, 0.0, None, offset)]
+    return merge_all([a, b], [gap])
+
+
+def merge_all(sources: list[Source], gaps: list[Any]) -> list[Segment]:
+    """``sources`` one after another (sorted by when they started), each placed where it started against
+    the one before, or ``gaps[i - 1]`` seconds after that one ends (None: where it started). Where two
+    overlap, the earlier stops where the later starts."""
+    sources = sorted(sources, key=lambda x: (x.created_at, x.id))
+    if len(sources) < 2 or len({x.id for x in sources}) < len(sources):
+        raise ComposeError("A merge needs two or more different VODs")
+    if len(gaps) != len(sources) - 1:
+        raise ComposeError(f"gaps must have one entry per join ({len(sources) - 1}), each a number or null")
+    at = [0.0]
+    for prev, b, gap in zip(sources, sources[1:], gaps, strict=False):  # gaps checked above
+        if gap is None:
+            offset = float(round((b.created_at - prev.created_at).total_seconds()))
+        elif not is_number(gap) or gap < 0:
+            raise ComposeError("gap must be a number of seconds >= 0")
+        else:
+            offset = prev.duration + float(gap)
+        if offset <= EPS:
+            raise ComposeError(f"{b.id} starts with {prev.id}; there is nothing of {prev.id} to keep")
+        at.append(at[-1] + offset)
+    return [
+        Segment(
+            x.id, 0.0, None if i + 1 == len(sources) or at[i + 1] - at[i] >= x.duration else at[i + 1] - at[i], at[i]
+        )
+        for i, x in enumerate(sources)
+    ]
 
 
 def split_segments(vod: Source, at: Any) -> tuple[list[Segment], list[Segment]]:
@@ -226,6 +246,11 @@ def split_ids(vod_id: str) -> tuple[str, str]:
 
 def merge_id(a_id: str, b_id: str) -> str:
     return f"{a_id}+{b_id}"
+
+
+def merge_all_id(first_id: str) -> str:
+    """A merge's default id (``merge_all``): the first VOD's, with a suffix."""
+    return f"{first_id}-m"
 
 
 def game_windows(chapters: Any, game_id: str, join_within: float = 1.0) -> list[tuple[float, float]]:
