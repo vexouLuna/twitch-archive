@@ -8,12 +8,13 @@ from typing import Any, NoReturn
 from archive_common.db import get_sessionmaker
 from archive_common.models import Job, Vod
 from archive_common.timeutil import hhmmss_to_seconds
+from googleapiclient.errors import HttpError
 from sqlalchemy import select
 
 from .. import ffmpeg, planning
 from ..context import JobContext, StepDeferred, StepRefused
 from ..vods import drop_youtube_entries, splice_reason
-from ..youtube import YouTubeLimitError
+from ..youtube import YouTubeLimitError, error_reason, upload_standing
 from .metadata import file_chapters, part_gaps, vod_duration
 
 # How many times a job waits for a YouTube daily limit to lift before it fails for good.
@@ -58,6 +59,21 @@ def _wait_for_limit(ctx: JobContext, exc: YouTubeLimitError) -> NoReturn:
     until = exc.retry_at()
     raise StepDeferred(
         f"{exc}; trying again at {until:%Y-%m-%d %H:%M} UTC ({n + 1} of {YOUTUBE_MAX_DEFERRALS})", until
+    ) from exc
+
+
+async def _refused(ctx: JobContext, exc: HttpError) -> NoReturn:
+    """A 403 on upload (not a daily limit): another try won't fix it, so the job fails at once with what YouTube
+    said and the channel's standing, which the dashboard's YouTube tile shows too."""
+    reason, message = error_reason(exc)
+    yt = ctx.deps.youtube
+    try:
+        standing = upload_standing(await yt.own_channel(), (await yt.cached_check()).get("grantedScopes"))
+    except Exception as lookup:  # the lookup is only a hint
+        standing = f"channel lookup failed too: {lookup}"
+    raise StepRefused(
+        f"YouTube refused the upload (403 {reason or 'forbidden'}: {message}). {standing}. Check the channel's "
+        "standing and upload permissions on the Overview page's YouTube tile, then retry the job."
     ) from exc
 
 
@@ -121,8 +137,9 @@ async def upload(ctx: JobContext) -> None:
         )
         ctx.log.info("uploading %s as %r (%s)", path.name, title, status)
 
-        def progress(pct: int, number=part["number"]) -> None:  # type: ignore[no-untyped-def]
-            ctx.progress(pct, 100, "percent", f"uploading part {number}: {pct}%")
+        def progress(sent: int, size: int, number=part["number"]) -> None:  # type: ignore[no-untyped-def]
+            pct = 100 * sent / size if size else 100
+            ctx.progress(sent, size, "bytes", f"uploading part {number}: {pct:.1f}% of {size / 2**30:.2f} GiB")
 
         try:
             res = await ctx.deps.youtube.upload(
@@ -130,6 +147,10 @@ async def upload(ctx: JobContext) -> None:
             )
         except YouTubeLimitError as exc:
             _wait_for_limit(ctx, exc)
+        except HttpError as exc:
+            if exc.resp.status != 403:
+                raise
+            await _refused(ctx, exc)
         thumbs = (res.get("snippet") or {}).get("thumbnails") or {}
         entry = {
             "id": res["id"],
