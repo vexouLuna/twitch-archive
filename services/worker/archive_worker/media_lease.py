@@ -94,7 +94,8 @@ async def claim(
             },
             where=None if take_over else or_(MediaLease.heartbeat_at < stale, same),
         ).returning(MediaLease)
-        row = (await s.execute(stmt)).scalar_one_or_none()
+        # populate_existing: the row is already in the session (the get above); RETURNING must overwrite it.
+        row = (await s.execute(stmt, execution_options={"populate_existing": True})).scalar_one_or_none()
     other = before if before and before.lease_id != lease_id and before.fresh(now) else None
     return (_lease(row) if row else None), other
 
