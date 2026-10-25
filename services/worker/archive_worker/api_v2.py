@@ -12,6 +12,7 @@ changes they make themselves.
     /api/v2/settings ...    the admin API's own routes (api_v2_routes.py)
     /api/v2/storage ...
     /api/v2/vods ...
+    /api/v2/media ...       the VOD preview's server files and their one-tab lease (api_v2_media.py)
     /api/v2/docs            OpenAPI for these routes, behind the same auth
 """
 

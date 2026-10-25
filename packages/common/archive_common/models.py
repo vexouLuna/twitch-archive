@@ -318,6 +318,21 @@ class AdminSession(Base):
     checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MediaLease(Base):
+    """Who may stream a server file in the dashboard's preview (Alembic 0023): one row per ``scope`` (the
+    whole server is ``"server"``), held by one browser tab (``lease_id``) that heartbeats; stale after
+    ``media_lease.TTL``."""
+
+    __tablename__ = "media_leases"
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)  # the actor: twitch:<id>, password, api-key
+    holder: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # {login, browser, vod_id, file}
+    acquired_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RuntimeSetting(Base):
     """A worker setting overridden from the admin dashboard (Alembic 0011); wins over the env value."""
 
