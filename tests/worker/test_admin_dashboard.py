@@ -678,6 +678,32 @@ async def test_health(vod, app, monkeypatch, respx_mock):
         assert (await c.get("/admin/health", headers=KEY)).json()["api"] == {"ok": False}
 
 
+async def test_health_with_the_admin_apart(vod, app, monkeypatch):
+    """The jobs run in another process: the worker tile follows its heartbeat and the database's count."""
+    monkeypatch.setattr(app[1].deps.settings, "admin_apart", True)
+    job = await app[1].enqueue("chat", vod)
+    async with get_sessionmaker()() as s:
+        await s.execute(update(RUNS).where(RUNS.c.id == job.id).values(state="running", updated_at=func.now()))
+        beat = await s.scalar(text("INSERT INTO jobs.procrastinate_workers DEFAULT VALUES RETURNING id"))
+        await s.commit()
+    try:
+        async with client(app) as c:
+            worker = (await c.get("/admin/health", headers=KEY)).json()["worker"]
+        assert worker["ok"] is True and worker["runningJobs"] >= 1 and worker["startedAt"] is None
+
+        async def stale(_s):
+            return dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2)
+
+        monkeypatch.setattr(admin_status, "_worker_beat", stale)
+        async with client(app) as c:
+            assert (await c.get("/admin/health", headers=KEY)).json()["worker"]["ok"] is False
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(text("DELETE FROM jobs.procrastinate_workers WHERE id = :id"), {"id": beat})
+            await s.execute(update(RUNS).where(RUNS.c.id == job.id).values(state="cancelled"))
+            await s.commit()
+
+
 async def test_healthz_and_readyz(app, monkeypatch):
     async with client(app) as c:
         assert (await c.get("/healthz")).json() == {"status": "ok", "runningJobs": 0}

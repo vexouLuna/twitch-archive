@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 from typing import Any
 
 from archive_common import http
@@ -21,16 +22,16 @@ from .admin_shared import READY_TIMEOUT_S, YOUTUBE_CHECK_MAX_AGE, AdminContext, 
 from .events import iso_utc
 from .job_rows import ALL_JOBS
 
+HEARTBEAT_MAX_AGE_S = 60  # procrastinate beats every 10 s; older than this, no worker is running
 
-def register(app: FastAPI, ctx: AdminContext) -> None:
-    deps = ctx.deps
-    settings = ctx.settings
-    service = ctx.service
-    auth = ctx.auth
-    started_at = ctx.started_at
-    viewer_check = ctx.viewer_check
 
-    # ── Health / jobs ─────────────────────────────────────────────────────
+async def _worker_beat(s) -> dt.datetime | None:  # type: ignore[no-untyped-def]
+    """The newest job-worker heartbeat, from whichever process runs the jobs."""
+    return await s.scalar(text("SELECT max(last_heartbeat) FROM jobs.procrastinate_workers"))  # type: ignore[no-any-return]
+
+
+def register_health(app: FastAPI, service: jobs.JobService) -> None:
+    """/healthz and /readyz: the admin API's, and the worker's own when the admin runs apart (main.py)."""
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
@@ -50,6 +51,19 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             return JSONResponse(body, status_code=503)
         return {"status": "ok", "runningJobs": service.running}
 
+
+def register(app: FastAPI, ctx: AdminContext) -> None:
+    deps = ctx.deps
+    settings = ctx.settings
+    service = ctx.service
+    auth = ctx.auth
+    started_at = ctx.started_at
+    viewer_check = ctx.viewer_check
+
+    # ── Health / jobs ─────────────────────────────────────────────────────
+
+    register_health(app, service)
+
     async def api_ok() -> bool:
         """Whether the api can serve: its /readyz, which checks its database too."""
         url = (settings.api_internal_url or f"http://127.0.0.1:{settings.api_port}").rstrip("/")
@@ -64,7 +78,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         """One call for the dashboard's status bar. The YouTube token is refreshed at
         most every 10 minutes here; /admin/youtube/status always refreshes it."""
 
-        async def db_state() -> tuple[dict[str, int], list[Any], Stream | None] | None:
+        async def db_state() -> tuple[dict[str, int], list[Any], Stream | None, dt.datetime | None] | None:
             try:
                 async with get_sessionmaker()() as s:
                     counts = await _job_counts(s)
@@ -83,7 +97,8 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                             select(Stream).where(Stream.is_live.is_(True)).order_by(Stream.started_at.desc()).limit(1)
                         )
                     ).scalar_one_or_none()
-                    return counts, failures, live
+                    beat = await _worker_beat(s) if settings.admin_apart else None
+                    return counts, failures, live, beat
             except Exception:
                 log.exception("health: database query failed")
                 return None
@@ -104,9 +119,16 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             deps.doomtp.status(),
         )
         db_ok = db is not None
-        counts, failures, live = db or ({st: 0 for st in jobs.STATES}, [], None)
+        counts, failures, live, beat = db or ({st: 0 for st in jobs.STATES}, [], None, None)
+        if settings.admin_apart:
+            # The jobs run in another process: it is up while its heartbeat is fresh, and the running
+            # count is the database's. Its start time isn't recorded anywhere this process can see.
+            fresh = beat is not None and (dt.datetime.now(dt.UTC) - beat).total_seconds() < HEARTBEAT_MAX_AGE_S
+            worker = {"ok": db_ok and fresh, "runningJobs": counts.get("running", 0), "startedAt": None}
+        else:
+            worker = {"ok": db_ok, "runningJobs": service.running, "startedAt": iso_utc(started_at)}
         return {
-            "worker": {"ok": db_ok, "runningJobs": service.running, "startedAt": iso_utc(started_at)},
+            "worker": worker,
             "api": {"ok": api},
             "youtube": {
                 "authorized": yt["authorized"],
