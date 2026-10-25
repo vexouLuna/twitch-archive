@@ -29,8 +29,8 @@ def _check(conn: sa.Connection) -> None:
     for vod_id, (tags, synthetic) in ROWS.items():
         conn.execute(
             sa.text(
-                "INSERT INTO vods (id, platform, title, created_at, tags, synthetic)"
-                " VALUES (:id, 'twitch', 't', '2001-01-01T00:00:00Z', :tags, CAST(:syn AS jsonb))"
+                'INSERT INTO vods (id, platform, title, "createdAt", "updatedAt", tags, synthetic)'
+                " VALUES (:id, 'twitch', 't', now(), now(), :tags, CAST(:syn AS jsonb))"
             ),
             {"id": vod_id, "tags": tags, "syn": synthetic},
         )
