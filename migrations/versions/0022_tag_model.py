@@ -5,8 +5,8 @@
   ``compilation``'s look, page and card; ``compilation`` keeps neither. ``vods`` is added first, with
   the page ``vods``.
 * The options, if saved: ``tag:compilation`` cards become ``tag:playthroughs``.
-* VODs: every real one gets ``vods``; every ``compilation`` one ``playthroughs``; every ``auto`` one
-  ``compilation``.
+* VODs: every real one gets ``vods``; every ``compilation`` one ``playthroughs``; ``compilation`` then
+  stays only on the ``auto`` ones, and every ``auto`` one gets it.
 * Every merge or split (``synthetic.supersedes``): its sources are hidden (kept in ``synthetic.hid``, which
   deleting it shows again), it gets ``vods``, and ``supersedes`` goes.
 
@@ -38,6 +38,7 @@ EMPTY = {
     **dict.fromkeys(("text", "textColor", "textSize", "textX", "textY", "textRotate")),
     **dict.fromkeys(("pattern", "patternColor", "patternSize")),
 }
+REAL_UNTAGGED = "synthetic IS NULL AND NOT 'vods' = ANY(tags)"  # also migrations/backfill_0022.py
 VODS = {"name": "vods", "label": "VOD", **EMPTY, "page": "vods", "pageLabel": "VODs", "homeCard": True}
 
 
@@ -97,9 +98,10 @@ def upgrade() -> None:
     conn = op.get_bind()
     _setting(conn, "tags", tags)
     _setting(conn, "options", cards)
-    _tag(conn, "vods", "synthetic IS NULL AND NOT 'vods' = ANY(tags)")
+    _tag(conn, "vods", REAL_UNTAGGED)
     _tag(conn, "playthroughs", "'compilation' = ANY(tags) AND NOT 'playthroughs' = ANY(tags)")
-    _tag(conn, "compilation", "synthetic ? 'auto' AND NOT 'compilation' = ANY(tags)")
+    conn.execute(sa.text("UPDATE vods SET tags = array_remove(tags, 'compilation') WHERE 'compilation' = ANY(tags)"))
+    _tag(conn, "compilation", "synthetic ? 'auto'")
     _tag(conn, "vods", "(synthetic->>'supersedes')::boolean IS TRUE AND NOT 'vods' = ANY(tags)")
     merges = conn.execute(
         sa.text("SELECT id FROM vods WHERE (synthetic->>'supersedes')::boolean IS TRUE ORDER BY id")
@@ -122,4 +124,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass  # data only; older code reads the new rows as ADR 0005's "Rollout" says
+    # Only ``compilation`` comes back, on every ``playthroughs`` VOD (what it meant before). Lossy: a VOD
+    # tagged ``playthroughs`` after the upgrade gets it too, and the rest stays; older code reads it as
+    # ADR 0005's "Rollout" says.
+    _tag(op.get_bind(), "compilation", "'playthroughs' = ANY(tags) AND NOT 'compilation' = ANY(tags)")

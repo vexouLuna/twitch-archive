@@ -115,17 +115,17 @@ source's, even when that one had none).
    card, unless a `playthroughs` tag exists already. `compilation` loses its page and card. `vods` is added
    first, with page `vods`, title "VODs", label "VOD", not drawn.
 2. Options, if saved: `tag:compilation` cards become `tag:playthroughs`.
-3. VODs: every real VOD gets `vods`. Every VOD tagged `compilation` gets `playthroughs`. Every synthetic
-   VOD with `auto` gets `compilation`.
+3. VODs: every real VOD gets `vods`. Every VOD tagged `compilation` gets `playthroughs`. Then
+   `compilation` comes off every VOD without `auto`, and every synthetic VOD with `auto` gets it.
 4. Every synthetic VOD with `supersedes: true`: its direct sources are hidden, it gets `vods`, and
    `supersedes` becomes false.
 
-`compilation` is **not** taken off synthetic VODs without `auto`. Older sites list playthroughs by
-`compilation` until they are bumped, so taking it off would empty their Playthroughs page. The next save
-of such a VOD drops it, because the archive sets `compilation` to match `auto`.
+Taking `compilation` off the VODs without `auto` means an older site's Playthroughs page (which lists
+`compilation`) shows only the auto-updating ones until the site is bumped. Bump the sites soon after.
 
-The downgrade does nothing. Code older than this release reads the new rows as described under
-"Rollout".
+The downgrade only puts `compilation` back, on every `playthroughs` VOD. That is lossy: a VOD tagged
+`playthroughs` after the upgrade gets it too, and nothing else is undone. Code older than this release
+reads the rest as described under "Rollout".
 
 ## Rollout
 
@@ -133,16 +133,16 @@ Backend first, then sites.
 
 - **An older site against the new archive** shows the same homepage. Its `/vods` asks for the default
   list. The default list is now "VODs with no tags other than `vods`", which after the migration is what
-  "untagged" used to return. Its Playthroughs page still finds `compilation`, and its header gets
-  `playthroughs` from the tags list. A merged VOD's link still redirects, through `superseded_by`. One
+  "untagged" used to return. Its Playthroughs page finds only the auto-updating ones (`compilation`), and
+  its header gets `playthroughs` from the tags list. A merged VOD's link still redirects, through `superseded_by`. One
   difference: a hidden VOD played by two or more synthetic VODs shows its own page (older sites don't
   know `hidden`) instead of the list.
 - **An older dashboard** works. Its "stands in" switch is the legacy `supersedes` above. Its "can be a
   home card" switch is ignored, because the page decides. A card kind it doesn't know (`one`) is dropped
   if it saves /manage/home.
 - **The window between the migration and the new worker starting:** a VOD row made by the old worker
-  has no `vods` tag, so it is missing from the new `/vods` until tagged by hand. Real VOD rows are made
-  once per stream, so this is unlikely during a deploy.
+  has no `vods` tag, so it is missing from the new `/vods`. Deploy the worker and the API together, then
+  run `migrations/backfill_0022.py` (its docstring has the command), which tags them.
 
 ## Consequences
 
