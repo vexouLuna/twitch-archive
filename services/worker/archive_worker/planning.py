@@ -464,12 +464,32 @@ def _merge(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
 
 # ── Censor (vods.censor) ──────────────────────────────────────────────────
 
-COVER_RANK = {"blur": 1, "black": 2}  # where ranges overlap, black wins
+# Where full-frame covers overlap the strongest wins: black, then a colour fill, then pixelate, then blur.
+COVER_RANK = {"blur": 1, "pixelate": 2, "color": 3, "black": 4}
+# Drawn first, so an opaque box on top of a blurred one hides it.
+_SEE_THROUGH = ("blur", "pixelate")
+
+
+@dataclass(frozen=True)
+class Cover:
+    """One way a clip is covered: ``video`` over the whole frame, or only ``region`` (x, y, w, h fractions
+    of the frame from its top-left corner); ``color`` (#rrggbb) for a ``color`` fill."""
+
+    video: str
+    color: str | None = None
+    region: tuple[float, float, float, float] | None = None
+
+    def __str__(self) -> str:
+        what = self.color if self.video == "color" and self.color else self.video
+        return f"{what} box" if self.region else what
+
+
+Covers = tuple[Cover, ...]
 
 
 @dataclass(frozen=True)
 class CensorPlan:
-    cover: list[tuple[float, float, str]]  # (start, end, "blur" | "black"), sorted, not overlapping
+    cover: list[tuple[float, float, Covers]]  # (start, end, how), sorted, not overlapping
     mute: list[tuple[float, float]]
 
     @property
@@ -477,31 +497,47 @@ class CensorPlan:
         return not self.cover and not self.mute
 
 
+def _cover_of(r: dict[str, Any]) -> Cover:
+    region = r.get("region")
+    box = (float(region["x"]), float(region["y"]), float(region["w"]), float(region["h"])) if region else None
+    return Cover(r["video"], r.get("color") if r["video"] == "color" else None, box)
+
+
+def _covers_for(found: list[Cover]) -> Covers:
+    """What one stretch gets from the covers over it: the strongest full-frame one alone (black wins),
+    else every box, see-through ones first."""
+    full = [c for c in found if c.region is None]
+    if full:
+        return (max(full, key=lambda c: COVER_RANK[c.video]),)
+    boxes = list(dict.fromkeys(found))  # in range order, each once
+    return tuple(sorted(boxes, key=lambda c: c.video not in _SEE_THROUGH))
+
+
 def plan_censor(ranges: list[dict[str, Any]] | None) -> CensorPlan:
     """``vods.censor`` ranges (on the file's timeline) -> what to cover and what to mute."""
     marks: set[float] = set()
-    covers: list[tuple[float, float, int]] = []
+    covers: list[tuple[float, float, Cover]] = []
     mute: list[tuple[float, float]] = []
     for r in ranges or []:
         a, b = float(r["start"]), float(r["end"])
         if b <= a:
             continue
         if r.get("video") in COVER_RANK:
-            covers.append((a, b, COVER_RANK[r["video"]]))
+            covers.append((a, b, _cover_of(r)))
             marks |= {a, b}
         if r.get("mute"):
             mute.append((a, b))
-    names = {v: k for k, v in COVER_RANK.items()}
-    cover: list[tuple[float, float, str]] = []
+    cover: list[tuple[float, float, Covers]] = []
     points = sorted(marks)
     for a, b in zip(points, points[1:], strict=False):
-        rank = max((c[2] for c in covers if c[0] <= a and b <= c[1]), default=0)
-        if not rank:
+        found = [c[2] for c in covers if c[0] <= a and b <= c[1]]
+        if not found:
             continue
-        if cover and cover[-1][1] == a and cover[-1][2] == names[rank]:
-            cover[-1] = (cover[-1][0], b, names[rank])
+        how = _covers_for(found)
+        if cover and cover[-1][1] == a and cover[-1][2] == how:
+            cover[-1] = (cover[-1][0], b, how)
         else:
-            cover.append((a, b, names[rank]))
+            cover.append((a, b, how))
     return CensorPlan(cover, _merge(mute))
 
 

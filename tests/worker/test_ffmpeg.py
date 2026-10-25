@@ -4,6 +4,7 @@ import sys
 
 import pytest
 from archive_worker import ffmpeg, hls
+from archive_worker.planning import Cover, Covers
 
 pytestmark = [
     pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed"),
@@ -16,7 +17,11 @@ pytestmark = [
 @pytest.fixture(scope="module")
 def clip(tmp_path_factory):
     """12 s test pattern with a tone, 1 s GOP so cuts land close to the target."""
-    out = tmp_path_factory.mktemp("media") / "src.mp4"
+    return _test_clip(tmp_path_factory.mktemp("media") / "src.mp4", 12, 10)
+
+
+def _test_clip(out, seconds: int, gop: int):
+    """A 160x90, 10 fps test pattern with a tone, a keyframe every ``gop`` frames."""
     subprocess.run(
         [
             "ffmpeg",
@@ -33,11 +38,13 @@ def clip(tmp_path_factory):
             "-i",
             "sine=frequency=440:sample_rate=44100",
             "-t",
-            "12",
+            str(seconds),
             "-c:v",
             "libx264",
             "-g",
-            "10",
+            str(gop),
+            "-bf",
+            "0",  # no B-frame delay: a stream copy then starts on the keyframe it cuts at
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -67,6 +74,48 @@ async def test_mute_and_blackout_keep_length(clip, tmp_path):
     many = await ffmpeg.blackout(clip, tmp_path / "b2.mp4", [(0, 1), (4, 6), (9, 12)], tmp_path / "work")
     assert abs(await ffmpeg.probe_duration(many) - 12) < 1.1
     assert not list((tmp_path / "work").glob("bo-*"))
+
+
+def _frame(path, at: float) -> bytes:
+    """One 160x90 frame at ``at`` seconds, as RGB bytes."""
+    cmd = ["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1"]
+    return subprocess.run([*cmd, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+
+
+def _px(frame: bytes, x: int, y: int) -> tuple[int, ...]:
+    i = (y * 160 + x) * 3
+    return tuple(frame[i : i + 3])
+
+
+def _diff(a: bytes, b: bytes, box: tuple[int, int, int, int]) -> float:
+    """Mean absolute difference of two frames inside ``box`` (x, y, w, h in pixels)."""
+    x0, y0, w, h = box
+    total = sum(
+        abs(a[(y * 160 + x) * 3 + c] - b[(y * 160 + x) * 3 + c])
+        for y in range(y0, y0 + h)
+        for x in range(x0, x0 + w)
+        for c in range(3)
+    )
+    return total / (w * h * 3)
+
+
+async def test_cover_draws_boxes_on_a_real_clip(tmp_path):
+    short = _test_clip(tmp_path / "short.mp4", 2, 5)  # a real 2 s clip, keyframes on the ranges' ends
+    left, right = (0.0, 0.0, 0.25, 0.5), (0.5, 0.5, 0.5, 0.5)  # 40x44 at 0,0 and 80x44 at 80,46
+    ranges: list[tuple[float, float, Covers]] = [
+        (0.5, 1.0, (Cover("blur", None, left), Cover("color", "#ff0000", right))),
+        (1.0, 1.5, (Cover("pixelate", None, left), Cover("black", None, right))),
+    ]
+    out = await ffmpeg.cover(short, tmp_path / "boxed.mp4", ranges, tmp_path / "work")
+    assert abs(await ffmpeg.probe_duration(out) - 2) < 0.3
+    src_a, src_b, a, b = _frame(short, 0.7), _frame(short, 1.2), _frame(out, 0.7), _frame(out, 1.2)
+    red = _px(a, 120, 70)
+    assert red[0] > 200 and red[1] < 60 and red[2] < 60
+    assert max(_px(b, 120, 70)) < 40  # black
+    assert _diff(a, src_a, (0, 0, 40, 44)) > 8  # blurred
+    assert _diff(b, src_b, (0, 0, 40, 44)) > 8  # pixelated
+    assert _diff(a, src_a, (44, 0, 32, 40)) < 6  # the rest is untouched (re-encoded at crf 20)
+    assert _diff(_frame(out, 0.2), _frame(short, 0.2), (0, 0, 160, 90)) < 3  # before the range: copied
 
 
 async def test_hls_to_mp4(clip, tmp_path):

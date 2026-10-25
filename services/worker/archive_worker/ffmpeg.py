@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import shutil
 import weakref
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from archive_common import previews as pv
+
+from .planning import Cover, Covers
 
 log = logging.getLogger(__name__)
 
@@ -233,20 +236,72 @@ async def mute(src: Path, out: Path, ranges: list[tuple[float, float]]) -> Path:
     )
 
 
-# Video filters for a covered range: black (as DMCA blackouts always were), or a box blur a twentieth of the
-# frame wide, run three times, too strong to make anything out (the comma is escaped for the filter graph).
+# Video filters for a range covering the whole frame: black (as DMCA blackouts always were), or a box blur a
+# twentieth of the frame wide, run three times, too strong to make anything out (the comma is escaped for the
+# filter graph). The other covers, and every box, are built by ``cover_filter``.
 COVER_FILTERS = {"black": "geq=0:128:128", "blur": r"boxblur=luma_radius=min(w\,h)/20:luma_power=3"}
+# x264 quality for a covered clip: a full-frame cover hides everything anyway; a box leaves the rest to see.
+CRF_FULL, CRF_BOX = 30, 20
+
+
+def _even(v: float) -> int:
+    return math.floor(v / 2 + 0.5) * 2  # half up: round() goes to even, 4.5 -> 4
+
+
+def _box(region: tuple[float, float, float, float] | None, width: int, height: int) -> tuple[int, int, int, int]:
+    """A region (fractions) in pixels, on even numbers (yuv420's chroma is half size), at least 4 px, inside."""
+    x, y, w, h = region or (0.0, 0.0, 1.0, 1.0)
+    pw = min(max(_even(w * width), 4), width - width % 2)
+    ph = min(max(_even(h * height), 4), height - height % 2)
+    px = min(_even(x * width), width - pw)
+    py = min(_even(y * height), height - ph)
+    return max(px, 0), max(py, 0), pw, ph
+
+
+def cover_filter(covers: Covers, width: int, height: int) -> str:
+    """The ``-vf`` graph for one covered clip of a ``width`` x ``height`` video: each cover drawn in turn.
+    A fill is ``drawbox``; a blur or pixelation is the box cropped out, changed and laid back over the frame
+    (the blur's radius and the pixel blocks scale with the box, so a small box is as unreadable as a big one)."""
+    if len(covers) == 1 and covers[0].region is None and covers[0].video in COVER_FILTERS:
+        return COVER_FILTERS[covers[0].video]
+    steps: list[str] = []
+    cur = "0"
+    for i, c in enumerate(covers):
+        x, y, w, h = _box(c.region, width, height)
+        out = f"c{i + 1}"
+        if c.video in ("black", "color"):
+            color = "black" if c.video == "black" else f"0x{(c.color or '#000000')[1:]}"
+            steps.append(f"[{cur}]drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill[{out}]")
+        elif c.video == "blur":
+            radius = max(1, min(w, h) // 8)  # at most a quarter of the chroma plane's box
+            steps.append(
+                f"[{cur}]split[b{i}][t{i}];[t{i}]crop={w}:{h}:{x}:{y},boxblur=luma_radius={radius}:luma_power=3[f{i}];"
+                f"[b{i}][f{i}]overlay={x}:{y}[{out}]"
+            )
+        elif c.video == "pixelate":
+            block = max(4, min(w, h) // 8)  # about eight blocks across the box's short side
+            sw, sh = max(1, -(-w // block)), max(1, -(-h // block))
+            steps.append(
+                f"[{cur}]split[b{i}][t{i}];[t{i}]crop={w}:{h}:{x}:{y},scale={sw}:{sh}:flags=neighbor,"
+                f"scale={w}:{h}:flags=neighbor[f{i}];[b{i}][f{i}]overlay={x}:{y}[{out}]"
+            )
+        else:
+            raise ValueError(f"unknown cover {c.video!r}")
+        cur = out
+    # A simple (-vf) graph: its input and output pads are the unlabelled ends, so drop the first and last label.
+    graph = ";".join(steps)
+    return graph.removeprefix("[0]").removesuffix(f"[{cur}]")
 
 
 async def blackout(src: Path, out: Path, ranges: list[tuple[float, float]], work: Path) -> Path:
     """Replace video in each [start, end) range with black, keeping audio, in one pass (see ``cover``).
     ``ranges`` must be sorted and non-overlapping, as ``planning.plan_dmca`` returns them."""
-    return await cover(src, out, [(a, b, "black") for a, b in ranges], work)
+    return await cover(src, out, [(a, b, (Cover("black"),)) for a, b in ranges], work)
 
 
 @_one_at_a_time("cover")
-async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], work: Path) -> Path:
-    """Black out or blur (``COVER_FILTERS``) the video in each [start, end) range, keeping audio, in one pass.
+async def cover(src: Path, out: Path, ranges: list[tuple[float, float, Covers]], work: Path) -> Path:
+    """Cover the video in each [start, end) range as ``cover_filter`` draws it, keeping audio, in one pass.
 
     Only those clips are re-encoded; the stretches around them are stream-copied, and all pieces are
     joined once with the concat demuxer (as the legacy code did per range). ``ranges`` must be sorted
@@ -254,12 +309,15 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
     """
     work.mkdir(parents=True, exist_ok=True)
     total = await probe_duration(src)
+    simple = all(len(c) == 1 and c[0].region is None and c[0].video in COVER_FILTERS for _, _, c in ranges)
+    width, height = (0, 0) if simple else (await probe_video(src))[:2]
     pieces: list[Path] = []
     pos = 0.0
     try:
-        for i, (start, end, mode) in enumerate(ranges):
+        for i, (start, end, covers) in enumerate(ranges):
             if start > pos:
                 pieces.append(await cut(src, work / f"bo-{i}-copy.mp4", pos, start - pos, faststart=False))
+            boxed = any(c.region is not None for c in covers)
             pieces.append(
                 await _ffmpeg_to(
                     work / f"bo-{i}-black.mp4",
@@ -273,13 +331,13 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, str]], wo
                         "-map",
                         "0",
                         "-vf",
-                        COVER_FILTERS[mode],
+                        cover_filter(covers, width, height),
                         "-c:v",
                         "libx264",
                         "-preset",
                         "veryfast",
                         "-crf",
-                        "30",
+                        str(CRF_BOX if boxed else CRF_FULL),
                         "-c:a",
                         "copy",
                     ],
