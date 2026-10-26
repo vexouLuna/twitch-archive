@@ -134,3 +134,48 @@ async def test_an_igdb_error_needs_a_review_too(make_ctx, settings, monkeypatch)
 async def test_no_descriptors_turns_the_check_off(make_ctx, settings):
     settings.censor_descriptors = []
     await cc.censor_check(make_ctx())  # would need the database for the VOD otherwise
+
+
+@respx.mock
+async def test_the_log_says_what_igdb_found_and_what_was_skipped(make_ctx, settings, monkeypatch, caplog):
+    settings.restricted_games = ["Cut"]
+    settings.censor_allow_games = ["Allowed"]
+    chapters = [
+        chapter("1", "Cut", None, 0, 10, False),
+        chapter("2", "Allowed", None, 10, 10, False),
+        chapter("5", "Clean", None, 20, 10, False),
+        chapter("9", "Unknown", None, 30, 10, False),
+    ]
+    ctx = _ctx(make_ctx, settings, monkeypatch, chapters)
+    respx.get(HELIX_GAMES).mock(
+        side_effect=lambda r: httpx.Response(
+            200, json={"data": [{"id": r.url.params["id"], "igdb_id": "" if r.url.params["id"] == "9" else "22"}]}
+        )
+    )
+    respx.post(IGDB_GAMES).mock(return_value=httpx.Response(200, json=[CLEAN]))
+    with caplog.at_level(logging.DEBUG, logger="archive_worker.job"):
+        await cc.censor_check(ctx)
+    text = caplog.text
+    assert "Cut: cut from the upload (restricted), not checked" in text
+    assert "Allowed: in censor_allow_games, uploaded as it is" in text
+    assert "Clean (IGDB 22): descriptors and themes: Puzzle; nothing matches censor_descriptors" in text
+    assert "Unknown (Twitch 9) has no IGDB entry, so it was not checked" in text
+
+
+@respx.mock
+async def test_the_app_client_status_masks_its_id(settings):
+    from archive_common.twitch.helix import Helix
+
+    assert (await Helix(settings).status())["configured"] is False
+    settings.twitch_client_id = "abcdefghijkl"
+    settings.twitch_client_secret = SecretStr("not-a-real-secret")
+    respx.post(TOKEN).mock(return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 3600}))
+    assert await Helix(settings).status() == {
+        "configured": True,
+        "clientId": "abcd…ijkl",
+        "tokenOk": True,
+        "error": None,
+    }
+    respx.post(TOKEN).mock(return_value=httpx.Response(403, json={"message": "invalid client secret"}))
+    bad = await Helix(settings).status()
+    assert bad["tokenOk"] is False and "403" in bad["error"]

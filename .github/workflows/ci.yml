@@ -8,13 +8,14 @@ on:
 
 jobs:
   conventions:
-    uses: vexouLuna/conventions/.github/workflows/conventions-check.yml@v2.1.1
-    secrets: inherit
+    uses: vexouLuna/conventions/.github/workflows/conventions-check.yml@v3.0.0
+    secrets:
+      CONVENTIONS_PRIVATE_PATTERNS: ${{ secrets.CONVENTIONS_PRIVATE_PATTERNS }}
 
   ci:
     # The database tests run against the workflow's empty Postgres, migrated here. The contract tests
     # (tests/api_contract) still skip: they replay responses captured from the live data (docs/development.md).
-    uses: vexouLuna/conventions/.github/workflows/python-ci.yml@v2.1.1
+    uses: vexouLuna/conventions/.github/workflows/python-ci.yml@v3.0.0
     with:
       postgres: true
       setup: >-
@@ -26,7 +27,7 @@ jobs:
   # ghcr.io/vexouluna/twitch-archive-api and -worker as :main / :dev; a tag vX.Y.Z as :vX.Y.Z.
   image:
     needs: ci
-    uses: vexouLuna/conventions/.github/workflows/publish-image.yml@v2.1.1
+    uses: vexouLuna/conventions/.github/workflows/publish-image.yml@v3.0.0
     permissions:
       contents: read
       packages: write
@@ -36,7 +37,7 @@ jobs:
 
   image-worker:
     needs: ci
-    uses: vexouLuna/conventions/.github/workflows/publish-image.yml@v2.1.1
+    uses: vexouLuna/conventions/.github/workflows/publish-image.yml@v3.0.0
     permissions:
       contents: read
       packages: write
