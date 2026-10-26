@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from .events import iso_utc
 
 MAX_CARDS = 12
-SINGLE = ("live", "games")  # cards there is one of
+SINGLE = ("live", "games")  # cards with no settings but their id
 COUNTS = (1, 2)
 PLAY = ("segments", "compiled")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
@@ -54,7 +54,7 @@ def _card(i: int, card: Any, home_tags: set[str] | None) -> dict[str, Any]:
 
 def _cards(value: Any, home_tags: set[str] | None) -> list[dict[str, Any]]:
     """``home_tags``: the saved tags that are home categories, or None while the tag list was never saved.
-    Cards may repeat (each has its own id), except ``live`` and ``games``."""
+    Any card may repeat: each has its own id."""
     if not isinstance(value, list) or len(value) > MAX_CARDS:
         raise SiteOptionError(f"cards must be a list of at most {MAX_CARDS} cards")
     out: list[dict[str, Any]] = []
@@ -62,8 +62,6 @@ def _cards(value: Any, home_tags: set[str] | None) -> list[dict[str, Any]]:
         new = _card(i, card, home_tags)
         if any(c["id"] == new["id"] for c in out):
             raise SiteOptionError(f"card {i + 1}: there is already a card {new['id']!r}")
-        if new["type"] in SINGLE and any(c["type"] == new["type"] for c in out):
-            raise SiteOptionError(f"card {i + 1}: there is already a {new['type']!r} card")
         out.append(new)
     return out
 

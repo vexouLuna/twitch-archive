@@ -41,6 +41,9 @@ def test_cards_kept_in_order():
         "cards": [GAMES_, vods("a", "highlight"), LIVE, vods("b", "highlight"), vods("c", "vods", 1)]
     }
     assert validate({"cards": []}, TAGS) == {"cards": []}
+    twice = [LIVE, {**LIVE, "id": "l2"}, GAMES_, {**GAMES_, "id": "g2"}]
+    assert validate({"cards": twice}, TAGS) == {"cards": twice}  # any card may repeat
+    assert len(validate({"homeCards": [LATEST, LATEST]}, TAGS)["cards"]) == 2
     assert validate({"cards": [vods("a", "anything")]}, None) == {"cards": [vods("a", "anything")]}  # tags never saved
 
 
@@ -72,8 +75,6 @@ def test_play_default():
         ({"cards": {}}, "a list"),
         ({"homeCards": {}}, "a list"),
         ({"cards": [vods(str(i), "highlight") for i in range(13)]}, "a list"),
-        ({"cards": [LIVE, {**LIVE, "id": "l2"}]}, "already a 'live'"),
-        ({"homeCards": [LATEST, LATEST]}, "already a 'live'"),
         ({"cards": [vods("a", "highlight"), vods("a", "compilation")]}, "already a card 'a'"),
         ({"cards": [{**LIVE, "id": "no spaces"}]}, "id must be"),
         ({"cards": [{**LIVE, "id": 3}]}, "id must be"),
