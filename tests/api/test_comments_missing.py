@@ -25,9 +25,13 @@ async def test_missing_and_hidden_answer_the_same_404(monkeypatch, vod, by) -> N
     async def nothing(*args: Any) -> None:
         return None
 
+    async def unplayed(conn: Any, vod_id: str) -> bool:  # no shown synthetic VOD plays it (ADR 0005)
+        return False
+
     monkeypatch.setattr(comments, "_vod", lookup)
     monkeypatch.setattr(comments, "_counts", counts)
     monkeypatch.setattr(comments, "_cursor_search", nothing)
+    monkeypatch.setattr(comments, "_played", unplayed)
     engine = SimpleNamespace(connect=lambda: _Conn())
     offset, cursor = ("0", None) if by == "offset" else (None, _encode_cursor({"id": 1, "src": "replay"}))
     with pytest.raises(LegacyError) as err:

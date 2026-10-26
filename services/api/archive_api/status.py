@@ -19,18 +19,21 @@ from archive_common.serialize import (
     box_art_template,
     not_hidden,
     not_merged_away,
+    played_by_shown,
     real,
     vods_json,
 )
+from archive_common.site_tags import VODS as VODS_TAG
 from archive_common.twitch.helix import Helix
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 log = logging.getLogger(__name__)
 
 
 async def _latest_vod(conn: AsyncConnection, stream_id: str | None = None) -> dict[str, Any] | None:
-    where = [not_merged_away(), not_hidden(), real()] + (
+    shown = or_(not_hidden(), played_by_shown(VODS.table.c.id, tag=VODS_TAG))  # a merge's sources too (ADR 0005)
+    where = [not_merged_away(), shown, real()] + (
         [VODS.table.c.stream_id == stream_id] if stream_id is not None else []
     )
     vods = await vods_json(conn, *where, order_by=VODS.table.c.createdAt.desc(), limit=1)

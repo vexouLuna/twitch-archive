@@ -167,6 +167,26 @@ def test_merge_with_explicit_gap_and_refusals():
         compose.merge_segments(A, B, -1)
 
 
+def test_merge_all_in_start_order_with_gaps():
+    c = Source("c", 600.0, [], START + dt.timedelta(seconds=7500 + 3000))  # overlaps b's end
+    segs = compose.merge_all([c, A, B], [None, None])
+    assert segs == [Segment("a", 0, None, 0), Segment("b", 0, 3000, 7500), Segment("c", 0, None, 10500)]
+    assert compose.merge_all([A, B, c], [None, 30])[1:] == [Segment("b", 0, None, 7500), Segment("c", 0, None, 11130)]
+    assert compose.merge_all([A, B], [None]) == compose.merge_segments(A, B)
+    with pytest.raises(ComposeError, match="two or more"):
+        compose.merge_all([A, A], [None])
+    with pytest.raises(ComposeError, match="one entry per join"):
+        compose.merge_all([A, B, c], [None])
+    assert compose.merge_all_id("a") == "a-m"
+
+
+def test_thumbnail_from_the_first_source_with_one():
+    no_thumb = Source("a", 7200.0, [], START)
+    segs = compose.merge_segments(no_thumb, B)
+    assert compose.derive(segs, {"a": no_thumb, "b": B})["thumbnail_url"] == "https://t/b"
+    assert compose.derive(segs[:1], {"a": no_thumb})["thumbnail_url"] is None
+
+
 def test_split_anywhere():
     first, second = compose.split_segments(A, 1234.5)
     assert first == [Segment("a", 0, 1234.5, 0)] and second == [Segment("a", 1234.5, None, 0)]

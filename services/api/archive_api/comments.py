@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from archive_common.models import BotLog, Log, Vod
-from archive_common.serialize import BOT_LOGS, LOGS, Resource, flat_segments, js_iso
+from archive_common.serialize import BOT_LOGS, LOGS, Resource, flat_segments, js_iso, played_by_shown
 from sqlalchemy import Column, Row, Table, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -166,7 +166,7 @@ class Comments:
                 # Only pages of existing vods are cached, so a hit skips the vod lookup.
                 async with engine.connect() as conn:
                     vod = await self._vod(conn, vod_id)
-                    if vod is None or vod.hidden:
+                    if vod is None or (vod.hidden and not await self._played(conn, vod_id)):
                         raise LegacyError(404, HIDDEN)
                     if vod.merged_into is not None:
                         return EMPTY
@@ -194,7 +194,7 @@ class Comments:
             src = SOURCES.get(cursor_json.get("src"), REPLAY)  # type: ignore[arg-type]
             async with engine.connect() as conn:
                 vod = await self._vod(conn, vod_id)
-                if vod is None or vod.hidden:
+                if vod is None or (vod.hidden and not await self._played(conn, vod_id)):
                     raise LegacyError(404, HIDDEN)
                 result = await self._cursor_search(conn, src, vod_id, cursor_json)
                 if result is None and vod is not None and vod.merged_into is not None:
@@ -236,6 +236,10 @@ class Comments:
                 select(_vt.c.createdAt, _vt.c.merged_into, _vt.c.hidden, _vt.c.synthetic).where(_vt.c.id == vod_id)
             )
         ).first()
+
+    async def _played(self, conn: AsyncConnection, vod_id: str) -> bool:
+        """A hidden VOD's chat still answers while a shown synthetic VOD plays it (ADR 0005)."""
+        return bool((await conn.execute(select(played_by_shown(vod_id)))).scalar())
 
     async def _synthetic(self, conn: AsyncConnection, vod_id: str) -> dict[str, Any]:
         """A synthetic VOD's (empty) page: where its chat is (the real VODs it plays, as its JSON lists them)."""

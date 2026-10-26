@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+from archive_common import site_tags
 from archive_common.db import ROWS_MOVED, VOD_CHANGED, get_sessionmaker
 from archive_common.models import Stream, Vod
 from archive_common.timeutil import format_hhmmss, parse_helix_duration, parse_ts
@@ -25,6 +26,7 @@ async def upsert_vod(video: dict[str, Any]) -> None:
             duration=format_hhmmss(parse_helix_duration(video.get("duration", ""))),
             thumbnail_url=video.get("thumbnail_url") or None,  # "" while the stream is live
             platform="twitch",
+            tags=[site_tags.VODS],  # every real VOD, live or not (ADR 0005)
         )
         stmt = stmt.on_conflict_do_update(index_elements=[Vod.id], set_={"title": stmt.excluded.title})
         await s.execute(stmt)

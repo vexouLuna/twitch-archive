@@ -19,8 +19,9 @@ from archive_common.serialize import (
     live_spans,
     not_hidden,
     not_merged_away,
-    not_superseded,
     of_shown_vod,
+    plain,
+    reachable,
     tagged,
     vods_json,
 )
@@ -106,7 +107,16 @@ class Service:
 class VodsService(Service):
     def __init__(self, settings: ApiSettings) -> None:
         special = {"chapters": fq.chapter_filter(VODS.table.c.chapters), "tags": _tags_filter}
-        super().__init__(VODS, settings, special, not_hidden())
+        super().__init__(VODS, settings, special, reachable())
+        self.listed = not_hidden()
+
+    async def get(self, conn: AsyncConnection, id_: str) -> dict[str, Any]:
+        """Also a hidden VOD that a shown synthetic VOD plays (``hidden: true``; ADR 0005)."""
+        item = await super().get(conn, id_)
+        hidden = (await conn.execute(select(VODS.table.c.hidden).where(VODS.table.c.id == item["id"]))).scalar()
+        if hidden:
+            item["hidden"] = True
+        return item
 
     async def embed(self, conn: AsyncConnection, items: list[dict[str, Any]]) -> None:
         await attach_games(conn, items)
@@ -123,19 +133,16 @@ class VodsService(Service):
         """Left out unless asked for (``GET /vods/{id}`` still answers for them all):
 
         * VODs merged into another one (``$merged=true``; they have ``merged_into``);
-        * VODs a merge or split synthetic VOD is made of (``$superseded=true``; ``superseded_by``);
-        * tagged VODs: only untagged ones are listed, unless ``$tag=<tag>`` (that tag's, e.g.
-          ``compilation``), ``$tag=*`` (all) or a ``tags`` filter.
+        * tagged VODs: only those with no tag but ``vods`` are listed (older sites' /vods), unless
+          ``$tag=<tag>`` (that tag's, e.g. ``vods``), ``$tag=*`` (all) or a ``tags`` filter.
 
-        Hidden VODs are never shown."""
-        clauses = []
+        Hidden VODs are never listed. (``$superseded`` is accepted and does nothing: ADR 0005.)"""
+        clauses = [self.listed]
         if query.get("$merged") != "true":
             clauses.append(not_merged_away())
-        if query.get("$superseded") != "true":
-            clauses.append(not_superseded())
         tag = query.get("$tag")
         if tag is None and "tags" not in query:
-            clauses.append(tagged(None))
+            clauses.append(plain())
         elif isinstance(tag, str) and tag != "*":
             clauses.append(tagged(tag))
         return and_(true(), *clauses)
