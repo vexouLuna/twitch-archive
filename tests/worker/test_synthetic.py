@@ -69,6 +69,7 @@ async def vods(db):
                     stream_id="2001",
                     chapters=[_ch(0, 3600), _ch(3600, 3600, "Test Game", GAME)],
                     thumbnail_url="https://t/a",
+                    tags=["vods"],  # every real VOD (ADR 0005)
                 ),
                 Vod(
                     id=B,
@@ -77,6 +78,7 @@ async def vods(db):
                     duration="01:00:00",
                     stream_id="2002",
                     chapters=[_ch(0, 3600, "Test Game", GAME)],
+                    tags=["vods"],
                 ),
             ]
         )
@@ -316,6 +318,49 @@ async def test_playthrough_tags_and_recompose(admin):
     assert r.status_code == 200, r.text
     assert (await public(f"/vods/{P}")).status_code == 404
     assert "appears_in" not in (await public(f"/vods/{B}")).json()  # a hidden VOD is linked from nowhere
+
+
+async def _windows() -> list[tuple[str, float, float]]:
+    async with get_sessionmaker()() as s:
+        return [(vod.id, a, b) for vod, a, b in await synthetic.game_windows(s, GAME)]
+
+
+async def test_auto_playthrough_sources(admin):
+    """An auto playthrough plays the shown ``vods`` VODs: a merge rather than its hidden sources, a shown
+    source of it not as well, and never a compilation (even one tagged ``vods``)."""
+    # Twitch's last chapter runs past the whole-second duration: the window stops at the VOD's end,
+    # so the next one follows it without a gap ("Technical difficulties") in between.
+    async with get_sessionmaker()() as s:
+        await s.execute(
+            update(Vod).where(Vod.id == A).values(chapters=[_ch(0, 3600), _ch(3600, 3600.6, "Test Game", GAME)])
+        )
+        await s.commit()
+    assert await _windows() == [(A, 3600, 7200), (B, 0, 3600)]
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201, r.text
+    assert [x["at"] for x in r.json()["segments"]] == [0, 3600]
+    assert not [c for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    assert (await admin.delete(f"/api/v2/synthetic/{P}", headers=KEY)).status_code == 200
+
+    r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})
+    assert r.status_code == 201, r.text
+    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # not the hidden A and B; not the gap
+    async with get_sessionmaker()() as s:  # B shown again but still in the merge: counted once, as AB
+        await s.execute(update(Vod).where(Vod.id == B).values(hidden=False))
+        await s.commit()
+    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]
+
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
+    assert r.status_code == 201, r.text
+    assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
+        (AB, 3600, 7200, 0),
+        (AB, 7500, 11100, 3600),
+    ]
+    assert not [c for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    r = await admin.patch(f"/api/v2/vods/{P}", headers=KEY, json={"tags": ["compilation", "vods"]})
+    assert r.status_code == 200, r.text
+    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # P is no source, and doesn't hide AB
+    assert P not in await synthetic.refresh_auto()
 
 
 async def test_nested_synthetic(admin):

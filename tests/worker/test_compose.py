@@ -201,6 +201,14 @@ def test_split_anywhere():
     assert compose.split_ids("123") == ("123-1", "123-2") and compose.merge_id("1", "2") == "1+2"
 
 
+def test_playthrough_windows_never_join_over_a_cut():
+    """A merge's gap ("Technical difficulties") between two chapters of the game: two windows, not one
+    that plays the gap."""
+    chapters = [_ch(0, 100, "Minecraft", "27471"), _ch(100, 0.5, "Technical difficulties", None, True)]
+    chapters.append(_ch(100.5, 100, "Minecraft", "27471"))
+    assert compose.game_windows(chapters, "27471") == [(0, 100), (100.5, 200.5)]
+
+
 def test_playthrough_windows_back_to_back():
     chapters = [
         _ch(0, 600),
