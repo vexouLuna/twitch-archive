@@ -117,11 +117,11 @@ def explain_skips(ctx: JobContext, chapters: list[dict[str, Any]] | None) -> Non
             continue
         seen.add(key)
         if ch.get("restricted") or planning.restricted_game(name, s.restricted_games):
-            ctx.debug("%s: cut from the upload (restricted), not checked", name or "no category")
+            ctx.log.debug("%s: cut from the upload (restricted), not checked", name or "no category")
         elif name in s.censor_allow_games:
-            ctx.debug("%s: in censor_allow_games, uploaded as it is", name)
+            ctx.log.debug("%s: in censor_allow_games, uploaded as it is", name)
         elif not ch.get("gameId"):
-            ctx.debug("%s: no Twitch category id, not checked", name or "no category")
+            ctx.log.debug("%s: no Twitch category id, not checked", name or "no category")
 
 
 async def censor_check(ctx: JobContext) -> None:
@@ -138,7 +138,7 @@ async def censor_check(ctx: JobContext) -> None:
     if not ctx.deps.helix.configured:
         ctx.log.warning("no Twitch app configured; IGDB not checked for %s", ", ".join(games.values()))
         return
-    ctx.debug("censor_descriptors: %s", ", ".join(s.censor_descriptors))
+    ctx.log.debug("censor_descriptors: %s", ", ".join(s.censor_descriptors))
     try:
         flagged = await flagged_games(ctx, games)
     except httpx.HTTPError as exc:
