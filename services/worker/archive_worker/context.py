@@ -104,14 +104,9 @@ class JobContext:
 
     @property
     def log(self) -> Any:
-        """``info``, ``warning`` and ``error`` with %-style arguments, like a stdlib logger."""
+        """``debug``, ``info``, ``warning`` and ``error`` with %-style arguments, like a stdlib logger. ``debug`` is
+        for detail (what a check found, what it skipped and why): the job view shows it only when asked to."""
         return self.run.log if self.run else self._log
-
-    def debug(self, msg: str, *args: Any) -> None:
-        """A detail line (what a check found, what it skipped and why); the job view shows it only when asked to.
-        shortcut: vex-platform before 0.9 has no debug level, so there it is an info line; call ``log.debug``
-        directly once the pin is 0.9+."""
-        getattr(self.log, "debug", self.log.info)(msg, *args)
 
     @property
     def step(self) -> str | None:

@@ -507,7 +507,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
                 at = dt.datetime.fromisoformat(key[0])
             except (TypeError, ValueError):
                 raise ApiError(400, "bad_cursor", "The cursor is not one this API issued.") from None
-            stmt = stmt.where(tuple_(Vod.created_at, Vod.id) < tuple_(at, str(key[1])))  # type: ignore[arg-type]
+            stmt = stmt.where(tuple_(Vod.created_at, Vod.id) < tuple_(at, str(key[1])))
         async with get_sessionmaker()() as s:
             vods = (await s.execute(stmt)).scalars().all()
         active = await jobs.active_by_vod([v.id for v in vods[:limit]])

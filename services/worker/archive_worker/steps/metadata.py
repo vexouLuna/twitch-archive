@@ -104,7 +104,7 @@ async def chapters(ctx: JobContext) -> None:
         "saved %d chapter(s) from %s: %s", len(result), "moments" if edges else "the VOD's category", ", ".join(names)
     )
     for ch in result:
-        ctx.debug(
+        ctx.log.debug(
             "chapter at %s for %s: %s (Twitch %s)%s",
             ch.get("duration"),
             format_hhmmss(ch.get("end") or 0),

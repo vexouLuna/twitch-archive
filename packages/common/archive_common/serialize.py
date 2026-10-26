@@ -429,7 +429,7 @@ async def live_spans(conn: AsyncConnection) -> dict[str, tuple[dt.datetime, dt.d
     ids = list((await conn.execute(select(_vt.c.id).where(_vt.c.synthetic.is_not(None)))).scalars())
     resolved = await flat_segments(conn, ids)
     real = list({x.source_id for v in resolved.values() for x in v})
-    live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}  # type: ignore[arg-type, var-annotated]
+    live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}
     return {vod_id: live_span(resolved.get(vod_id, []), live) for vod_id in ids}
 
 
@@ -460,7 +460,7 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
     resolved = await flat_segments(conn, list({r["vod_id"] for r in rows if r["vod_id"] in ids}))
     real = list({x.source_id for v in resolved.values() for x in v})
     games = await _games_for(conn, real)
-    live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}  # type: ignore[arg-type, var-annotated]
+    live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}
     # The shown synthetic VODs each source is in, for appears_in; a hidden source in exactly one is
     # superseded_by it instead (each of its parts there, so a link's ?t= maps over; ADR 0005).
     used: dict[str, dict[str, Any]] = {}
