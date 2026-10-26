@@ -179,31 +179,31 @@ async def _audit(after: int) -> list[Any]:
 async def test_settings_routes(app, clean, deps):
     limiter = app[1].runtime.limiter
     async with client(app) as c:
-        assert (await c.get("/admin/settings")).status_code == 403
-        rows = (await c.get("/admin/settings", headers=KEY)).json()["data"]
+        assert (await c.get("/api/v2/settings")).status_code == 401
+        rows = (await c.get("/api/v2/settings", headers=KEY)).json()["items"]
         assert [r["key"] for r in rows] == list(BY_KEY)
         steps = next(r for r in rows if r["key"] == "manual_steps")
         assert steps["choices"]["archive"] == jobs.KINDS["archive"]
 
-        r = await c.patch("/admin/settings", headers=KEY, json={"runner_concurrency": 6, "keep_hls": "yes"})
-        assert r.status_code == 400 and "true or false" in r.json()["msg"]
+        r = await c.patch("/api/v2/settings", headers=KEY, json={"runner_concurrency": 6, "keep_hls": "yes"})
+        assert r.status_code == 422 and "true or false" in r.json()["detail"]
         assert limiter.limit == 3
-        r = await c.patch("/admin/settings", headers=KEY, json={})
-        assert r.status_code == 400
+        r = await c.patch("/api/v2/settings", headers=KEY, json={})
+        assert r.status_code == 422
 
         r = await c.patch(
-            "/admin/settings", headers=KEY, json={"runner_concurrency": 6, "manual_steps": {"archive": ["upload"]}}
+            "/api/v2/settings", headers=KEY, json={"runner_concurrency": 6, "manual_steps": {"archive": ["upload"]}}
         )
         assert r.status_code == 200
-        row = {x["key"]: x for x in r.json()["data"]}["runner_concurrency"]
-        assert (row["value"], row["default"], row["overridden"], row["updatedBy"]) == (6, 3, True, "api-key")
+        row = {x["key"]: x for x in r.json()["items"]}["runner_concurrency"]
+        assert (row["value"], row["default"], row["overridden"], row["updated_by"]) == (6, 3, True, "api-key")
         assert limiter.limit == 6
         kinds = (await c.get("/admin/kinds", headers=KEY)).json()
         assert kinds["archive"]["manualSteps"] == ["upload"]
 
-        r = await c.delete("/admin/settings/runner_concurrency", headers=KEY)
+        r = await c.delete("/api/v2/settings/runner_concurrency", headers=KEY)
         assert r.status_code == 200 and limiter.limit == 3
-        assert (await c.delete("/admin/settings/data_dir", headers=KEY)).status_code == 404
+        assert (await c.delete("/api/v2/settings/data_dir", headers=KEY)).status_code == 404
 
     patch, reset = await _audit(clean)
     assert (patch.action, patch.target, patch.actor_kind) == ("setting.update", None, "api_key")

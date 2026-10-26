@@ -12,7 +12,7 @@ match wins:
 
 On a review the job pauses before ``censor`` with the games in ``payload["censor_review"]``. The
 admin then sets censor ranges and resumes, resumes as it is, or cuts the games
-(POST /admin/jobs/{id}/censor-review). An IGDB error pauses it the same way: unchecked is not clean.
+(POST /api/v2/jobs/{id}/censor-review). An IGDB error pauses it the same way: unchecked is not clean.
 """
 
 from __future__ import annotations

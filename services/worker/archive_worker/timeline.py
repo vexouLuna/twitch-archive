@@ -125,7 +125,7 @@ class Timeline:
             if not is_number(e.get("duration")) or e["duration"] < 0:
                 raise PlanError(
                     f"{vod_id}: {typ} part {e.get('part')} ({e.get('id')}) has no duration, so its "
-                    "place on the timeline is unknown; set it with PUT /admin/vods/{id}/youtube"
+                    "place on the timeline is unknown; set it with PUT /api/v2/vods/{id}/youtube"
                 )
             gaps += [(sum(durations) + float(at), float(n)) for at, n in upload_gaps(e) if n > 0]
             durations.append(float(e["duration"]))
