@@ -518,9 +518,11 @@ async def test_health(vod, app, monkeypatch, respx_mock):
         "channel": None,
         "connectedAt": None,
         "refreshTokenExpiresAt": None,
+        "grantedScopes": None,
         "checkedAt": "2026-09-25T12:00:00+00:00",
         "quota": {"used": 0, "limit": 10_000, "resetsAt": h["youtube"]["quota"]["resetsAt"], "calls": {}},
     }
+    assert set(h["twitchApp"]) == {"configured", "clientId", "tokenOk", "error"}
     assert h["live"]["live"] is True and h["live"]["streamId"] == str(STREAM) and h["live"]["startedAt"]
     assert (h["doomtp"]["configured"], h["doomtp"]["ok"], h["doomtp"]["listening"]) == (False, None, None)
     assert set(h["jobs"]["counts"]) == set(jobs.STATES) and h["jobs"]["counts"]["failed"] >= 1
@@ -532,6 +534,32 @@ async def test_health(vod, app, monkeypatch, respx_mock):
     respx_mock.get("http://api.test/readyz").respond(503, json={"ok": False, "error": "database: OSError"})
     async with client(app) as c:
         assert (await c.get("/admin/health", headers=KEY)).json()["api"] == {"ok": False}
+
+
+async def test_health_with_the_admin_apart(vod, app, monkeypatch):
+    """The jobs run in another process: the worker tile follows its heartbeat and the database's count."""
+    monkeypatch.setattr(app[1].deps.settings, "admin_apart", True)
+    job = await app[1].enqueue("chat", vod)
+    async with get_sessionmaker()() as s:
+        await s.execute(update(RUNS).where(RUNS.c.id == job.id).values(state="running", updated_at=func.now()))
+        beat = await s.scalar(text("INSERT INTO jobs.procrastinate_workers DEFAULT VALUES RETURNING id"))
+        await s.commit()
+    try:
+        async with client(app) as c:
+            worker = (await c.get("/admin/health", headers=KEY)).json()["worker"]
+        assert worker["ok"] is True and worker["runningJobs"] >= 1 and worker["startedAt"] is None
+
+        async def stale(_s):
+            return dt.datetime.now(dt.UTC) - dt.timedelta(minutes=2)
+
+        monkeypatch.setattr(admin_status, "_worker_beat", stale)
+        async with client(app) as c:
+            assert (await c.get("/admin/health", headers=KEY)).json()["worker"]["ok"] is False
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(text("DELETE FROM jobs.procrastinate_workers WHERE id = :id"), {"id": beat})
+            await s.execute(update(RUNS).where(RUNS.c.id == job.id).values(state="cancelled"))
+            await s.commit()
 
 
 async def test_healthz_and_readyz(app, monkeypatch):

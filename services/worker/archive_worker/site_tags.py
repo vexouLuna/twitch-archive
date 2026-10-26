@@ -129,8 +129,11 @@ def _fields(i: int, name: str, tag: dict[str, Any]) -> dict[str, Any]:
             out.update(dict.fromkeys(fields))
     page, page_label = tag.get("page"), tag.get("pageLabel")
     if page is not None:
-        if not isinstance(page, str) or not NAME.fullmatch(page) or page in RESERVED_PAGES:
+        own = page == site_tags.VODS and name == site_tags.VODS  # /vods is the vods tag's page
+        if not isinstance(page, str) or not NAME.fullmatch(page) or (page in RESERVED_PAGES and not own):
             raise _refuse(i, name, "page", f"null or a slug like a name, not one of {', '.join(RESERVED_PAGES)}")
+        if name == site_tags.VODS and not own:
+            raise _refuse(i, name, "page", f"null or {site_tags.VODS!r}")
         if not isinstance(page_label, str) or not 1 <= len(page_label.strip()) <= PAGE_LABEL_MAX:
             raise _refuse(i, name, "pageLabel", f"1-{PAGE_LABEL_MAX} characters with a page")
         page_label = page_label.strip()
@@ -138,7 +141,8 @@ def _fields(i: int, name: str, tag: dict[str, Any]) -> dict[str, Any]:
         page_label = None
     if tag.get("homeCard") is not None and not isinstance(tag["homeCard"], bool):
         raise _refuse(i, name, "homeCard", "null, true or false")
-    out.update(page=page, pageLabel=page_label, homeCard=bool(tag.get("homeCard")))
+    # A tag with a page is a home category (ADR 0005): homeCard is stored for the sites that still read it.
+    out.update(page=page, pageLabel=page_label, homeCard=page is not None)
     return out
 
 

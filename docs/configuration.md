@@ -89,6 +89,7 @@ See [Troubleshooting](operations.md) for how to find new values.
 | `ARCHIVE_LIVE_END_THRESHOLD` | `90` | Polls with no new segments before the recorder checks whether the stream ended |
 | `ARCHIVE_SEGMENT_CONCURRENCY` | `4` | Parallel segment downloads |
 | `ARCHIVE_ADMIN_HOST` / `ARCHIVE_ADMIN_PORT` | `0.0.0.0` / `3031` | |
+| `ARCHIVE_ADMIN_APART` | `false` | The admin API runs as its own process (`archive-worker admin`); the worker then serves only its health on the admin port. See [Running the admin API apart](deployment.md#running-the-admin-api-apart) |
 | `ARCHIVE_ADMIN_API_KEY` | – | **Required** for any admin call from a script |
 | `ARCHIVE_ADMIN_PASSWORD` | – | Password for the web dashboard's login; unset turns password login off. See [Browser access](admin-api.md#browser-access-dashboard) |
 | `ARCHIVE_ADMIN_TRUSTED_PROXIES` | `[]` | Reverse proxies (addresses or CIDR ranges, JSON list) whose `X-Forwarded-For` / `X-Real-IP` is believed when rate-limiting logins and checking `ARCHIVE_ADMIN_PASSWORD_NETWORKS`, and whose `X-Forwarded-Proto` decides the password login cookie's `Secure`. A request forwarded by any other address gets no password login |

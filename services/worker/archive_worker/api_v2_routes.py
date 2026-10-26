@@ -23,12 +23,13 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     POST   /api/v2/jobs/{job_id}/censor-review {decision}: answer a job the censor check paused
     POST   /api/v2/synthetic           a synthetic VOD: segments of real ones (see compose, synthetic)
     GET    /api/v2/synthetic/{vod_id}
-    PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
+    PUT    /api/v2/synthetic/{vod_id}  segments, title, tags (supersedes: legacy, see synthetic.py)
     DELETE /api/v2/synthetic/{vod_id}  the whole undo: its sources were never changed
     GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources: {overlapping, other}
-    GET    /api/v2/vods/{vod_id}/merge-candidates  VODs that started soon after it ended, oldest first
-    POST   /api/v2/vods/{vod_id}/merge {source, gap?}: a synthetic VOD of both, superseding them
-    POST   /api/v2/vods/{vod_id}/split {at}: two synthetic VODs, superseding it
+    GET    /api/v2/vods/{vod_id}/merge-candidates?hours=  VODs that started soon after it ended (or, with
+                                       hours, ended soon before it started), oldest first
+    POST   /api/v2/vods/{vod_id}/merge {sources, gaps?, id?}: one synthetic VOD of them all, hiding them
+    POST   /api/v2/vods/{vod_id}/split {at, ids?}: two synthetic VODs, hiding it
     GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
 """
 
@@ -349,7 +350,8 @@ class ChaptersPut(ApiModel):
 
 
 class MergeCandidate(ApiModel):
-    """A VOD that started soon after this one ended: ``gap`` seconds after (negative: they overlap)."""
+    """A VOD that started soon after this one ended, or (``?hours=``) ended soon before it started:
+    ``gap`` seconds from the earlier one's end to the later one's start (negative: they overlap)."""
 
     id: str
     stream_id: str | None = None
@@ -714,8 +716,8 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
     @router.post("/synthetic", status_code=201)
     async def create_synthetic(request: Request, body: SyntheticCreate) -> SyntheticView:
         """A synthetic VOD of ``segments``: windows ``[start, end)`` of real VODs placed at ``at`` (a
-        missing ``at`` follows the segment before). ``supersedes``: the real VODs leave the public lists
-        and redirect into it (a merge, a split); untagged, it is listed as a regular VOD. With ``auto``
+        missing ``at`` follows the segment before). ``supersedes`` (older dashboards): hide the sources
+        and tag it ``vods``, as a merge does. With ``auto``
         (a playthrough that keeps itself up to date) the segments are every window of that game, kept so
         by the monitor, and ``segments`` is not needed. Audited as ``synthetic.create``."""
         view = await _synthetic(  # type: ignore[no-untyped-call]
@@ -772,14 +774,21 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         return SyntheticView(**view)
 
     @router.get("/vods/{vod_id}/merge-candidates")
-    async def merge_candidates(vod_id: str) -> Page[MergeCandidate]:
+    async def merge_candidates(
+        vod_id: str, hours: Annotated[int | None, Query(ge=1, le=168)] = None
+    ) -> Page[MergeCandidate]:
         """What to offer to merge this VOD with (``POST /vods/{vod_id}/merge``): VODs that started up to
-        ARCHIVE_MERGE_CANDIDATE_MINUTES after it ended and aren't merged into another."""
-        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes)
+        ARCHIVE_MERGE_CANDIDATE_MINUTES after it ended and aren't merged into another; with ``hours``,
+        those starting less than that after it ends or ending less than that before it starts."""
+        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes, hours)
         if found is None:
             raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
         a, rows = found
-        duration = hhmmss_to_seconds(a.duration)
+
+        def gap(v: Vod) -> float:
+            first, then = (a, v) if v.created_at >= a.created_at else (v, a)
+            return round((then.created_at - first.created_at).total_seconds()) - hhmmss_to_seconds(first.duration)
+
         return Page[MergeCandidate](
             items=[
                 MergeCandidate(
@@ -788,7 +797,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
                     title=v.title,
                     created_at=v.created_at,
                     duration=v.duration,
-                    gap=round((v.created_at - a.created_at).total_seconds()) - duration,
+                    gap=gap(v),
                     titles_match=synthetic.normal_title(v.title) == synthetic.normal_title(a.title),
                 )
                 for v in rows
@@ -797,28 +806,39 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
 
     @router.post("/vods/{vod_id}/merge", status_code=201)
     async def merge_vods(request: Request, vod_id: str, body: MergeBody) -> SyntheticView:
-        """This VOD then ``source`` (a later one of the same broadcast) as one synthetic VOD
-        ``{vod_id}+{source}``, ``source`` placed where it started (or ``gap`` seconds after this one
-        ends). Both leave the lists and redirect into it."""
+        """This VOD and ``sources``, in the order they started, as one synthetic VOD tagged ``vods`` (id:
+        ``id``, default ``{first}-m``); each placed where it started, or ``gaps[i]`` seconds after the one
+        before ends. The old ``{source, gap?}`` makes ``{vod_id}+{source}``. The VODs are hidden: their
+        links lead to it, and deleting it shows them again (ADR 0005)."""
+        if body.sources is None and body.source is None:
+            raise ApiError(422, "invalid_synthetic", "send sources (the VODs to merge with this one)")
+        ids = [vod_id, *(body.sources if body.sources is not None else [body.source or ""])]
         async with get_sessionmaker()() as s:
-            vods = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_([vod_id, body.source])))).scalars()}
-        a, b = (_real(vods, i) for i in (vod_id, body.source))
-        segments = await _synthetic(compose.merge_segments, synthetic.source_of(a), synthetic.source_of(b), body.gap)  # type: ignore[no-untyped-call]
-        view = await _synthetic(synthetic.create, compose.merge_id(a.id, b.id), segments, supersedes=True)  # type: ignore[no-untyped-call]
-        await _audit(request, "synthetic.create", view["id"], after=view, detail={"merge": [a.id, b.id]})
+            vods = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_(ids)))).scalars()}
+        found = [synthetic.source_of(_real(vods, i)) for i in ids]
+        if body.sources is None:
+            segments = await _synthetic(compose.merge_segments, *found, body.gap)  # type: ignore[no-untyped-call]
+            new_id = compose.merge_id(*ids)
+        else:
+            gaps = body.gaps if body.gaps is not None else [None] * (len(found) - 1)
+            segments = await _synthetic(compose.merge_all, found, gaps)  # type: ignore[no-untyped-call]
+            new_id = body.id or compose.merge_all_id(segments[0].source_id)
+        view = await _synthetic(synthetic.create, new_id, segments, supersedes=True)  # type: ignore[no-untyped-call]
+        merged = [x.source_id for x in segments]
+        await _audit(request, "synthetic.create", view["id"], after=view, detail={"merge": merged})
         return SyntheticView(**view)
 
     @router.post("/vods/{vod_id}/split", status_code=201)
     async def split_vod(request: Request, vod_id: str, body: SplitBody) -> list[SyntheticView]:
-        """Two synthetic VODs ``{vod_id}-1`` and ``{vod_id}-2``, before and from ``at`` seconds (anywhere,
-        mid-upload included); the VOD leaves the lists and redirects into them."""
+        """Two synthetic VODs tagged ``vods``, ``ids`` (default ``{vod_id}-1`` and ``{vod_id}-2``), before and
+        from ``at`` seconds (anywhere, mid-upload included); the VOD is hidden, its links lead to them."""
         async with get_sessionmaker()() as s:
             found = await s.get(Vod, vod_id)
         vod = _real({vod_id: found} if found else {}, vod_id)
         halves = await _synthetic(compose.split_segments, synthetic.source_of(vod), body.at)  # type: ignore[no-untyped-call]
         made: list[dict[str, Any]] = []
         try:
-            for new_id, segments in zip(compose.split_ids(vod.id), halves, strict=True):
+            for new_id, segments in zip(body.ids or compose.split_ids(vod.id), halves, strict=True):
                 made.append(await _synthetic(synthetic.create, new_id, segments, supersedes=True))  # type: ignore[no-untyped-call]
         except ApiError:
             for view in made:  # both or neither
@@ -832,7 +852,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
     async def playthrough_candidates(game_id: Annotated[str, Query(min_length=1)]) -> Page[PlaythroughWindow]:
         """Every window of a real, shown VOD playing ``game_id`` (its chapters of it, adjacent ones
         joined), oldest first: trim them, then POST them to /synthetic as a playthrough (``tags:
-        ["compilation"]``, ``supersedes: false``); a window's ``segment`` is ready to send."""
+        ["playthroughs"]``); a window's ``segment`` is ready to send."""
         async with get_sessionmaker()() as s:
             windows = await synthetic.game_windows(s, game_id)
         items = [
@@ -915,12 +935,16 @@ class SyntheticDmca(ApiModel):
 
 
 class MergeBody(ApiModel):
-    source: str
+    sources: list[str] | None = Field(default=None, min_length=1, max_length=20)  # merged with this one
+    gaps: list[float | None] | None = None  # one per join, in start order; null: where it started
+    id: str | None = None  # default: the first VOD's id + "-m"
+    source: str | None = None  # older dashboards: one VOD, id "{vod_id}+{source}"
     gap: float | None = None
 
 
 class SplitBody(ApiModel):
     at: float
+    ids: tuple[str, str] | None = None  # default: "{vod_id}-1", "{vod_id}-2"
 
 
 class PlaythroughWindow(ApiModel):

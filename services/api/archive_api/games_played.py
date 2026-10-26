@@ -35,7 +35,9 @@ _SQL = text(
           and not c.value @> '{"kind": "gap"}'
           and v.merged_into is null
           and v.synthetic is null
-          and not v.hidden
+          and (not v.hidden or exists (  -- or a merge's source: hidden, played by a shown vods one (ADR 0005)
+              select 1 from vod_segments s join vods syn on syn.id = s.vod_id
+              where s.source_id = v.id and not syn.hidden and 'vods' = any(syn.tags)))
     ),
     keyed as (
         select *,

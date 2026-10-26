@@ -203,6 +203,9 @@ class AdminSettings(_Base):
 
     admin_host: str = "0.0.0.0"
     admin_port: int = 3031
+    # The admin API runs as its own process (`archive-worker admin`): `archive-worker run` then serves only
+    # its /healthz and /readyz on admin_port, and reloads the dashboard's settings from the database.
+    admin_apart: bool = False
     admin_api_key: SecretStr = SecretStr("")
     # Browser (dashboard) login: unset turns password login off; the API key keeps working.
     admin_password: SecretStr = SecretStr("")

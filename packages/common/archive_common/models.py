@@ -62,8 +62,10 @@ class Vod(Base):
     # NULL = never run.
     bot_chat: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # Alembic 0010: off the public API (lists, GET, games rows, chat, games-played, status); admin still sees it.
+    # Except while a shown synthetic VOD plays it (ADR 0005): then GET, rows and chat still answer.
     hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"), default=False)
-    # Alembic 0016: NULL on a real VOD; {"supersedes": bool} on a synthetic one (its content is vod_segments,
+    # Alembic 0016: NULL on a real VOD; a dict on a synthetic one (``auto``, ``hid``: the
+    # VODs its merge or split hid; ``supersedes`` before 0022) (its content is vod_segments,
     # and its title, duration, chapters, thumbnail and date are composed from them).
     synthetic: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # Alembic 0016: [] = a regular VOD; a tagged one (e.g. "compilation") is listed apart.
