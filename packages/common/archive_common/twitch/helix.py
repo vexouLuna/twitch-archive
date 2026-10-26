@@ -35,6 +35,25 @@ class Helix:
     def configured(self) -> bool:
         return bool(self.settings.twitch_client_id and self.settings.twitch_client_secret.get_secret_value())
 
+    async def status(self) -> dict[str, Any]:
+        """The app client for the dashboard: its id (masked), and whether it gets a token (the cached one while it
+        lasts, so this is cheap). Not the ad-free viewer account (twitch_viewer.py), which is a user's token."""
+        client_id = self.settings.twitch_client_id or ""
+        out: dict[str, Any] = {
+            "configured": self.configured,
+            "clientId": f"{client_id[:4]}…{client_id[-4:]}" if len(client_id) > 8 else ("…" if client_id else None),
+            "tokenOk": None,
+            "error": None,
+        }
+        if self.configured:
+            try:
+                await self._get_token()
+                out["tokenOk"] = True
+            except Exception as exc:  # a bad secret is a 400/403 from Twitch, or the network is down
+                out["tokenOk"] = False
+                out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
     async def _get_token(self, force: bool = False) -> str:
         async with self._lock:
             if not force and self._token and time.monotonic() < self._expires_at:

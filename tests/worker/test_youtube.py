@@ -91,6 +91,7 @@ async def test_check_always_refreshes_and_keeps_rotated_token(yt, monkeypatch):
         "accessTokenExpiry": "2030-01-01T00:00:00+00:00",
         "connectedAt": None,
         "refreshTokenExpiresAt": None,
+        "grantedScopes": None,
         "channel": CHANNEL,
     }
     saved = yt.stored["token"]
@@ -231,7 +232,7 @@ class _Channels:
         return self
 
     def list(self, **params):
-        assert params == {"part": "snippet", "mine": True}
+        assert params == {"part": "snippet,status", "mine": True}
         return self
 
     def execute(self):
@@ -244,12 +245,25 @@ class _Channels:
     ("response", "expected"),
     [
         (
-            {"items": [{"id": "UC123", "snippet": {"title": "keeki", "customUrl": "@keeki"}}]},
-            CHANNEL,
+            {
+                "items": [
+                    {
+                        "id": "UC123",
+                        "snippet": {"title": "keeki", "customUrl": "@keeki"},
+                        "status": {"longUploadsStatus": "allowed", "isLinked": True, "privacyStatus": "public"},
+                    }
+                ]
+            },
+            {**CHANNEL, "status": {"longUploadsStatus": "allowed", "isLinked": True, "privacyStatus": "public"}},
         ),
         (
             {"items": [{"id": "UC123", "snippet": {"title": "keeki", "customUrl": "oldname"}}]},
-            {"id": "UC123", "title": "keeki", "url": "https://www.youtube.com/channel/UC123"},
+            {
+                "id": "UC123",
+                "title": "keeki",
+                "url": "https://www.youtube.com/channel/UC123",
+                "status": {"longUploadsStatus": None, "isLinked": None, "privacyStatus": None},
+            },
         ),
         ({"items": []}, None),
         ({}, None),
@@ -353,3 +367,27 @@ async def test_cached_check_refreshes_at_most_every_max_age(yt, monkeypatch):
     yt.last_check["checkedAt"] -= dt.timedelta(seconds=601)
     await yt.cached_check(600)
     assert len(calls) == 3
+
+
+def test_error_reason_and_upload_standing():
+    content = b'{"error": {"message": "The user is not allowed to upload.", "errors": [{"reason": "forbidden"}]}}'
+    exc = HttpError(SimpleNamespace(status=403, reason="Forbidden"), content)
+    assert youtube.error_reason(exc) == ("forbidden", "The user is not allowed to upload.")
+    assert youtube.error_reason(HttpError(SimpleNamespace(status=403, reason="x"), b"not json"))[0] is None
+    channel = {**CHANNEL, "status": {"longUploadsStatus": "disallowed", "isLinked": False, "privacyStatus": "public"}}
+    line = youtube.upload_standing(channel, ["https://www.googleapis.com/auth/youtube"])
+    assert "long uploads disallowed" in line and "linked False" in line and "auth/youtube" in line
+    assert youtube.upload_standing(None, None) == youtube.NO_CHANNEL
+
+
+def test_upload_progress_is_bytes_after_every_chunk(yt, tmp_path):
+    path = tmp_path / "p1.mp4"
+    path.write_bytes(b"x" * 300)
+    chunks: list[tuple[Any, Any]] = [
+        (SimpleNamespace(resumable_progress=n, total_size=300, progress=lambda n=n: n / 300), None) for n in (100, 200)
+    ]
+    chunks.append((None, {"id": "v1"}))
+    request = SimpleNamespace(next_chunk=lambda: chunks.pop(0))
+    seen: list[tuple[int, int]] = []
+    assert yt._resumable(request, path, lambda sent, size: seen.append((sent, size))) == {"id": "v1"}
+    assert seen == [(0, 300), (100, 300), (200, 300), (300, 300)]

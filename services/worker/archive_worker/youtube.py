@@ -82,6 +82,28 @@ def limit_reason(exc: BaseException) -> str | None:
     return next((r for r in reasons if r in LIMIT_REASONS), None)
 
 
+def error_reason(exc: HttpError) -> tuple[str | None, str]:
+    """An HttpError's first ``reason`` (``forbidden``, ``insufficientPermissions``, ...) and Google's message."""
+    try:
+        error = json.loads(exc.content).get("error") or {}
+    except (ValueError, AttributeError):
+        return None, str(exc)
+    first = next((d for d in error.get("errors") or [] if isinstance(d, dict)), {})
+    return first.get("reason"), error.get("message") or first.get("message") or str(exc)
+
+
+def upload_standing(channel: dict[str, Any] | None, scopes: list[str] | None) -> str:
+    """One line on what decides whether the channel may upload, for a refused upload's error."""
+    if channel is None:
+        return NO_CHANNEL
+    st = channel.get("status") or {}
+    return (
+        f"channel {channel.get('title')}: long uploads {st.get('longUploadsStatus') or 'unknown'}, "
+        f"linked {st.get('isLinked')}, privacy {st.get('privacyStatus') or 'unknown'}; "
+        f"granted scopes {', '.join(scopes) if scopes else 'not recorded'}"
+    )
+
+
 async def _counted(call: str, fn: Callable[[], Any]) -> Any:
     """Run ``fn`` (a blocking API call) in a thread and count ``call`` against the quota, unless YouTube refused it
     for a daily limit: that is raised as ``YouTubeLimitError`` and not counted, since the call never ran."""
@@ -375,6 +397,8 @@ class YouTube:
             # None for a token imported from the legacy config, which never recorded either.
             "connectedAt": token.get("connectedAt"),
             "refreshTokenExpiresAt": token.get("refreshTokenExpiresAt"),
+            # What Google granted at the last connect or refresh; an upload needs the youtube (or youtube.upload) scope.
+            "grantedScopes": token.get("grantedScopes"),
         }
         # A token that refreshes can still be for an account with no channel, which can't upload.
         try:
@@ -386,12 +410,13 @@ class YouTube:
             return {**result, "valid": False, "channel": None, "error": NO_CHANNEL}
         return {**result, "channel": channel}
 
-    async def own_channel(self) -> dict[str, str] | None:
-        """The channel uploads go to (the connected account's own), or None if the account has none.
-        One quota unit."""
+    async def own_channel(self) -> dict[str, Any] | None:
+        """The channel uploads go to (the connected account's own), or None if the account has none, with its
+        ``status``: ``longUploadsStatus`` (``allowed``, ``eligible``, ``disallowed``), ``isLinked`` (a channel
+        not linked to a Google account can't upload) and ``privacyStatus``. One quota unit."""
         service = await self._service()  # type: ignore[no-untyped-call]
         try:
-            resp = await _counted("channels.list", service.channels().list(part="snippet", mine=True).execute)
+            resp = await _counted("channels.list", service.channels().list(part="snippet,status", mine=True).execute)
         except HttpError as exc:
             if "youtubeSignupRequired" in str(exc):
                 return None
@@ -404,7 +429,13 @@ class YouTube:
         handle = snippet.get("customUrl") or ""
         # A handle ("@name") has a URL of its own; an old custom URL may not, so the id is safer then.
         path = handle if handle.startswith("@") else f"channel/{channel_id}"
-        return {"id": channel_id, "title": snippet.get("title") or channel_id, "url": f"https://www.youtube.com/{path}"}
+        st = items[0].get("status") or {}
+        return {
+            "id": channel_id,
+            "title": snippet.get("title") or channel_id,
+            "url": f"https://www.youtube.com/{path}",
+            "status": {k: st.get(k) for k in ("longUploadsStatus", "isLinked", "privacyStatus")},
+        }
 
     async def keepalive(self) -> None:
         """Refresh the token every ``youtube_keepalive_hours`` while uploads are on (never returns).
@@ -432,9 +463,9 @@ class YouTube:
         description: str,
         privacy_status: str,
         category_id: str = "20",
-        on_progress: Callable[[int], None] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> dict[str, Any]:
-        """``on_progress(percent)`` is called (from a worker thread) about every 10%."""
+        """``on_progress(sent, total)`` (bytes) is called from a worker thread at the start and after each chunk."""
         service = await self._service()  # type: ignore[no-untyped-call]
         body = {
             "snippet": {"title": title, "description": description, "categoryId": category_id},
@@ -445,20 +476,25 @@ class YouTube:
         result: dict[str, Any] = await _counted("videos.insert", lambda: self._resumable(request, path, on_progress))
         return result
 
-    def _resumable(self, request, path: Path, on_progress: Callable[[int], None] | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    def _resumable(  # type: ignore[no-untyped-def]
+        self, request, path: Path, on_progress: Callable[[int, int], None] | None = None
+    ) -> dict[str, Any]:
         response = None
         retries = 0
         last_pct = -10
+        size = path.stat().st_size
+        if on_progress is not None:
+            on_progress(0, size)
         while response is None:
             try:
                 status, response = request.next_chunk()
                 if status is not None:
+                    if on_progress is not None:
+                        on_progress(status.resumable_progress, status.total_size or size)
                     pct = int(status.progress() * 100)
-                    if pct >= last_pct + 10:
+                    if pct >= last_pct + 10:  # the process log only every 10%; the job log gets every chunk
                         log.info("upload %s: %d%%", path.name, pct)
                         last_pct = pct
-                        if on_progress is not None:
-                            on_progress(pct)
                 retries = 0
             except HttpError as exc:
                 if exc.resp.status not in RETRIABLE_STATUS:
@@ -466,6 +502,8 @@ class YouTube:
                 retries = self._backoff(retries, exc)
             except (OSError, TimeoutError) as exc:
                 retries = self._backoff(retries, exc)
+        if on_progress is not None:
+            on_progress(size, size)
         return response  # type: ignore[no-any-return]
 
     @staticmethod
