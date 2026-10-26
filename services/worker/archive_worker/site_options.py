@@ -26,8 +26,11 @@ class SiteOptionError(Exception):
         self.msg = msg
 
 
+TAGGED = ("one", "tag")  # cards for a home category: its newest VOD, its two newest
+
+
 def _cards(value: Any, home_tags: set[str] | None) -> list[dict[str, Any]]:
-    """``home_tags``: the saved tags whose type has a home card, or None while the tag list was never saved."""
+    """``home_tags``: the saved tags that are home categories, or None while the tag list was never saved."""
     if not isinstance(value, list) or len(value) > MAX_CARDS:
         raise SiteOptionError(f"homeCards must be a list of at most {MAX_CARDS} cards")
     out: list[dict[str, Any]] = []
@@ -37,15 +40,15 @@ def _cards(value: Any, home_tags: set[str] | None) -> list[dict[str, Any]]:
             if {"kind": kind} in out:
                 raise SiteOptionError(f"card {i + 1}: there is already a {kind!r} card")
             out.append({"kind": kind})
-        elif kind == "tag":
+        elif kind in TAGGED:
             tag = card.get("tag")
             if not isinstance(tag, str) or (home_tags is not None and tag not in home_tags):
                 raise SiteOptionError(f"card {i + 1}: {tag!r} is not a tag that can be a home card")
-            if {"kind": "tag", "tag": tag} in out:
-                raise SiteOptionError(f"card {i + 1}: there is already a card for {tag!r}")
-            out.append({"kind": "tag", "tag": tag})
+            if {"kind": kind, "tag": tag} in out:
+                raise SiteOptionError(f"card {i + 1}: there is already a {kind!r} card for {tag!r}")
+            out.append({"kind": kind, "tag": tag})
         else:
-            raise SiteOptionError(f"card {i + 1}: kind must be latest, tag or games")
+            raise SiteOptionError(f"card {i + 1}: kind must be latest, one, tag or games")
     return out
 
 
@@ -53,7 +56,7 @@ def validate(body: Any, tags: list[dict[str, Any]] | None) -> dict[str, Any]:
     """The options a PUT changes, checked. ``tags``: the saved tag list (site_tags.load), or None."""
     if not isinstance(body, dict) or not body or set(body) - set(site_options.DEFAULTS):
         raise SiteOptionError(f"send an object with any of: {', '.join(site_options.DEFAULTS)}")
-    home_tags = None if tags is None else {t["name"] for t in tags if t.get("homeCard")}
+    home_tags = None if tags is None else site_tags.home_categories(tags)
     out = {"homeCards": _cards(body["homeCards"], home_tags)} if "homeCards" in body else {}
     if "playDefault" in body:
         if body["playDefault"] not in PLAY:

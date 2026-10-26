@@ -213,7 +213,7 @@ MERGED_EDITABLE = {"hidden", "tags"}
 SYNTHETIC_EDITABLE = {"title", "hidden", "tags", "cutReason"}
 # vods.tags: an untagged VOD is a regular one; a tagged one is listed apart (the site gives each known
 # tag its own tab). The known tags are the site's list (site_tags.vod_tags); these until it is saved.
-KNOWN_TAGS = ("compilation",)
+KNOWN_TAGS = ("compilation", "playthroughs", "vods")  # while the site's tag list was never saved
 CUT_REASON_MAX = 500
 _HHMMSS = re.compile(r"^(\d{1,3}):([0-5]\d):([0-5]\d)$")
 

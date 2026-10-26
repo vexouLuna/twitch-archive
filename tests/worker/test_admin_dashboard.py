@@ -662,9 +662,11 @@ async def test_health(vod, app, monkeypatch, respx_mock):
         "channel": None,
         "connectedAt": None,
         "refreshTokenExpiresAt": None,
+        "grantedScopes": None,
         "checkedAt": "2026-09-25T12:00:00+00:00",
         "quota": {"used": 0, "limit": 10_000, "resetsAt": h["youtube"]["quota"]["resetsAt"], "calls": {}},
     }
+    assert set(h["twitchApp"]) == {"configured", "clientId", "tokenOk", "error"}
     assert h["live"]["live"] is True and h["live"]["streamId"] == str(STREAM) and h["live"]["startedAt"]
     assert (h["doomtp"]["configured"], h["doomtp"]["ok"], h["doomtp"]["listening"]) == (False, None, None)
     assert set(h["jobs"]["counts"]) == set(jobs.STATES) and h["jobs"]["counts"]["failed"] >= 1

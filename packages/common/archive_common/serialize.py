@@ -20,11 +20,12 @@ from decimal import Decimal
 from functools import cached_property
 from typing import Any
 
-from sqlalchemy import Column, Table, exists, func, or_, select
+from sqlalchemy import Column, Table, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from archive_common.models import BotLog, Emote, Game, Log, Stream, Vod, VodSegment
 from archive_common.segments import EPS, MAX_DEPTH, Segment, flatten, resolve, seconds
+from archive_common.site_tags import VODS as VODS_TAG
 from archive_common.timeutil import hhmmss_to_seconds
 
 
@@ -182,17 +183,31 @@ def not_hidden() -> Any:
     return _vt.c.hidden.is_(False)
 
 
-def not_superseded() -> Any:
-    """VODs no superseding synthetic VOD (a merge, a split) is made of: lists leave those out, and
-    ``GET /vods/{id}`` answers for them with ``superseded_by``."""
-    syn = _vt.alias("syn")
-    return ~exists().where(
-        _sgt.c.source_id == _vt.c.id, syn.c.id == _sgt.c.vod_id, syn.c.synthetic["supersedes"].as_boolean().is_(True)
-    )
+def played_by_shown(vod_id: Any, *, tag: str | None = None, depth: int = MAX_DEPTH + 1) -> Any:
+    """``vod_id`` is a source of a shown synthetic VOD (one with ``tag``, if given), directly or through
+    hidden synthetic VODs, ``depth`` levels up: what that VOD plays needs it (ADR 0005)."""
+    seg, syn = _sgt.alias(), _vt.alias()
+    shown: Any = syn.c.hidden.is_(False)
+    if tag is not None:
+        shown = and_(shown, syn.c.tags.contains([tag]))
+    if depth > 1:
+        shown = or_(shown, played_by_shown(syn.c.id, tag=tag, depth=depth - 1))
+    return exists().where(seg.c.source_id == vod_id, syn.c.id == seg.c.vod_id, shown)
+
+
+def reachable() -> Any:
+    """VODs ``GET /vods/{id}``, their chat, games and emotes answer for: shown ones, and hidden ones a shown
+    synthetic VOD plays (those say ``hidden: true``)."""
+    return or_(not_hidden(), played_by_shown(_vt.c.id))
+
+
+def plain() -> Any:
+    """The default list (older sites' /vods): VODs with no tag but ``vods`` (before ADR 0005, no tag)."""
+    return _vt.c.tags.contained_by([VODS_TAG])
 
 
 def tagged(tag: str | None) -> Any:
-    """VODs with ``tag``; None: those with no tags at all (the regular ones)."""
+    """VODs with ``tag``; None: those with no tags at all."""
     return func.cardinality(_vt.c.tags) == 0 if tag is None else _vt.c.tags.contains([tag])
 
 
@@ -202,8 +217,9 @@ def real() -> Any:
 
 
 def of_shown_vod(vod_id: Any) -> Any:
-    """Rows (games, emotes) whose ``vod_id`` is not a hidden VOD's."""
-    return ~exists().where(_vt.c.id == vod_id, _vt.c.hidden.is_(True))
+    """Rows (games, emotes) whose ``vod_id`` is not a hidden VOD's, or a hidden one a shown synthetic VOD plays."""
+    hid = _vt.alias()
+    return ~exists().where(hid.c.id == vod_id, hid.c.hidden.is_(True), ~played_by_shown(hid.c.id))
 
 
 GAMES = Resource(
@@ -421,8 +437,8 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
     """Synthetic VODs get ``synthetic.segments`` (``flat_segments``: real VODs only, ends resolved,
     streams numbered), ``madeAt`` and ``changedAt`` (as stored), ``firstLiveAt`` and ``lastLiveAt`` (``_live_span``)
     and the games of their sources' windows (after ``attach_games``); a VOD a shown synthetic VOD is
-    made of gets
-    ``superseded_by`` (merges, splits: where each part of it went) or ``appears_in`` (the others)."""
+    made of gets ``appears_in`` (those synthetic VODs); a hidden one also ``hidden: true``, and
+    ``superseded_by`` (where each part of it went) in place of ``appears_in`` when it is in only one."""
     ids = [v["id"] for v in vods if "id" in v]
     if not ids:
         return
@@ -445,26 +461,28 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
     real = list({x.source_id for v in resolved.values() for x in v})
     games = await _games_for(conn, real)
     live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}  # type: ignore[arg-type, var-annotated]
-    # Where the parts of each source went, for superseded_by / appears_in.
+    # The shown synthetic VODs each source is in, for appears_in; a hidden source in exactly one is
+    # superseded_by it instead (each of its parts there, so a link's ?t= maps over; ADR 0005).
     used: dict[str, dict[str, Any]] = {}
     for r in rows:
         if r["source_id"] not in ids or r["hidden"]:
             continue
-        entry = used.setdefault(r["source_id"], {})
-        if (r["synthetic"] or {}).get("supersedes"):
-            seg = Segment.of_row(r)
-            entry.setdefault("superseded_by", []).append(
-                {
-                    "id": r["vod_id"],
-                    "start": seconds(seg.start),
-                    "end": None if seg.end is None else seconds(seg.end),
-                    "at": seconds(seg.at),
-                }
-            )
-        else:
-            entry.setdefault("appears_in", {}).setdefault(
-                r["vod_id"], {"id": r["vod_id"], "title": r["title"], "tags": list(r["tags"] or [])}
-            )
+        entry = used.setdefault(r["source_id"], {"appears_in": {}, "parts": []})
+        entry["appears_in"].setdefault(
+            r["vod_id"], {"id": r["vod_id"], "title": r["title"], "tags": list(r["tags"] or [])}
+        )
+        seg = Segment.of_row(r)
+        entry["parts"].append(
+            {
+                "id": r["vod_id"],
+                "start": seconds(seg.start),
+                "end": None if seg.end is None else seconds(seg.end),
+                "at": seconds(seg.at),
+            }
+        )
+    hidden = set(
+        (await conn.execute(select(_vt.c.id).where(_vt.c.id.in_(list(used)), _vt.c.hidden.is_(True)))).scalars()
+    )
     for vod in vods:
         segs = resolved.get(vod["id"])
         if segs is not None and "synthetic" in vod:  # (not when $select left it out)
@@ -485,9 +503,11 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
                 ]
         entry = used.get(vod["id"])  # type: ignore[assignment]
         if entry:
-            if "superseded_by" in entry:
-                vod["superseded_by"] = entry["superseded_by"]
-            if "appears_in" in entry:
+            if vod["id"] in hidden:
+                vod["hidden"] = True
+            if vod["id"] in hidden and len(entry["appears_in"]) == 1:
+                vod["superseded_by"] = entry["parts"]
+            else:
                 vod["appears_in"] = list(entry["appears_in"].values())
 
 

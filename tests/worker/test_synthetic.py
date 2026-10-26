@@ -142,29 +142,31 @@ ALL = "&".join(f"id[$in][]={quote(i)}" for i in (A, B, AB, P, f"{A}-1", f"{A}-2"
 async def test_merge_split_and_undo(admin):
     before = await _sources()
 
-    r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})
+    hidden = {k: {**v, "hidden": True} for k, v in before.items()}
+
+    r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})  # an older dashboard's
     assert r.status_code == 201, r.text
     view = r.json()
-    assert (view["id"], view["supersedes"], view["tags"], view["duration"]) == (AB, True, [], "03:05:00")
+    assert (view["id"], view["supersedes"], view["tags"], view["duration"]) == (AB, False, ["vods"], "03:05:00")
     assert view["segments"] == [
         {"vod_id": A, "start": 0, "end": None, "at": 0, "label": None},
         {"vod_id": B, "start": 0, "end": None, "at": OFFSET, "label": None},
     ]
-    assert await _sources() == before  # the originals are never written
+    assert await _sources() == hidden  # the originals are only hidden (ADR 0005)
 
     vod = (await public(f"/vods/{AB}")).json()
     made = vod["synthetic"].pop("madeAt")
     assert made == vod["synthetic"].pop("changedAt") and _same(made, view["made_at"])
     assert vod["synthetic"] == {
-        "supersedes": True,
+        "supersedes": False,
         "firstLiveAt": "2001-03-04T20:00:00.000Z",
         "lastLiveAt": "2001-03-04T23:05:00.000Z",
         "segments": [
             {"vodId": A, "start": 0, "end": 7200, "at": 0, "label": None, "stream": 0},
-            {"vodId": B, "start": 0, "end": 3600, "at": OFFSET, "label": None, "stream": 0},
+            {"vodId": B, "start": 0, "end": 3600, "at": OFFSET, "label": None, "stream": 1},
         ],
     }
-    assert (vod["duration"], vod["tags"], vod["createdAt"]) == ("03:05:00", [], "2001-03-04T20:00:00.000Z")
+    assert (vod["duration"], vod["tags"], vod["createdAt"]) == ("03:05:00", ["vods"], "2001-03-04T20:00:00.000Z")
     assert [(c["start"], c.get("kind")) for c in vod["chapters"]] == [
         (0, None),
         (3600, None),
@@ -174,31 +176,35 @@ async def test_merge_split_and_undo(admin):
     [game] = vod["games"]
     assert (game["vodId"], game["sourceVodId"], game["start_time"], game["end_time"]) == (AB, B, "7600", "7700")
 
+    # Hidden, and played by one shown synthetic VOD: still answered, and its links lead there.
     original = (await public(f"/vods/{A}")).json()
     assert original["superseded_by"] == [{"id": AB, "start": 0, "end": None, "at": 0}]
+    assert original["hidden"] is True
     assert "synthetic" not in original and "appears_in" not in original
     assert _ids((await public(f"/vods?{ALL}")).json()) == {AB}
-    assert _ids((await public(f"/vods?{ALL}&$superseded=true")).json()) == {A, B, AB}
+    assert _ids((await public(f"/vods?{ALL}&$superseded=true")).json()) == {AB}  # accepted, does nothing
+    assert _ids((await public(f"/vods?{ALL}&$tag=vods")).json()) == {AB}
 
     page = (await public(f"/v1/vods/{quote(AB)}/comments?content_offset_seconds=0")).json()
     assert page["comments"] == [] and [s["vodId"] for s in page["segments"]] == [A, B]
+    assert (await public(f"/v1/vods/{B}/comments?content_offset_seconds=0")).status_code != 404
+    assert (await public(f"/games?vodId={B}")).json()["total"] == 1
 
     # Jobs: the originals are left alone, so they still run; the synthetic VOD is no Twitch VOD.
     assert await splice_reason(A) is None and await splice_reason(B) is None
     assert "synthetic" in await splice_reason(AB)  # type: ignore[operator]
 
-    # One second of a source goes to one superseding VOD only.
-    r = await admin.post(f"/api/v2/vods/{A}/split", headers=KEY, json={"at": 1000})
-    assert (r.status_code, r.json()["code"]) == (409, "synthetic_conflict")
     r = await admin.patch(f"/api/v2/vods/{quote(AB)}", headers=KEY, json={"duration": "01:00:00"})
     assert (r.status_code, r.json()["code"]) == (409, "vod_synthetic")
     detail = (await admin.get(f"/api/v2/vods/{A}", headers=KEY)).json()
     assert [x["id"] for x in detail["in_synthetic"]] == [AB]
 
+    # Deleting it shows the VODs it hid again.
     r = await admin.delete(f"/api/v2/synthetic/{quote(AB)}", headers=KEY)
     assert r.status_code == 200 and r.json()["id"] == AB
     assert "superseded_by" not in (await public(f"/vods/{A}")).json()
     assert _ids((await public(f"/vods?{ALL}")).json()) == {A, B}
+    assert await _sources() == before
 
     # A split, anywhere (no upload boundary needed).
     r = await admin.post(f"/api/v2/vods/{A}/split", headers=KEY, json={"at": 1000.5})
@@ -210,7 +216,14 @@ async def test_merge_split_and_undo(admin):
     ]
     assert second["createdAt"] == "2001-03-04T20:16:40.500Z"
     assert _ids((await public(f"/vods?{ALL}")).json()) == {f"{A}-1", f"{A}-2", B}
-    assert await _sources() == before
+    # Hidden, in two shown synthetic VODs: answered with both, for the site to list.
+    original = (await public(f"/vods/{A}")).json()
+    assert original["hidden"] is True and "superseded_by" not in original
+    assert [a["id"] for a in original["appears_in"]] == [f"{A}-1", f"{A}-2"]
+    for half in (f"{A}-1", f"{A}-2"):
+        assert (await admin.patch(f"/api/v2/vods/{half}", headers=KEY, json={"hidden": True})).status_code == 200
+    assert (await public(f"/vods/{A}")).status_code == 404  # played by no shown one: as missing
+    assert (await public(f"/v1/vods/{A}/comments?content_offset_seconds=0")).status_code == 404
 
     async with get_sessionmaker()() as s:
         audited = (
@@ -220,12 +233,31 @@ async def test_merge_split_and_undo(admin):
                 .order_by(AUDIT_LOG.c.id)
             )
         ).all()
-    assert [tuple(a) for a in audited] == [
+    assert [tuple(a) for a in audited][:4] == [
         ("synthetic.create", f"vod:{AB}"),
         ("synthetic.delete", f"vod:{AB}"),
         ("synthetic.create", f"vod:{A}-1"),
         ("synthetic.create", f"vod:{A}-2"),
     ]
+
+
+async def test_merge_many_with_ids_and_candidates(admin):
+    r = await admin.get(f"/api/v2/vods/{B}/merge-candidates?hours=24", headers=KEY)
+    assert [(c["id"], c["gap"]) for c in r.json()["items"]] == [(A, 300)]  # ended 300 s before B started
+    assert (await admin.get(f"/api/v2/vods/{B}/merge-candidates", headers=KEY)).json()["items"] == []
+    r = await admin.post(f"/api/v2/vods/{B}/merge", headers=KEY, json={"sources": [A], "gaps": [0]})
+    assert r.status_code == 201, r.text
+    assert r.json()["id"] == f"{A}-m" and r.json()["duration"] == "03:00:00"  # in start order, A first
+    assert (await admin.delete(f"/api/v2/synthetic/{A}-m", headers=KEY)).status_code == 200
+    r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"sources": [B], "id": f"{A}-x"})
+    assert r.status_code == 201 and r.json()["id"] == f"{A}-x"
+    assert (await admin.delete(f"/api/v2/synthetic/{A}-x", headers=KEY)).status_code == 200
+    r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"sources": [B], "gaps": [1, 2]})
+    assert r.status_code == 422
+    r = await admin.post(f"/api/v2/vods/{A}/split", headers=KEY, json={"at": 60, "ids": [f"{A}-a", f"{A}-b"]})
+    assert [v["id"] for v in r.json()] == [f"{A}-a", f"{A}-b"]
+    for half in (f"{A}-a", f"{A}-b"):
+        assert (await admin.delete(f"/api/v2/synthetic/{half}", headers=KEY)).status_code == 200
 
 
 async def test_playthrough_tags_and_recompose(admin):
@@ -237,23 +269,23 @@ async def test_playthrough_tags_and_recompose(admin):
     body = {
         "id": P,
         "title": "Test Game, all of it",
-        "tags": ["compilation"],
+        "tags": ["playthroughs", "compilation"],  # compilation is the archive's: not without auto
         "segments": [w["segment"] for w in windows],
     }
     assert (await admin.post("/api/v2/synthetic", headers=KEY, json={**body, "tags": ["nope"]})).status_code == 422
     r = await admin.post("/api/v2/synthetic", headers=KEY, json=body)
     assert r.status_code == 201, r.text
-    assert (r.json()["supersedes"], r.json()["tags"], r.json()["duration"]) == (False, ["compilation"], "02:00:00")
+    assert (r.json()["supersedes"], r.json()["tags"], r.json()["duration"]) == (False, ["playthroughs"], "02:00:00")
     assert [s["at"] for s in r.json()["segments"]] == [0, 3600]
     assert (await admin.post("/api/v2/synthetic", headers=KEY, json=body)).status_code == 409
 
     # Untagged lists keep it out; its tab has it; its sources stay listed and link to it.
     assert _ids((await public(f"/vods?{ALL}")).json()) == {A, B}
-    assert _ids((await public(f"/vods?{ALL}&$tag=compilation")).json()) == {P}
+    assert _ids((await public(f"/vods?{ALL}&$tag=playthroughs")).json()) == {P}
     assert _ids((await public(f"/vods?{ALL}&$tag=*")).json()) == {A, B, P}
-    assert _ids((await public(f"/vods?{ALL}&tags=compilation")).json()) == {P}
+    assert _ids((await public(f"/vods?{ALL}&tags=playthroughs")).json()) == {P}
     original = (await public(f"/vods/{B}")).json()
-    assert original["appears_in"] == [{"id": P, "title": "Test Game, all of it", "tags": ["compilation"]}]
+    assert original["appears_in"] == [{"id": P, "title": "Test Game, all of it", "tags": ["playthroughs"]}]
     assert "superseded_by" not in original
     async with get_engine().connect() as conn:
         [game] = [g for g in await games_played(conn) if g["gameId"] == GAME]
@@ -290,23 +322,23 @@ async def test_nested_synthetic(admin):
     r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})
     assert r.status_code == 201, r.text
     # The test game, from the merged broadcast: A's second hour, the merge's gap, then B.
-    body = {"id": P, "title": "Test Game", "tags": ["compilation"], "segments": [{"vod_id": AB, "start": 3600}]}
+    body = {"id": P, "title": "Test Game", "tags": ["playthroughs"], "segments": [{"vod_id": AB, "start": 3600}]}
     r = await admin.post("/api/v2/synthetic", headers=KEY, json=body)
     assert r.status_code == 201, r.text
     assert r.json()["segments"] == [{"vod_id": AB, "start": 3600, "end": None, "at": 0, "label": None}]
 
-    # Served as windows of the real VODs, all one stream (a merge is one broadcast).
+    # Served as windows of the real VODs (hidden by the merge, still played: ADR 0005).
     vod = (await public(f"/vods/{P}")).json()
     assert vod["synthetic"]["segments"] == [
         {"vodId": A, "start": 3600, "end": 7200, "at": 0, "label": None, "stream": 0},
-        {"vodId": B, "start": 0, "end": 3600, "at": 3900, "label": None, "stream": 0},
+        {"vodId": B, "start": 0, "end": 3600, "at": 3900, "label": None, "stream": 1},
     ]
     [game] = vod["games"]
     assert (game["sourceVodId"], game["start_time"], game["end_time"]) == (B, "4000", "4100")
     page = (await public(f"/v1/vods/{P}/comments?content_offset_seconds=0")).json()
     assert [s["vodId"] for s in page["segments"]] == [A, B]
     assert (await public(f"/vods/{quote(AB)}")).json()["appears_in"] == [
-        {"id": P, "title": "Test Game", "tags": ["compilation"]}
+        {"id": P, "title": "Test Game", "tags": ["playthroughs"]}
     ]
 
     # No cycles, and the merge cannot go while the playthrough is made of it.
@@ -392,6 +424,8 @@ async def test_live_span_filters(admin):
     """``firstLiveAt``/``lastLiveAt``: a synthetic VOD's span, a real VOD's ``createdAt``, filtered in the
     query so totals and paging hold. A starts 20:00, B 22:05; their merge AB spans 20:00-23:05."""
     assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
+    for v in (A, B):  # a merge hides its sources; shown again, they list beside it
+        assert (await admin.patch(f"/api/v2/vods/{v}", headers=KEY, json={"hidden": False})).status_code == 200
 
     async def live(q: str) -> dict[str, Any]:
         r = await public(f"/vods?{ALL}&$superseded=true&{q}")
@@ -443,7 +477,7 @@ async def test_auto_playthrough(admin):
         "/api/v2/synthetic", headers=KEY, json={"id": P, "tags": ["compilation"], "auto": {"game_id": GAME}}
     )
     assert r.status_code == 201, r.text
-    assert r.json()["auto"] == {"game_id": GAME}
+    assert r.json()["auto"] == {"game_id": GAME} and r.json()["tags"] == ["compilation"]
     assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
         (A, 3600, 7200, 0),
         (B, 0, 3600, 3600),
@@ -476,10 +510,11 @@ async def test_auto_playthrough(admin):
     r = await admin.put(
         f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
     )
-    assert r.status_code == 200 and r.json()["auto"] is None
+    assert r.status_code == 200 and r.json()["auto"] is None and r.json()["tags"] == []
     assert P not in await synthetic.refresh_auto()
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": {"game_id": GAME}})
     assert r.json()["auto"] == {"game_id": GAME} and len(r.json()["segments"]) == 2
+    assert r.json()["tags"] == ["compilation"]
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": None})
     assert r.json()["auto"] is None and len(r.json()["segments"]) == 2
 

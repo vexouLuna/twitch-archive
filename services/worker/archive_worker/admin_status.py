@@ -110,13 +110,16 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                 log.exception("health: YouTube quota lookup failed")
                 return None
 
-        db, api, yt, viewer, used, bot = await asyncio.gather(
-            db_state(),
-            api_ok(),
-            deps.youtube.cached_check(YOUTUBE_CHECK_MAX_AGE),
-            viewer_check(),
-            quota(),
-            deps.doomtp.status(),
+        (db, api, yt, viewer, used, bot), app_client = await asyncio.gather(
+            asyncio.gather(  # gather's typing stops at six
+                db_state(),
+                api_ok(),
+                deps.youtube.cached_check(YOUTUBE_CHECK_MAX_AGE),
+                viewer_check(),
+                quota(),
+                deps.doomtp.status(),
+            ),
+            deps.helix.status(),
         )
         db_ok = db is not None
         counts, failures, live, beat = db or ({st: 0 for st in jobs.STATES}, [], None, None)
@@ -137,10 +140,14 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                 "channel": yt.get("channel"),
                 "connectedAt": yt.get("connectedAt"),
                 "refreshTokenExpiresAt": yt.get("refreshTokenExpiresAt"),
+                # Upload eligibility: channel.status (longUploadsStatus, isLinked, privacyStatus) and these.
+                "grantedScopes": yt.get("grantedScopes"),
                 "checkedAt": iso_utc(yt["checkedAt"]),
                 "quota": used,
             },
             "twitchViewer": viewer,
+            # The Twitch app (client credentials) behind Helix and IGDB: the censor check, chapters' box art.
+            "twitchApp": app_client,
             "doomtp": bot,
             "live": {
                 "live": live is not None,
