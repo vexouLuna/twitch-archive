@@ -854,9 +854,9 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
 
     @router.get("/playthrough-candidates")
     async def playthrough_candidates(game_id: Annotated[str, Query(min_length=1)]) -> Page[PlaythroughWindow]:
-        """Every window of a real, shown VOD playing ``game_id`` (its chapters of it, adjacent ones
-        joined), oldest first: trim them, then POST them to /synthetic as a playthrough (``tags:
-        ["playthroughs"]``); a window's ``segment`` is ready to send."""
+        """Every window of a VOD an auto playthrough of ``game_id`` would play (``synthetic.game_windows``:
+        its chapters of it, adjacent ones joined), oldest first: trim them, then POST them to /synthetic as a
+        playthrough (``tags: ["playthroughs"]``); a window's ``segment`` is ready to send."""
         async with get_sessionmaker()() as s:
             windows = await synthetic.game_windows(s, game_id)
         items = [

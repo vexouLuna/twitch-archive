@@ -255,14 +255,22 @@ def merge_all_id(first_id: str) -> str:
 
 def game_windows(chapters: Any, game_id: str, join_within: float = 1.0) -> list[tuple[float, float]]:
     """Where a VOD plays ``game_id``: its chapters of that game, those less than ``join_within``
-    seconds apart joined (a playthrough's candidate windows; cut chapters are left out)."""
+    seconds apart joined (a playthrough's candidate windows). Cut chapters (a merge's gap, "Technical
+    difficulties") are left out and never joined over, so a playthrough plays none of them."""
     out: list[tuple[float, float]] = []
+    cut = True  # a cut since the last window: the next one starts a new window
     for ch in sorted(timeline._chapters(chapters), key=timeline.start_of):
-        if str(ch.get("gameId")) != game_id or ch.get("restricted") is True or timeline.length_of(ch) <= EPS:
+        if timeline.length_of(ch) <= EPS:
+            continue
+        if ch.get("restricted") is True:
+            cut = True
+            continue
+        if str(ch.get("gameId")) != game_id:
             continue
         s, e = timeline.start_of(ch), timeline.start_of(ch) + timeline.length_of(ch)
-        if out and s - out[-1][1] < join_within:
+        if out and not cut and s - out[-1][1] < join_within:
             out[-1] = (out[-1][0], max(out[-1][1], e))
         else:
             out.append((s, e))
+        cut = False
     return out

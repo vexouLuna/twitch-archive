@@ -21,9 +21,9 @@ backfill or an edit of a source reaches the synthetic VODs made of it. A source 
 VOD itself (``compose.check_nesting``); one that others are made of cannot be deleted.
 
 A playthrough can keep itself up to date: ``synthetic.auto = {"gameId": ...}`` makes its segments
-every window of that game (``game_windows``). ``refresh_auto`` (also every monitor round) writes them
-again when they differ, so a new stream of the game, or a source's chapters edited, reaches it.
-Sending segments by hand ends that (the API clears ``auto``).
+every window of that game in the shown ``vods`` VODs (``game_windows``). ``refresh_auto`` (also every
+monitor round) writes them again when they differ, so a new stream of the game, or a source's chapters
+edited, reaches it. Sending segments by hand ends that (the API clears ``auto``).
 
 Its thumbnail is the first source's that has one, unless an admin set its own (``synthetic.thumbnailUrl``,
 PATCH /api/v2/vods): that one is kept over the derived one through every recompose and change.
@@ -38,7 +38,7 @@ from typing import Any
 from archive_common import audit, site_tags
 from archive_common.db import VOD_CHANGED, get_engine, get_sessionmaker
 from archive_common.models import Job, Vod, VodSegment
-from archive_common.segments import MAX_DEPTH, Segment
+from archive_common.segments import EPS, MAX_DEPTH, Segment
 from archive_common.serialize import (
     flat_segments,
     js_iso,
@@ -46,10 +46,9 @@ from archive_common.serialize import (
     not_hidden,
     not_merged_away,
     played_by_shown,
-    real,
 )
 from archive_common.timeutil import hhmmss_to_seconds
-from sqlalchemy import ARRAY, Text, cast, delete, func, or_, select, update
+from sqlalchemy import ARRAY, Text, cast, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from vex_platform.actor import SYSTEM
@@ -427,17 +426,31 @@ async def containing(source_id: str) -> list[dict[str, Any]]:
 
 
 async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, float]]:
-    """Every window of a real VOD playing ``game_id`` (``compose.game_windows``), oldest first: a shown one,
-    or a hidden one a shown ``vods`` synthetic VOD plays (a merge's sources; ADR 0005)."""
-    shown = or_(not_hidden(), played_by_shown(Vod.id, tag=site_tags.VODS))
+    """Every window of a VOD playing ``game_id`` (``compose.game_windows``), oldest first: what an auto
+    playthrough is made of. Its sources are the shown ``vods`` VODs, synthetic ones included (a merge or a
+    split), never a ``compilation`` and never one whose footage a shown ``vods`` synthetic VOD plays: that
+    one wins, so nothing counts twice. Each window stops at its VOD's end (chapters can run a fraction of
+    a second past the whole-second duration, which would leave a gap in the playthrough)."""
+    covered = played_by_shown(Vod.id, tag=site_tags.VODS, without=site_tags.COMPILATION)
     vods = (
         await s.execute(
             select(Vod)
-            .where(real(), not_merged_away(), shown, Vod.chapters.contains([{"gameId": game_id}]))
+            .where(
+                not_hidden(),
+                not_merged_away(),
+                Vod.tags.contains([site_tags.VODS]),
+                ~Vod.tags.contains([site_tags.COMPILATION]),
+                ~covered,
+                Vod.chapters.contains([{"gameId": game_id}]),
+            )
             .order_by(Vod.created_at, Vod.id)
         )
     ).scalars()
-    return [(vod, a, b) for vod in vods for a, b in compose.game_windows(vod.chapters, game_id)]
+    out = []
+    for vod in vods:
+        ends = float(hhmmss_to_seconds(vod.duration)) or float("inf")
+        out += [(vod, a, min(b, ends)) for a, b in compose.game_windows(vod.chapters, game_id) if a < ends - EPS]
+    return out
 
 
 def window_segment(vod: Vod, start: float, end: float) -> dict[str, Any]:
