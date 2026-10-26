@@ -284,7 +284,8 @@ class VodDetail(VodRow):
 
 class VodPatch(ApiModel):
     """Only the fields sent change. ``thumbnail_url: null`` goes back to the default; a merged VOD
-    takes only ``hidden`` and ``tags``, a synthetic one only ``title``, ``hidden`` and ``tags``."""
+    takes only ``hidden`` and ``tags``, a synthetic one only ``title``, ``hidden``, ``thumbnail_url``, ``tags`` and
+    ``cut_reason`` (its own thumbnail is kept over its first source's until set back to null)."""
 
     title: str | None = None
     hidden: bool | None = None
@@ -548,9 +549,11 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
                 raise ApiError(
                     409,
                     "vod_synthetic",
-                    f"{vod.id} is a synthetic VOD: its duration, date and "
-                    "thumbnail come from its segments (PUT /api/v2/synthetic)",
+                    f"{vod.id} is a synthetic VOD: its duration and date "
+                    "come from its segments (PUT /api/v2/synthetic)",
                 )
+            if vod.synthetic is not None and "thumbnail_url" in values:
+                values |= await synthetic.thumbnail(s, vod, values["thumbnail_url"])
             if "duration" in values:
                 games_end = (await s.execute(select(func.max(Game.end_time)).where(Game.vod_id == vod.id))).scalar()
                 try:

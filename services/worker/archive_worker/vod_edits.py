@@ -240,8 +240,9 @@ FIELDS = {
     "cutReason": "cut_reason",
 }
 MERGED_EDITABLE = {"hidden", "tags"}
-# A synthetic VOD's duration, chapters, thumbnail and date are composed from its segments.
-SYNTHETIC_EDITABLE = {"title", "hidden", "tags", "cutReason"}
+# A synthetic VOD's duration, chapters and date are composed from its segments; its thumbnail too, unless
+# it was given its own (synthetic.thumbnailUrl).
+SYNTHETIC_EDITABLE = {"title", "hidden", "thumbnailUrl", "tags", "cutReason"}
 # vods.tags: an untagged VOD is a regular one; a tagged one is listed apart (the site gives each known
 # tag its own tab). The known tags are the site's list (site_tags.vod_tags); these until it is saved.
 KNOWN_TAGS = ("compilation", "playthroughs", "vods")  # while the site's tag list was never saved

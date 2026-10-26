@@ -24,6 +24,9 @@ A playthrough can keep itself up to date: ``synthetic.auto = {"gameId": ...}`` m
 every window of that game (``game_windows``). ``refresh_auto`` (also every monitor round) writes them
 again when they differ, so a new stream of the game, or a source's chapters edited, reaches it.
 Sending segments by hand ends that (the API clears ``auto``).
+
+Its thumbnail is the first source's that has one, unless an admin set its own (``synthetic.thumbnailUrl``,
+PATCH /api/v2/vods): that one is kept over the derived one through every recompose and change.
 """
 
 from __future__ import annotations
@@ -146,7 +149,7 @@ async def _write_segments(s: AsyncSession, vod_id: str, segments: list[Segment])
 
 def _apply(vod: Vod, derived: dict[str, Any]) -> None:
     vod.duration, vod.chapters = derived["duration"], derived["chapters"]
-    vod.thumbnail_url = derived["thumbnail_url"]
+    vod.thumbnail_url = (vod.synthetic or {}).get("thumbnailUrl") or derived["thumbnail_url"]
     if derived["created_at"] is not None:
         vod.created_at = derived["created_at"]
 
@@ -300,6 +303,17 @@ async def change(
         await _notify(s, *{x.source_id for x in old}, *sources)
         await s.flush()
         return before, synthetic_json(vod, new)
+
+
+async def thumbnail(s: AsyncSession, vod: Vod, url: str | None) -> dict[str, Any]:
+    """The ``vods`` columns that give synthetic ``vod`` its own thumbnail ``url``, or (None) the derived one again."""
+    meta = {k: v for k, v in (vod.synthetic or {}).items() if k != "thumbnailUrl"}
+    if url:
+        return {"synthetic": {**meta, "thumbnailUrl": url}, "thumbnail_url": url}
+    segments = await _segments(s, vod.id)
+    sources = await _sources(s, {x.source_id for x in segments})
+    derived = next((t for x in segments if x.source_id in sources and (t := sources[x.source_id].thumbnail_url)), None)
+    return {"synthetic": meta, "thumbnail_url": derived}
 
 
 async def remove(vod_id: str) -> dict[str, Any]:
