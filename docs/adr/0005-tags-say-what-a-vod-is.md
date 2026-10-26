@@ -85,9 +85,10 @@ A hidden VOD that no shown synthetic VOD plays answers 404, as before. Lists nev
 Nothing new becomes public: a shown synthetic VOD already lists its sources' ids and plays their
 footage.
 
-An `auto` playthrough takes its windows from shown real VODs and from hidden ones that a shown `vods`
-synthetic VOD plays (a merge's sources). Without that, the migration would remove merged footage from
-playthroughs.
+An `auto` playthrough takes its windows from the shown `vods` VODs, synthetic ones included (a merge or a
+split), so merged footage stays in playthroughs. Hidden VODs and `compilation` VODs are never sources, and
+neither is a VOD whose footage a shown `vods` synthetic VOD plays: the synthetic one is used instead. (Until
+0.30 it took the hidden sources of a merge instead of the merge itself.)
 
 `PUT/POST /api/v2/synthetic` still take `supersedes`. `true` now means "hide the sources and add
 `vods`" (what it used to amount to), so older dashboards keep working. Responses keep

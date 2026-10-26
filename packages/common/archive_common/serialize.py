@@ -183,15 +183,19 @@ def not_hidden() -> Any:
     return _vt.c.hidden.is_(False)
 
 
-def played_by_shown(vod_id: Any, *, tag: str | None = None, depth: int = MAX_DEPTH + 1) -> Any:
-    """``vod_id`` is a source of a shown synthetic VOD (one with ``tag``, if given), directly or through
-    hidden synthetic VODs, ``depth`` levels up: what that VOD plays needs it (ADR 0005)."""
+def played_by_shown(
+    vod_id: Any, *, tag: str | None = None, without: str | None = None, depth: int = MAX_DEPTH + 1
+) -> Any:
+    """``vod_id`` is a source of a shown synthetic VOD (one with ``tag`` and not ``without``, if given),
+    directly or through hidden synthetic VODs, ``depth`` levels up: what that VOD plays needs it (ADR 0005)."""
     seg, syn = _sgt.alias(), _vt.alias()
     shown: Any = syn.c.hidden.is_(False)
     if tag is not None:
         shown = and_(shown, syn.c.tags.contains([tag]))
+    if without is not None:
+        shown = and_(shown, ~syn.c.tags.contains([without]))
     if depth > 1:
-        shown = or_(shown, played_by_shown(syn.c.id, tag=tag, depth=depth - 1))
+        shown = or_(shown, played_by_shown(syn.c.id, tag=tag, without=without, depth=depth - 1))
     return exists().where(seg.c.source_id == vod_id, syn.c.id == seg.c.vod_id, shown)
 
 
