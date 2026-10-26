@@ -1,6 +1,7 @@
 """archive-worker entrypoint.
 
-archive-worker run [--dry-run]            monitor + jobs + admin API
+archive-worker run [--dry-run]            monitor + jobs + admin API (just /healthz, /readyz with ARCHIVE_ADMIN_APART)
+archive-worker admin                      the admin API on its own (ARCHIVE_ADMIN_APART; one instance only)
 archive-worker import-youtube-token FILE  import youtube.auth from a legacy config.json
 archive-worker enqueue KIND VOD_ID [JSON] queue a job without the admin API
 """
@@ -19,9 +20,10 @@ from archive_common import http, logs
 from archive_common.config import get_settings
 from archive_common.twitch.gql import Gql
 from archive_common.twitch.helix import Helix
+from fastapi import FastAPI
 from vex_platform.actor import Actor
 
-from . import jobs, youtube
+from . import admin_status, jobs, youtube
 from .admin import create_admin_app
 from .admin_auth import DbSessionStore
 from .context import Deps
@@ -30,6 +32,45 @@ from .monitor import Monitor
 from .runtime_settings import RuntimeSettings
 
 log = logging.getLogger("archive_worker")
+
+SETTINGS_RELOAD_S = 10  # with the admin apart, how soon the worker sees a dashboard setting change
+
+
+def _server(app: FastAPI, settings) -> uvicorn.Server:  # type: ignore[no-untyped-def]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=settings.admin_host,
+            port=settings.admin_port,
+            log_level=settings.log_level.lower(),
+            log_config=None,  # use the handler from logs.setup
+            proxy_headers=False,
+        )
+    )
+    server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]  # we handle signals ourselves
+    return server
+
+
+def _stop_on_signal() -> asyncio.Event:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):  # Windows dev boxes
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+    return stop
+
+
+async def _reload_settings(runtime: RuntimeSettings, service: jobs.JobService) -> None:
+    """The admin process writes the dashboard's settings; this one picks them up from the database."""
+    while True:
+        await asyncio.sleep(SETTINGS_RELOAD_S)
+        try:
+            await runtime.load()
+            service.apply_settings()
+        except Exception:
+            log.exception("could not reload the runtime settings")
 
 
 async def serve(dry_run: bool = False) -> None:
@@ -43,33 +84,22 @@ async def serve(dry_run: bool = False) -> None:
     deps = Deps(settings, Helix(settings), Gql(settings), youtube.YouTube(settings), events)
     service = jobs.JobService.create(deps)
     monitor = Monitor(deps.helix, service, settings)
-    admin = uvicorn.Server(
-        uvicorn.Config(
-            create_admin_app(deps, service, sessions=DbSessionStore(), runtime=runtime),
-            host=settings.admin_host,
-            port=settings.admin_port,
-            log_level=settings.log_level.lower(),
-            log_config=None,  # use the handler from logs.setup
-            proxy_headers=False,
-        )
-    )
-    admin.install_signal_handlers = lambda: None  # type: ignore[attr-defined]  # we handle signals below
-
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except (NotImplementedError, RuntimeError):  # Windows dev boxes
-            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+    if settings.admin_apart:
+        app = FastAPI(title="archive-worker", docs_url=None, redoc_url=None, openapi_url=None)
+        admin_status.register_health(app, service)
+    else:
+        app = create_admin_app(deps, service, sessions=DbSessionStore(), runtime=runtime)
+    admin = _server(app, settings)
+    stop = _stop_on_signal()
 
     log.info(
-        "worker starting: channel=%s live_record=%s vod_download=%s youtube_upload=%s dry_run=%s",
+        "worker starting: channel=%s live_record=%s vod_download=%s youtube_upload=%s dry_run=%s admin_apart=%s",
         settings.twitch_username,
         settings.live_record,
         settings.vod_download,
         settings.youtube_upload,
         settings.dry_run,
+        settings.admin_apart,
     )
     await service.runtime.open()
     await service.runtime.start()
@@ -86,6 +116,8 @@ async def serve(dry_run: bool = False) -> None:
             return bool((await deps.youtube.cached_check())["valid"])
 
         tasks.append(asyncio.create_task(deps.youtube_check.run_forever(connected), name="youtube-check"))
+    if settings.admin_apart:
+        tasks.append(asyncio.create_task(_reload_settings(runtime, service), name="settings-reload"))
     tasks.append(asyncio.create_task(admin.serve(), name="admin"))  # keep last: shutdown awaits it
     stopper = asyncio.create_task(stop.wait())
     pending: set[asyncio.Task] = {*tasks, stopper}  # type: ignore[type-arg]
@@ -113,6 +145,38 @@ async def serve(dry_run: bool = False) -> None:
     await http.close_client()
 
 
+async def serve_admin() -> None:
+    """The admin API without the capture loop: it queues and acts on jobs through the database, and the
+    worker (ARCHIVE_ADMIN_APART) runs them. Sign-in states and the login limiter stay in memory, so run one."""
+    settings = get_settings()
+    runtime = RuntimeSettings(settings)
+    await runtime.load()
+    deps = Deps(settings, Helix(settings), Gql(settings), youtube.YouTube(settings), JobEvents())
+    service = jobs.JobService.create(deps)
+    admin = _server(create_admin_app(deps, service, sessions=DbSessionStore(), runtime=runtime), settings)
+    stop = _stop_on_signal()
+
+    log.info("admin API starting apart from the worker")
+    await service.runtime.open()  # the pool, for enqueueing; the runtime's worker is not started here
+    notes = asyncio.create_task(service.runtime.events.run_forever(), name="job-notes")  # lines admin actions add
+    server, stopper = asyncio.create_task(admin.serve(), name="admin"), asyncio.create_task(stop.wait())
+    done, _ = await asyncio.wait({server, notes, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    for t in done:
+        if t is not stopper and t.exception():
+            log.error("%s crashed", t.get_name(), exc_info=t.exception())
+
+    admin.should_exit = True
+    try:
+        await asyncio.wait_for(server, timeout=10)
+    except (TimeoutError, asyncio.CancelledError, Exception):
+        pass
+    for t in (notes, stopper):
+        t.cancel()
+    await asyncio.gather(notes, stopper, return_exceptions=True)
+    await service.runtime.close()  # flushes the notes
+    await http.close_client()
+
+
 async def _enqueue(kind: str, vod_id: str, payload: str | None) -> None:
     settings = get_settings()
     service = jobs.JobService.create(Deps(settings, Helix(settings), Gql(settings), youtube.YouTube(settings)))
@@ -131,6 +195,7 @@ def run() -> None:
     sub = parser.add_subparsers(dest="cmd")
     p_run = sub.add_parser("run", help="run monitor, job runner and admin API (default)")
     p_run.add_argument("--dry-run", action="store_true", help="download and process, but never upload or delete")
+    sub.add_parser("admin", help="run the admin API on its own (with ARCHIVE_ADMIN_APART on the worker)")
     p_tok = sub.add_parser("import-youtube-token", help="import youtube.auth from the legacy config.json")
     p_tok.add_argument("config", type=Path)
     p_enq = sub.add_parser("enqueue", help="queue a job directly in the database")
@@ -143,6 +208,8 @@ def run() -> None:
     if args.cmd == "import-youtube-token":
         asyncio.run(youtube.import_legacy_token(args.config))
         print("YouTube refresh token imported.")
+    elif args.cmd == "admin":
+        asyncio.run(serve_admin())
     elif args.cmd == "enqueue":
         asyncio.run(_enqueue(args.kind, args.vod_id, args.payload))
     else:
