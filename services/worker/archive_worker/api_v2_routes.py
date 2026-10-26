@@ -376,7 +376,8 @@ class DrivePut(ApiModel):
 
 
 class CensorPut(ApiModel):
-    """Every range: ``{start, end, video ("blur", "black" or null), mute, note?}`` in VOD seconds. Uploads
+    """Every range: ``{start, end, video ("blur", "black", "pixelate", "color" or null), color?, region?, mute,
+    note?}`` in VOD seconds (docs/admin-api.md). Uploads
     made from now on carry them; re-archive the VOD to replace the ones already on YouTube."""
 
     censor: list[dict[str, Any]]
