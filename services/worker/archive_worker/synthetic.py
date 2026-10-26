@@ -21,8 +21,8 @@ backfill or an edit of a source reaches the synthetic VODs made of it. A source 
 VOD itself (``compose.check_nesting``); one that others are made of cannot be deleted.
 
 A playthrough can keep itself up to date: ``synthetic.auto = {"gameId": ...}`` makes its segments
-every window of that game in the shown ``vods`` VODs (``game_windows``). ``refresh_auto`` (also every monitor round) writes them
-again when they differ, so a new stream of the game, or a source's chapters edited, reaches it.
+every window of that game in the shown ``vods`` VODs (``game_windows``). ``refresh_auto`` (also every
+monitor round) writes them again when they differ, so a new stream of the game, or a source's chapters edited, reaches it.
 Sending segments by hand ends that (the API clears ``auto``).
 
 Its thumbnail is the first source's that has one, unless an admin set its own (``synthetic.thumbnailUrl``,
