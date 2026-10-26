@@ -52,6 +52,25 @@ Migrations must stay **additive**: the old containers keep running against the m
 
 **Backups:** `docker compose --profile tools run --rm backup` writes a `pg_dump -Fc` archive into `ARCHIVE_BACKUP_DIR` (default `./backups`) and keeps the newest seven. Run it from a timer, and copy the dumps off the host. Restore one with [Restoring a dump, or moving from a native PostgreSQL](#restoring-a-dump-or-moving-from-a-native-postgresql)'s `pg_restore` line.
 
+### Running the admin API apart
+
+By default the worker serves the admin API from its own event loop, so deploying an admin-only fix restarts captures and uploads too. To run the admin API in its own container, set in `.env`:
+
+```bash
+COMPOSE_PROFILES=admin-apart     # starts worker-admin (archive-worker admin)
+ARCHIVE_ADMIN_APART=true         # the worker serves only its own /healthz and /readyz
+ARCHIVE_WORKER_PUBLISH_PORT=3032 # any free host port: worker-admin takes ARCHIVE_ADMIN_PORT's
+```
+
+then `docker compose up -d --wait`. The admin port stays where it was, so nothing in front of it changes. `docker compose up -d --no-deps worker-admin` then restarts the admin API alone.
+
+- Run **one** `worker-admin`. Twitch and YouTube sign-in states, viewer link codes and the failed-password limiter are kept in its memory: a restart drops a sign-in in progress (as a worker restart does today), and a second instance wouldn't see the first one's.
+- The admin API queues and acts on jobs through the database; the worker runs them. A dashboard settings change reaches the worker within 10 seconds.
+- `/admin/health` reports the worker as up while its job runner's heartbeat is under a minute old, and counts running jobs from the database. It has no start time for it.
+- A YouTube check started from the dashboard runs in the admin process; the worker's timer can run one at the same time.
+
+To go back, remove the three lines and run `docker compose up -d --wait --remove-orphans`.
+
 ## Restoring a dump, or moving from a native PostgreSQL
 
 Until this release the stack expected PostgreSQL on the host. To move an existing database into `db`:

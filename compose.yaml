@@ -132,10 +132,36 @@ services:
     ports:
       # The admin API: never published to the internet (docs/admin-api.md). Its own address, so exposing the api to
       # a proxy on another host doesn't expose this too; unset, it follows ARCHIVE_PUBLISH_ADDR.
-      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_ADMIN_PORT:-3031}:${ARCHIVE_ADMIN_PORT:-3031}"
+      # With the admin apart (below) this port serves only the worker's health: give it another host port
+      # (ARCHIVE_WORKER_PUBLISH_PORT) so worker-admin can take the admin's.
+      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_WORKER_PUBLISH_PORT:-${ARCHIVE_ADMIN_PORT:-3031}}:${ARCHIVE_ADMIN_PORT:-3031}"
     volumes:
       - ${ARCHIVE_HOST_DATA_DIR:-./data}:/data
     stop_grace_period: 60s  # let ffmpeg / uploads be cancelled cleanly; jobs resume on start
+
+  # The admin API in its own container, so restarting it doesn't interrupt captures (docs/deployment.md,
+  # "Running the admin API apart"). Off unless COMPOSE_PROFILES=admin-apart, with ARCHIVE_ADMIN_APART=true and
+  # ARCHIVE_WORKER_PUBLISH_PORT set in .env. One instance only: sign-in states are kept in memory.
+  worker-admin:
+    <<: *service
+    profiles: ["admin-apart"]
+    image: ghcr.io/vexouluna/twitch-archive-worker:${TAG:-main}
+    command: ["archive-worker", "admin"]
+    env_file: [.env]
+    environment:
+      ARCHIVE_API_INTERNAL_URL: ${ARCHIVE_API_INTERNAL_URL:-http://api:${ARCHIVE_API_PORT:-3030}}
+    secrets:
+      - { source: worker_database_url, target: archive_database_url }
+      - archive_twitch_client_secret
+      - archive_admin_api_key
+      - archive_admin_password
+      - archive_admin_auth_client_secret
+      - archive_google_client_secret
+      - archive_doomtp_api_key
+    ports:
+      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_ADMIN_PORT:-3031}:${ARCHIVE_ADMIN_PORT:-3031}"
+    volumes:
+      - ${ARCHIVE_HOST_DATA_DIR:-./data}:/data  # the storage page lists and deletes folders
 
   # One-shot dump: docker compose --profile tools run --rm backup
   # Writes archive-YYYY-MM-DD-HHMM.dump (pg_dump -Fc) into ARCHIVE_BACKUP_DIR and keeps the newest seven.

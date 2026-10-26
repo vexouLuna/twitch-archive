@@ -589,6 +589,7 @@ def create_admin_app(
             api_v2_routes.settings_router(runtime, service.apply_settings, verify_v2),
             api_v2_routes.storage_router(storage, verify_v2),
             api_v2_routes.vods_router(verify_v2, settings),
+            api_v2_routes.actions_router(ctx, verify_v2),
             api_v2_media.media_router(verify_v2, settings),
         ],
     )
