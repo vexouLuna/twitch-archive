@@ -5,6 +5,8 @@ PUT takes any of the options; the ones left out keep their value. All or nothing
 
 from __future__ import annotations
 
+import re
+import secrets
 from typing import Any
 
 from archive_common import site_options, site_tags
@@ -16,8 +18,10 @@ from sqlalchemy.dialects.postgresql import insert
 from .events import iso_utc
 
 MAX_CARDS = 12
-SINGLE = ("latest", "games")  # cards there is one of
+SINGLE = ("live", "games")  # cards there is one of
+COUNTS = (1, 2)
 PLAY = ("segments", "compiled")
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
 class SiteOptionError(Exception):
@@ -26,38 +30,57 @@ class SiteOptionError(Exception):
         self.msg = msg
 
 
-TAGGED = ("one", "tag")  # cards for a home category: its newest VOD, its two newest
+def _card(i: int, card: Any, home_tags: set[str] | None) -> dict[str, Any]:
+    """One card, either shape, as a ``cards`` one; an old-shape card, or a new one sent without an id, gets one."""
+    if isinstance(card, dict) and "kind" in card and "type" not in card:
+        if card["kind"] not in site_options.LEGACY_KINDS:
+            raise SiteOptionError(f"card {i + 1}: kind must be latest, one, tag or games")
+        card = site_options.from_legacy({"tag": None, **card}, secrets.token_urlsafe(6))
+    kind = card.get("type") if isinstance(card, dict) else None
+    if kind not in (*SINGLE, "vods"):
+        raise SiteOptionError(f"card {i + 1}: type must be live, vods or games")
+    card_id = card.get("id") or secrets.token_urlsafe(6)
+    if not isinstance(card_id, str) or not _ID.match(card_id):
+        raise SiteOptionError(f"card {i + 1}: id must be 1 to 32 letters, digits, - or _")
+    if kind in SINGLE:
+        return {"id": card_id, "type": kind}
+    tag, count = card.get("tag"), card.get("count")
+    if not isinstance(tag, str) or (home_tags is not None and tag not in home_tags | {site_tags.VODS}):
+        raise SiteOptionError(f"card {i + 1}: {tag!r} is not a tag that can be a home card")
+    if type(count) is not int or count not in COUNTS:
+        raise SiteOptionError(f"card {i + 1}: count must be 1 or 2")
+    return {"id": card_id, "type": kind, "tag": tag, "count": count}
 
 
 def _cards(value: Any, home_tags: set[str] | None) -> list[dict[str, Any]]:
-    """``home_tags``: the saved tags that are home categories, or None while the tag list was never saved."""
+    """``home_tags``: the saved tags that are home categories, or None while the tag list was never saved.
+    Cards may repeat (each has its own id), except ``live`` and ``games``."""
     if not isinstance(value, list) or len(value) > MAX_CARDS:
-        raise SiteOptionError(f"homeCards must be a list of at most {MAX_CARDS} cards")
+        raise SiteOptionError(f"cards must be a list of at most {MAX_CARDS} cards")
     out: list[dict[str, Any]] = []
     for i, card in enumerate(value):
-        kind = card.get("kind") if isinstance(card, dict) else None
-        if kind in SINGLE:
-            if {"kind": kind} in out:
-                raise SiteOptionError(f"card {i + 1}: there is already a {kind!r} card")
-            out.append({"kind": kind})
-        elif kind in TAGGED:
-            tag = card.get("tag")
-            if not isinstance(tag, str) or (home_tags is not None and tag not in home_tags):
-                raise SiteOptionError(f"card {i + 1}: {tag!r} is not a tag that can be a home card")
-            if {"kind": kind, "tag": tag} in out:
-                raise SiteOptionError(f"card {i + 1}: there is already a {kind!r} card for {tag!r}")
-            out.append({"kind": kind, "tag": tag})
-        else:
-            raise SiteOptionError(f"card {i + 1}: kind must be latest, one, tag or games")
+        new = _card(i, card, home_tags)
+        if any(c["id"] == new["id"] for c in out):
+            raise SiteOptionError(f"card {i + 1}: there is already a card {new['id']!r}")
+        if new["type"] in SINGLE and any(c["type"] == new["type"] for c in out):
+            raise SiteOptionError(f"card {i + 1}: there is already a {new['type']!r} card")
+        out.append(new)
     return out
 
 
 def validate(body: Any, tags: list[dict[str, Any]] | None) -> dict[str, Any]:
-    """The options a PUT changes, checked. ``tags``: the saved tag list (site_tags.load), or None."""
-    if not isinstance(body, dict) or not body or set(body) - set(site_options.DEFAULTS):
+    """The options a PUT changes, checked. ``tags``: the saved tag list (site_tags.load), or None.
+    The cards come as ``cards`` or, in either shape, as the old ``homeCards``; they are kept as ``cards``."""
+    if (
+        not isinstance(body, dict)
+        or not body
+        or set(body) - set(site_options.SERVED)
+        or {"cards", "homeCards"} <= set(body)
+    ):
         raise SiteOptionError(f"send an object with any of: {', '.join(site_options.DEFAULTS)}")
     home_tags = None if tags is None else site_tags.home_categories(tags)
-    out = {"homeCards": _cards(body["homeCards"], home_tags)} if "homeCards" in body else {}
+    key = "cards" if "cards" in body else "homeCards"
+    out = {"cards": _cards(body[key], home_tags)} if key in body else {}
     if "playDefault" in body:
         if body["playDefault"] not in PLAY:
             raise SiteOptionError(f"playDefault must be one of: {', '.join(PLAY)}")
