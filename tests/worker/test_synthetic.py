@@ -608,3 +608,31 @@ async def test_compiled_uploads_go_outdated_when_the_segments_change(admin, make
         f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [{"vod_id": B, "start": 0, "end": 600}]}
     )
     assert r.json()["compiled"] == {"outdated": True}
+
+
+async def test_own_thumbnail(admin):
+    """A synthetic VOD's own thumbnail wins over its first source's, through recomposes and new segments,
+    until it is set back to null."""
+    a, b = {"vod_id": A, "start": 3600, "end": 7200}, {"vod_id": B}
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "segments": [a, b]})
+    assert r.status_code == 201, r.text
+
+    async def thumb() -> str | None:
+        return (await admin.get(f"/api/v2/vods/{P}", headers=KEY)).json()["thumbnail_url"]  # type: ignore[no-any-return]
+
+    assert await thumb() == "https://t/a"
+    r = await admin.patch(f"/api/v2/vods/{P}", headers=KEY, json={"thumbnail_url": "https://t/own"})
+    assert r.status_code == 200 and r.json()["thumbnail_url"] == "https://t/own", r.text
+    assert r.json()["synthetic"]["thumbnailUrl"] == "https://t/own"
+    assert P in await synthetic.recompose(P)
+    assert await thumb() == "https://t/own"
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [b]})
+    assert r.status_code == 200, r.text
+    assert await thumb() == "https://t/own"
+    assert (await public(f"/vods/{P}")).json()["thumbnail_url"] == "https://t/own"
+
+    r = await admin.patch(f"/api/v2/vods/{P}", headers=KEY, json={"thumbnail_url": None})
+    assert r.status_code == 200 and r.json()["thumbnail_url"] is None  # B, its one source, has none
+    assert "thumbnailUrl" not in r.json()["synthetic"]
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [a, b]})
+    assert await thumb() == "https://t/a"

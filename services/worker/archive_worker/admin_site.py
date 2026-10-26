@@ -86,7 +86,8 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
 
     @app.get("/admin/site/options", dependencies=auth)
     async def get_site_options() -> dict[str, Any]:
-        """``{homeCards, playDefault, updatedAt, updatedBy}``; an option never saved reads as its default."""
+        """``{homeCards, cards, playDefault, updatedAt, updatedBy}`` (``homeCards``: ``cards`` in the old shape);
+        an option never saved reads as its default."""
         async with get_sessionmaker()() as s:
             return site_options.view(await site_options_common.load(s))
 

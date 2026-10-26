@@ -244,7 +244,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         async def fetch() -> dict[str, Any]:
             async with engine.connect() as conn:
                 loaded = await site_options.load(conn)
-            return {k: loaded[k] for k in site_options.DEFAULTS}
+            return {k: loaded[k] for k in site_options.SERVED}
 
         response = (await site_options_cache.get_or_render("options", fetch)).response(request)
         response.headers["Cache-Control"] = f"public, max-age={SITE_TAGS_TTL}"
