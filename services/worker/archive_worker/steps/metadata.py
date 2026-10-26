@@ -13,7 +13,7 @@ from archive_common import emote_providers as providers
 from archive_common import http
 from archive_common.db import get_sessionmaker
 from archive_common.models import Emote, Log, Vod
-from archive_common.timeutil import hhmmss_to_seconds, parse_ts
+from archive_common.timeutil import format_hhmmss, hhmmss_to_seconds, parse_ts
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -99,7 +99,19 @@ async def chapters(ctx: JobContext) -> None:
             box_art = (data or {}).get("box_art_url")
         result = [planning.single_chapter(game, box_art, duration, restricted)]
     await ctx.update_vod(chapters=result)
-    ctx.log.info("saved %d chapter(s)", len(result))
+    names = list(dict.fromkeys(ch.get("name") or planning.NO_CATEGORY for ch in result))
+    ctx.log.info(
+        "saved %d chapter(s) from %s: %s", len(result), "moments" if edges else "the VOD's category", ", ".join(names)
+    )
+    for ch in result:
+        ctx.debug(
+            "chapter at %s for %s: %s (Twitch %s)%s",
+            ch.get("duration"),
+            format_hhmmss(ch.get("end") or 0),
+            ch.get("name") or planning.NO_CATEGORY,
+            ch.get("gameId") or "-",
+            ", restricted (left out of uploads)" if ch.get("restricted") else "",
+        )
 
 
 # ── Chat replay ───────────────────────────────────────────────────────────
