@@ -24,16 +24,17 @@ def card(tag: str) -> dict[str, Any]:
 
 
 TAGS: list[dict[str, Any]] = [
-    {"name": "compilation", "homeCard": True},
-    {"name": "highlight", "homeCard": True},
-    {"name": "x"},
+    {"name": "compilation", "page": "playthroughs"},
+    {"name": "highlight", "page": "highlights"},
+    {"name": "x", "homeCard": True},  # a card without a page: no longer a home category (ADR 0005)
 ]
 
 
 def test_cards_kept_in_order():
-    cards = [GAMES, card("highlight"), {**LATEST, "extra": 1}, card("compilation")]
+    one = {"kind": "one", "tag": "highlight"}
+    cards = [GAMES, card("highlight"), {**LATEST, "extra": 1}, card("compilation"), one]
     assert validate({"homeCards": cards}, TAGS) == {
-        "homeCards": [GAMES, card("highlight"), LATEST, card("compilation")]
+        "homeCards": [GAMES, card("highlight"), LATEST, card("compilation"), one]
     }
     assert validate({"homeCards": []}, TAGS) == {"homeCards": []}
     assert validate({"homeCards": [card("anything")]}, None) == {"homeCards": [card("anything")]}  # tags never saved
@@ -54,7 +55,8 @@ def test_play_default():
         ({"homeCards": [LATEST, LATEST]}, "already a 'latest'"),
         ({"homeCards": [card("x")]}, "not a tag that can be"),
         ({"homeCards": [card("gone")]}, "not a tag that can be"),
-        ({"homeCards": [card("highlight"), card("highlight")]}, "already a card for"),
+        ({"homeCards": [card("highlight"), card("highlight")]}, "already a 'tag' card for"),
+        ({"homeCards": [{"kind": "one", "tag": "x"}]}, "not a tag that can be"),
         ({"homeCards": [{"kind": "nope"}]}, "kind must be"),
         ({"homeCards": ["latest"]}, "kind must be"),
         ({"playDefault": "youtube"}, "playDefault must be"),
@@ -108,3 +110,21 @@ async def test_defaults_save_and_serve(app, api, clean):
         c_ = AUDIT_LOG.c
         rows = (await s.execute(select(AUDIT_LOG).where(c_.id > clean, c_.action == "site.options.update"))).all()
     assert [(r.target, r.after) for r in rows] == [("site:options", {"homeCards": cards, "playDefault": "segments"})]
+
+
+async def test_card_of_a_tag_no_longer_a_home_category_goes(app, api, clean):
+    """Taking a tag's page away takes its cards off the homepage, saved or default (ADR 0005)."""
+    tag = {"label": "x", "drawn": False}
+    tags = [
+        {"name": n, **tag, "page": p, "pageLabel": p and p.title()}
+        for n, p in [("new", None), ("updated", None), ("compilation", None), ("vods", "vods"), ("highlight", "hl")]
+    ]
+    cards = [LATEST, card("highlight"), {"kind": "one", "tag": "highlight"}, GAMES]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://admin") as c:
+        assert (await c.put("/admin/site/tags", headers=KEY, json={"tags": tags})).status_code == 200
+        assert (await c.put("/admin/site/options", headers=KEY, json={"homeCards": cards})).status_code == 200
+        tags[-1]["page"] = None
+        assert (await c.put("/admin/site/tags", headers=KEY, json={"tags": tags})).status_code == 200
+        assert (await c.get("/admin/site/options", headers=KEY)).json()["homeCards"] == [LATEST, GAMES]
+    async with api:
+        assert (await api.get("/v1/site/options")).json()["homeCards"] == [LATEST, GAMES]

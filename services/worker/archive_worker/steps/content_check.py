@@ -12,7 +12,7 @@ match wins:
 
 On a review the job pauses before ``censor`` with the games in ``payload["censor_review"]``. The
 admin then sets censor ranges and resumes, resumes as it is, or cuts the games
-(POST /admin/jobs/{id}/censor-review). An IGDB error pauses it the same way: unchecked is not clean.
+(POST /api/v2/jobs/{id}/censor-review). An IGDB error pauses it the same way: unchecked is not clean.
 """
 
 from __future__ import annotations
@@ -73,32 +73,72 @@ def cut_games(chapters: list[dict[str, Any]] | None, game_ids: set[str]) -> list
 
 
 async def flagged_games(ctx: JobContext, games: dict[str, str]) -> list[dict[str, Any]]:
-    """``games`` whose IGDB entry has a blocking descriptor: ``{gameId, name, igdbId, matched}`` each."""
+    """``games`` whose IGDB entry has a blocking descriptor: ``{gameId, name, igdbId, matched}`` each. Logs what
+    IGDB had for each game, so a descriptor that should block (or a game IGDB doesn't know) shows in the job log."""
     helix = ctx.deps.helix
+    blocking = ctx.settings.censor_descriptors
     igdb_ids: dict[str, int] = {}
-    for game_id in games:
+    for game_id, name in games.items():
         igdb_id = ((await helix.get_game(game_id)) or {}).get("igdb_id")
         if igdb_id and str(igdb_id).isdigit():
             igdb_ids[game_id] = int(igdb_id)
+        else:
+            ctx.log.warning(
+                "%s (Twitch %s) has no IGDB entry, so it was not checked; add it to censor_allow_games or "
+                "restricted_games to decide it yourself",
+                name or "?",
+                game_id,
+            )
     found = await helix.igdb_games(list(igdb_ids.values())) if igdb_ids else {}
     out = []
     for game_id, igdb_id in igdb_ids.items():
-        hits = matching(descriptors(found.get(igdb_id)), ctx.settings.censor_descriptors)
+        listed = descriptors(found.get(igdb_id))
+        hits = matching(listed, blocking)
+        ctx.log.info(
+            "%s (IGDB %d): %s; %s",
+            games[game_id],
+            igdb_id,
+            f"descriptors and themes: {', '.join(listed)}" if listed else "no descriptors or themes",
+            f"matches {', '.join(hits)}" if hits else "nothing matches censor_descriptors",
+        )
         if hits:
             out.append({"gameId": game_id, "name": games[game_id], "igdbId": igdb_id, "matched": hits})
     return out
 
 
+def explain_skips(ctx: JobContext, chapters: list[dict[str, Any]] | None) -> None:
+    """Debug lines for the chapters' games the check leaves alone, and why."""
+    s = ctx.settings
+    seen: set[str] = set()
+    for ch in chapters or []:
+        name = ch.get("name")
+        key = str(ch.get("gameId") or name)
+        if key in seen:
+            continue
+        seen.add(key)
+        if ch.get("restricted") or planning.restricted_game(name, s.restricted_games):
+            ctx.debug("%s: cut from the upload (restricted), not checked", name or "no category")
+        elif name in s.censor_allow_games:
+            ctx.debug("%s: in censor_allow_games, uploaded as it is", name)
+        elif not ch.get("gameId"):
+            ctx.debug("%s: no Twitch category id, not checked", name or "no category")
+
+
 async def censor_check(ctx: JobContext) -> None:
     s = ctx.settings
     if not s.censor_descriptors:
+        ctx.log.info("censor check off: censor_descriptors is empty")
         return
-    games = games_to_check(file_chapters(ctx, await ctx.get_vod()), s.restricted_games, s.censor_allow_games)
+    chapters = file_chapters(ctx, await ctx.get_vod())
+    explain_skips(ctx, chapters)
+    games = games_to_check(chapters, s.restricted_games, s.censor_allow_games)
     if not games:
+        ctx.log.info("censor check: no game left to look up")
         return
     if not ctx.deps.helix.configured:
         ctx.log.warning("no Twitch app configured; IGDB not checked for %s", ", ".join(games.values()))
         return
+    ctx.debug("censor_descriptors: %s", ", ".join(s.censor_descriptors))
     try:
         flagged = await flagged_games(ctx, games)
     except httpx.HTTPError as exc:

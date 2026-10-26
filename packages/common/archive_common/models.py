@@ -62,8 +62,10 @@ class Vod(Base):
     # NULL = never run.
     bot_chat: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # Alembic 0010: off the public API (lists, GET, games rows, chat, games-played, status); admin still sees it.
+    # Except while a shown synthetic VOD plays it (ADR 0005): then GET, rows and chat still answer.
     hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"), default=False)
-    # Alembic 0016: NULL on a real VOD; {"supersedes": bool} on a synthetic one (its content is vod_segments,
+    # Alembic 0016: NULL on a real VOD; a dict on a synthetic one (``auto``, ``hid``: the
+    # VODs its merge or split hid; ``supersedes`` before 0022) (its content is vod_segments,
     # and its title, duration, chapters, thumbnail and date are composed from them).
     synthetic: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # Alembic 0016: [] = a regular VOD; a tagged one (e.g. "compilation") is listed apart.
@@ -314,6 +316,21 @@ class AdminSession(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MediaLease(Base):
+    """Who may stream a server file in the dashboard's preview (Alembic 0023): one row per ``scope`` (the
+    whole server is ``"server"``), held by one browser tab (``lease_id``) that heartbeats; stale after
+    ``media_lease.TTL``."""
+
+    __tablename__ = "media_leases"
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)  # the actor: twitch:<id>, password, api-key
+    holder: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # {login, browser, vod_id, file}
+    acquired_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class RuntimeSetting(Base):

@@ -39,7 +39,7 @@ def tag(name: str, **fields) -> dict[str, Any]:
     }
 
 
-AUTO = [tag("new"), tag("updated"), tag("compilation")]
+AUTO = [tag("new"), tag("updated"), tag("compilation"), tag("vods")]
 
 
 # ── Validation ────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ def test_validate_keeps_order_and_known_fields():
         ]
     }
     out = validate(body)
-    assert [t["name"] for t in out] == ["speedrun", "new", "updated", "compilation"]
+    assert [t["name"] for t in out] == ["speedrun", "new", "updated", "compilation", "vods"]
     assert out[0] == {
         "name": "speedrun",
         "label": "Speedrun!",
@@ -254,10 +254,10 @@ def test_refused_field_named(fields, field):
     assert (err.value.status, err.value.field) == (400, field)
     named = fields.get("name", "speedrun")
     assert err.value.tag == (named if isinstance(named, str) else None)
-    assert err.value.msg.startswith("tags[3]") and f".{field}:" in err.value.msg
+    assert err.value.msg.startswith("tags[4]") and f".{field}:" in err.value.msg
 
 
-@pytest.mark.parametrize("missing", ["new", "updated", "compilation"])
+@pytest.mark.parametrize("missing", ["new", "updated", "compilation", "vods"])
 def test_auto_tags_required(missing):
     with pytest.raises(SiteTagError, match=missing) as err:
         validate({"tags": [t for t in AUTO if t["name"] != missing]})
@@ -271,9 +271,9 @@ def test_not_a_list_of_tags(body):
 
 
 def test_limits():
-    validate({"tags": [*AUTO, *(tag(f"t{i}") for i in range(29))]})  # 32
+    validate({"tags": [*AUTO, *(tag(f"t{i}") for i in range(28))]})  # 32
     with pytest.raises(SiteTagError, match="at most 32"):
-        validate({"tags": [*AUTO, *(tag(f"t{i}") for i in range(30))]})
+        validate({"tags": [*AUTO, *(tag(f"t{i}") for i in range(29))]})
     with pytest.raises(SiteTagError, match="listed twice") as err:
         validate({"tags": [*AUTO, tag("new")]})
     assert (err.value.tag, err.value.field) == ("new", "name")
@@ -283,19 +283,23 @@ def test_tag_types():
     out = validate(
         {
             "tags": [
-                *AUTO[:2],
-                tag("compilation", page="playthroughs", pageLabel=" Playthroughs ", homeCard=True),
-                tag("highlight", page="highlights", pageLabel="Highlights"),
-                tag("speedrun", pageLabel="dropped", homeCard=None),
+                *AUTO[:3],
+                tag("vods", page="vods", pageLabel="VODs"),
+                tag("playthroughs", page="playthroughs", pageLabel=" Playthroughs ", homeCard=False),
+                tag("speedrun", pageLabel="dropped", homeCard=True),
             ]
         }
     )
-    types = [{k: t[k] for k in ("page", "pageLabel", "homeCard")} for t in out[2:]]
+    # homeCard is whether it has a page (a home category), whatever is sent (ADR 0005)
+    types = [{k: t[k] for k in ("page", "pageLabel", "homeCard")} for t in out[3:]]
     assert types == [
+        {"page": "vods", "pageLabel": "VODs", "homeCard": True},
         {"page": "playthroughs", "pageLabel": "Playthroughs", "homeCard": True},
-        {"page": "highlights", "pageLabel": "Highlights", "homeCard": False},
         {"page": None, "pageLabel": None, "homeCard": False},
     ]
+    for extra in ([tag("vods"), tag("other", page="vods", pageLabel="X")], [tag("vods", page="other", pageLabel="X")]):
+        with pytest.raises(SiteTagError, match="page"):  # /vods is the vods tag's only
+            validate({"tags": [*AUTO[:3], *extra]})
     with pytest.raises(SiteTagError, match="another tag has this page") as err:
         validate({"tags": [*AUTO, tag("a", page="x", pageLabel="X"), tag("b", page="x", pageLabel="X")]})
     assert (err.value.tag, err.value.field) == ("b", "page")
@@ -361,7 +365,7 @@ async def test_save_shape_and_serve(app, api, clean):
         r = await c.put("/admin/site/tags", headers=KEY, json={"tags": tags})
         assert r.status_code == 200, r.text
         body = r.json()
-        assert [t["name"] for t in body["tags"]] == ["speedrun", "new", "updated", "compilation"]
+        assert [t["name"] for t in body["tags"]] == ["speedrun", "new", "updated", "compilation", "vods"]
         assert body["updatedBy"] == "api-key" and body["updatedAt"]
         assert list(body["tags"][0]) == [
             "name",
@@ -439,7 +443,7 @@ async def test_put_refused_changes_nothing(app, clean):
         assert r.json() == {"error": True, "msg": r.json()["msg"], "tag": "compilation", "field": "name"}
         r = await c.put("/admin/site/tags", headers=KEY, json={"tags": [*AUTO, tag("x", color="url(http://e)")]})
         assert (r.status_code, r.json()["tag"], r.json()["field"]) == (400, "x", "color")
-        assert len((await c.get("/admin/site/tags", headers=KEY)).json()["tags"]) == 3
+        assert len((await c.get("/admin/site/tags", headers=KEY)).json()["tags"]) == 4
 
 
 async def test_unlisted_tag_loses_its_shape_and_audit(app, api, clean):
@@ -466,10 +470,21 @@ async def test_unlisted_tag_loses_its_shape_and_audit(app, api, clean):
         ("site.tags.replace", "site:tags"),
     ]
     first, set_shape, _, cleared, dropped, _ = rows
-    assert first.before is None and [t["name"] for t in first.after] == ["speedrun", "new", "updated", "compilation"]
+    assert first.before is None and [t["name"] for t in first.after] == [
+        "speedrun",
+        "new",
+        "updated",
+        "compilation",
+        "vods",
+    ]
     assert set_shape.before["shape"] is None and set_shape.after["shape"].startswith("v1/site/tags/speedrun.svg")
     assert cleared.before["shape"] and cleared.after["shape"] is None
-    assert dropped.before[0]["shape"] and [t["name"] for t in dropped.after] == ["new", "updated", "compilation"]
+    assert dropped.before[0]["shape"] and [t["name"] for t in dropped.after] == [
+        "new",
+        "updated",
+        "compilation",
+        "vods",
+    ]
     for row in rows:
         assert "<svg" not in str(row.before) + str(row.after) + str(row.detail)
 
@@ -507,30 +522,29 @@ async def vod(clean):
 
 
 async def test_vod_takes_the_sites_tags(app, vod):
-    async def patch(c, tags, v2=False):
-        if v2:
-            return await c.patch(f"/api/v2/vods/{vod}", headers=KEY, json={"tags": tags})
-        return await c.patch(f"/admin/vods/{vod}", headers=KEY, json={"tags": tags})
+    async def patch(c, tags):
+        return await c.patch(f"/api/v2/vods/{vod}", headers=KEY, json={"tags": tags})
 
     async with client(app) as c:
         # Never saved: only the built-in compilation.
         r = await patch(c, ["complete"])
-        assert r.status_code == 400 and r.json()["msg"] == "unknown tag(s) complete; known: compilation"
+        assert r.status_code == 422
+        assert r.json()["detail"] == "unknown tag(s) complete; known: compilation, playthroughs, vods"
         assert (await patch(c, ["compilation"])).status_code == 200
 
         await c.put("/admin/site/tags", headers=KEY, json={"tags": [tag("complete"), tag("speedrun"), *AUTO]})
         r = await patch(c, ["Complete", "compilation"])
         assert r.status_code == 200, r.text
         assert (await c.get(f"/admin/vods/{vod}", headers=KEY)).json()["tags"] == ["compilation", "complete"]
-        r = await patch(c, ["speedrun"], v2=True)
+        r = await patch(c, ["speedrun"])
         assert r.status_code == 200 and r.json()["tags"] == ["speedrun"]
         for computed in ("new", "updated"):  # the site works these out; a VOD never stores them
             r = await patch(c, [computed])
-            assert r.status_code == 400 and "unknown tag(s)" in r.json()["msg"]
-        r = await patch(c, ["nope"], v2=True)
+            assert r.status_code == 422 and "unknown tag(s)" in r.json()["detail"]
+        r = await patch(c, ["nope"])
         assert r.status_code == 422 and "known: compilation, complete, speedrun" in r.json()["detail"]
 
         # A tag the site's list drops stays allowed on the VOD that has it, and only there.
         await c.put("/admin/site/tags", headers=KEY, json={"tags": AUTO})
         assert (await patch(c, ["speedrun", "compilation"])).status_code == 200
-        assert (await patch(c, ["complete"])).status_code == 400
+        assert (await patch(c, ["complete"])).status_code == 422

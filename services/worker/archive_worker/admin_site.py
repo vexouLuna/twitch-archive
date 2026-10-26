@@ -1,4 +1,4 @@
-"""Runtime settings, the site's tags and options, and the data directory's storage."""
+"""The site's tags and options. Runtime settings and storage are /api/v2's (api_v2_routes.py)."""
 
 from __future__ import annotations
 
@@ -18,48 +18,12 @@ from .admin_shared import AdminContext, AdminError
 
 
 def register(app: FastAPI, ctx: AdminContext) -> None:
-    service = ctx.service
-    runtime = ctx.runtime
-    storage = ctx.storage
     auth = ctx.auth
 
     # ── Runtime settings ──────────────────────────────────────────────────
 
-    def settings_json() -> dict[str, Any]:
-        return {"data": runtime.describe()}
-
-    async def edited_async(pending) -> Any:  # type: ignore[no-untyped-def]
-        try:
-            return await pending
-        except ValueError as exc:
-            raise AdminError(400, str(exc)) from exc
-
     def changed_by(request: Request) -> str:
         return getattr(request.state, "actor_login", None) or request.state.actor  # type: ignore[no-any-return]
-
-    @app.get("/admin/settings", dependencies=auth)
-    async def list_settings() -> dict[str, Any]:
-        """Each setting the dashboard can change: value, env default, whether overridden, type, when it applies."""
-        return settings_json()
-
-    @app.patch("/admin/settings", dependencies=auth)
-    async def patch_settings(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """``{key: value, ...}``: all of them, or none when one is refused. Audited with before and after."""
-        before, after = await edited_async(runtime.update(body, changed_by(request)))
-        request.state.audit_detail = {"before": before, "after": after}
-        service.apply_settings()  # concurrency, attempts and gates, now
-        return settings_json()
-
-    @app.delete("/admin/settings/{key}", dependencies=auth)
-    async def reset_setting(key: str, request: Request) -> dict[str, Any]:
-        """Back to the env value (or the default)."""
-        try:
-            before, after = await runtime.reset(key)
-        except KeyError:
-            raise AdminError(404, f"No setting {key}") from None
-        request.state.audit_detail = {"before": before, "after": after}
-        service.apply_settings()
-        return settings_json()
 
     # ── Site tags (how vods.vexoul.net shows each VOD tag; archive-api serves them) ──
 
@@ -136,18 +100,3 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         request.state.audit_target = "site:options"
         request.state.audit_detail = {"before": before, "after": after}
         return view
-
-    # ── Storage ───────────────────────────────────────────────────────────
-
-    @app.get("/admin/storage", dependencies=auth)
-    async def get_storage(refresh: bool = False) -> dict[str, Any]:
-        """The disk, and each job folder (vods/<id>, live/<stream id>) with its size, VOD, jobs and whether
-        it is stale. Sizes are cached for a short while; ``refresh=true`` scans again."""
-        return await storage.view(refresh)
-
-    @app.delete("/admin/storage/{area}/{name}", dependencies=auth)
-    async def delete_storage(area: str, name: str, request: Request) -> dict[str, Any]:
-        """Delete a folder's files; refused while a job for it is queued, running or paused."""
-        freed = await storage.delete(area, name)
-        request.state.audit_detail = freed
-        return freed

@@ -6,7 +6,7 @@
 packages/common/archive_common/   settings, DB models, Twitch Helix/GQL clients, http helper
 services/api/archive_api/         FastAPI app, Feathers query parser, serializers, comments port
 services/worker/archive_worker/   monitor, job runner, steps/, hls, ffmpeg, youtube, admin API
-migrations/                       Alembic (0000 legacy baseline, 0001 jobs/app_state/log indexes, 0002 jobs.not_before, 0003 manual step control, … 0007 VOD merges and splits, 0008 bot chat, 0009 admin sessions, 0010 hidden VODs, 0011 runtime settings, 0012 vex-platform jobs schema + audit_log, 0013 job_runs ids, 0014 admin_audit copied into audit_log, 0015 job_runs.scope, 0016 synthetic VODs, 0017 job_runs.parent_id, 0018 site tags, 0019 censor ranges, 0020 tag types, 0021 cut reason)
+migrations/                       Alembic (0000 legacy baseline, 0001 jobs/app_state/log indexes, 0002 jobs.not_before, 0003 manual step control, … 0007 VOD merges and splits, 0008 bot chat, 0009 admin sessions, 0010 hidden VODs, 0011 runtime settings, 0012 vex-platform jobs schema + audit_log, 0013 job_runs ids, 0014 admin_audit copied into audit_log, 0015 job_runs.scope, 0016 synthetic VODs, 0017 job_runs.parent_id, 0018 site tags, 0019 censor ranges, 0020 tag types, 0021 cut reason, 0022 the tag model of ADR 0005, 0023 media leases)
 tests/api_contract/               golden responses from the legacy API + replay tests
 tests/worker/                     HLS parsing, planning, capture (respx), ffmpeg, DB-backed steps/runner
 deploy/                           roles.sql, which compose's roles step runs

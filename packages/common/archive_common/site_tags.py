@@ -3,8 +3,9 @@
 The worker's admin routes write it (archive_worker/site_tags.py), archive-api serves it at
 ``/v1/site/tags``. A tag is ``{name, label, drawn, color, shape, width, height, rotate}``, then the text drawn
 on it (``TEXT_FIELDS``), its pattern (``PATTERN_FIELDS``) and its type (``TYPE_FIELDS``: ``page``, the
-slug of its own menu entry and page or null, ``pageLabel``, that page's title, and ``homeCard``, whether it
-can feed a "latest" homepage card); ``shape`` is not stored with the list
+slug of its own menu entry and page or null, ``pageLabel``, that page's title, and ``homeCard``, stored as
+whether it has a page: a tag with a page is a "home category", which can also be a homepage card; ADR 0005);
+``shape`` is not stored with the list
 but made from ``site_tag_shapes``: the path of the tag's SVG relative to the public API, versioned by
 its content's hash. A list saved before a field existed reads it as null.
 """
@@ -18,7 +19,9 @@ from sqlalchemy import select
 from .models import SiteSetting, SiteTagShape
 
 KEY = "tags"  # the site_settings row
-AUTO_TAGS = ("new", "updated", "compilation")  # set by the site or the archive: every list keeps them
+VODS = "vods"  # every real VOD, and a merge or split: what /vods lists (ADR 0005)
+COMPILATION = "compilation"  # a synthetic VOD exactly while it keeps itself up to date (``synthetic.auto``)
+AUTO_TAGS = ("new", "updated", COMPILATION, VODS)  # set by the site or the archive: every list keeps them
 MAX_TAGS = 32
 SHAPE_MAX_BYTES = 64 * 1024
 TEXT_FIELDS = ("text", "textColor", "textSize", "textX", "textY", "textRotate")  # all null without text
@@ -60,6 +63,11 @@ async def load(conn: Any) -> dict[str, Any] | None:
         "updatedAt": row.updated_at,
         "updatedBy": row.updated_by,
     }
+
+
+def home_categories(tags: list[dict[str, Any]]) -> set[str]:
+    """The tags with a page: the ones a homepage card can be for."""
+    return {t["name"] for t in tags if t.get("page")}
 
 
 async def shape(conn: Any, name: str) -> tuple[str, str] | None:

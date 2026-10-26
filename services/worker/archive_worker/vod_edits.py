@@ -159,18 +159,36 @@ def drive(items: Any) -> list[dict[str, str]]:
     return out
 
 
-CENSOR_VIDEO = ("blur", "black")
+CENSOR_VIDEO = ("blur", "black", "pixelate", "color")
 NOTE_MAX = 200
+REGION_MIN = 0.01  # a box's smallest width or height, as a fraction of the frame
+_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _region(value: Any, where: str) -> dict[str, float]:
+    """``{x, y, w, h}``: fractions of the frame from its top-left corner, rounded to 4 places, inside it."""
+    r = _object(value, where, {"x", "y", "w", "h"})
+    if not all(is_number(r[k]) for k in "xywh"):
+        raise ValueError(f"{where}: x, y, w and h must be numbers")
+    x, y, w, h = (round(float(r[k]), 4) for k in "xywh")
+    if x < 0 or y < 0:
+        raise ValueError(f"{where}: x and y must be 0 or more")
+    if w < REGION_MIN or h < REGION_MIN:
+        raise ValueError(f"{where}: w and h must be at least {REGION_MIN:g}")
+    if x + w > 1 + 1e-9 or y + h > 1 + 1e-9:
+        raise ValueError(f"{where} reaches past the edge of the frame")
+    return {"x": x, "y": y, "w": w, "h": h}
 
 
 def censor(items: Any, duration: float) -> list[dict[str, Any]]:
-    """Admin censor ranges -> ``vods.censor``: ``{start, end, video, mute, note}`` in VOD seconds, sorted
-    by start, each blurring or blacking out the video (``video``), muting the audio (``mute``) or both,
-    and inside ``duration`` (unchecked when that is 0/unknown). Ranges may overlap: the step merges them."""
+    """Admin censor ranges -> ``vods.censor``: ``{start, end, video, color, region, mute, note}`` in VOD
+    seconds, sorted by start, each covering the video (``video``: blurred, blacked out, pixelated or filled
+    with ``color``, the whole frame or only a ``region`` box), muting the audio (``mute``) or both, and
+    inside ``duration`` (unchecked when that is 0/unknown). Ranges may overlap: the step merges them."""
     out: list[dict[str, Any]] = []
     for i, item in enumerate(_list(items, "censor")):
         where = f"censor[{i}]"
-        r = _object(item, where, {"start", "end"}, {"video", "mute", "note"})
+        r = _object(item, where, {"start", "end"}, {"video", "color", "region", "mute", "note"})
         start, end = r["start"], r["end"]
         if not is_number(start) or start < 0:
             raise ValueError(f"{where}.start must be a number of seconds >= 0")
@@ -180,7 +198,17 @@ def censor(items: Any, duration: float) -> list[dict[str, Any]]:
             raise ValueError(f"{where} ends at {end:g}s, after the end of the VOD ({duration:g}s)")
         video = r.get("video")
         if video not in (None, *CENSOR_VIDEO):
-            raise ValueError(f"{where}.video must be {' or '.join(map(repr, CENSOR_VIDEO))} or null")
+            raise ValueError(f"{where}.video must be {', '.join(map(repr, CENSOR_VIDEO))} or null")
+        color = r.get("color")
+        if video == "color":
+            if not isinstance(color, str) or not _COLOR.match(color):
+                raise ValueError(f"{where}.color must be #rrggbb")
+            color = color.lower()
+        elif color is not None:
+            raise ValueError(f"{where}.color is only for video 'color'")
+        region = None if r.get("region") is None else _region(r["region"], f"{where}.region")
+        if region is not None and video is None:
+            raise ValueError(f"{where}.region needs a video cover")
         mute = r.get("mute", False)
         if not isinstance(mute, bool):
             raise ValueError(f"{where}.mute must be true or false")
@@ -190,7 +218,10 @@ def censor(items: Any, duration: float) -> list[dict[str, Any]]:
         if note is not None and len(note) > NOTE_MAX:
             raise ValueError(f"{where}.note is longer than {NOTE_MAX} characters")
         out.append(
-            {"start": planning.num_seconds(start), "end": planning.num_seconds(end), "video": video, "mute": mute}
+            {"start": planning.num_seconds(start), "end": planning.num_seconds(end), "video": video}
+            | ({"color": color} if color else {})
+            | ({"region": region} if region else {})
+            | {"mute": mute}
             | ({"note": note} if note else {})
         )
     return sorted(out, key=lambda r: (r["start"], r["end"]))
@@ -213,7 +244,7 @@ MERGED_EDITABLE = {"hidden", "tags"}
 SYNTHETIC_EDITABLE = {"title", "hidden", "tags", "cutReason"}
 # vods.tags: an untagged VOD is a regular one; a tagged one is listed apart (the site gives each known
 # tag its own tab). The known tags are the site's list (site_tags.vod_tags); these until it is saved.
-KNOWN_TAGS = ("compilation",)
+KNOWN_TAGS = ("compilation", "playthroughs", "vods")  # while the site's tag list was never saved
 CUT_REASON_MAX = 500
 _HHMMSS = re.compile(r"^(\d{1,3}):([0-5]\d):([0-5]\d)$")
 

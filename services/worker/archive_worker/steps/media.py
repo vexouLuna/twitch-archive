@@ -200,7 +200,9 @@ async def censor(ctx: JobContext) -> None:
     cur = src
     if plan.cover:
         nxt = work / f"{src.stem}-covered.mp4"
-        spans = ", ".join(f"{mode} {format_hhmmss(a)}-{format_hhmmss(b)}" for a, b, mode in plan.cover)
+        spans = ", ".join(
+            f"{'+'.join(map(str, how))} {format_hhmmss(a)}-{format_hhmmss(b)}" for a, b, how in plan.cover
+        )
         ctx.log.info("covering %s: %s", src.name, spans)
         await ffmpeg.cover(cur, nxt, plan.cover, work)
         cur = nxt

@@ -4,9 +4,13 @@ A synthetic VOD is a ``vods`` row with ``synthetic`` set and its ``vod_segments`
 Its sources are only read, never written: deleting it is the whole undo. Each change is one
 transaction with the synthetic row locked. Writes to ``vods`` NOTIFY archive-api (migration 0006);
 ``vod_segments`` has no trigger, so a change NOTIFYs each source too, whose JSON lists the
-synthetic VODs it is in (``superseded_by``, ``appears_in``).
+synthetic VODs it is in (``appears_in``, or ``superseded_by`` for a hidden one in only one).
 
-Besides ``supersedes``, the ``synthetic`` column keeps ``madeAt`` (when it was created) and
+A merge or split is an ordinary synthetic VOD tagged ``vods`` whose sources were hidden (ADR 0005).
+``supersedes: true`` in a request is the old way of saying that: it hides the sources and adds ``vods``.
+``compilation`` is set by the archive: on a synthetic VOD exactly while it has ``auto``.
+
+The ``synthetic`` column keeps ``madeAt`` (when it was created) and
 ``changedAt`` (when what it plays last changed: its segments, or its length as a source grew), so
 the site can tell a viewer who finished it that there is more now. ``compiledFrom`` is the
 ``changedAt`` its compiled uploads were made from (steps/compile): when they differ, those are outdated.
@@ -28,13 +32,21 @@ import datetime as dt
 import logging
 from typing import Any
 
-from archive_common import audit
+from archive_common import audit, site_tags
 from archive_common.db import VOD_CHANGED, get_engine, get_sessionmaker
 from archive_common.models import Job, Vod, VodSegment
-from archive_common.segments import EPS, MAX_DEPTH, Segment, resolve
-from archive_common.serialize import flat_segments, js_iso, nested_segments, not_hidden, not_merged_away, real
+from archive_common.segments import MAX_DEPTH, Segment
+from archive_common.serialize import (
+    flat_segments,
+    js_iso,
+    nested_segments,
+    not_hidden,
+    not_merged_away,
+    played_by_shown,
+    real,
+)
 from archive_common.timeutil import hhmmss_to_seconds
-from sqlalchemy import ARRAY, Text, cast, delete, func, select
+from sqlalchemy import ARRAY, Text, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from vex_platform.actor import SYSTEM
@@ -108,33 +120,20 @@ async def _notify(s: AsyncSession, *vod_ids: str) -> None:
         await s.execute(select(func.pg_notify(VOD_CHANGED, vod_id)))
 
 
-async def _no_double_cover(s: AsyncSession, vod_id: str, segments: list[Segment], sources: dict[str, Source]) -> None:
-    """A source's second may be superseded by one synthetic VOD only, or its URL could not redirect."""
-    durations = {k: v.duration for k, v in sources.items()}
-    mine = resolve(segments, durations)
-    others = (
-        await s.execute(
-            select(VodSegment, Vod.synthetic)
-            .join(Vod, Vod.id == VodSegment.vod_id)
-            .where(VodSegment.source_id.in_({x.source_id for x in mine}), VodSegment.vod_id != vod_id)
-        )
-    ).all()
-    by_synthetic: dict[str, list[Segment]] = {}
-    for row, synthetic in others:
-        if (synthetic or {}).get("supersedes"):
-            by_synthetic.setdefault(row.vod_id, []).append(Segment.of_row(row))
-    for other_id, theirs in by_synthetic.items():
-        theirs = resolve(sorted(theirs, key=lambda x: x.at), durations)
-        for a in mine:
-            for b in theirs:
-                if a.source_id == b.source_id and min(a.end, b.end) - max(a.start, b.start) > EPS:  # type: ignore[operator, type-var]
-                    raise SyntheticError(
-                        409,
-                        f"{a.source_id} {max(a.start, b.start):g}-{min(a.end, b.end):g}s is "  # type: ignore[type-var]
-                        f"already superseded by {other_id}; delete or change that one first",
-                        synthetic=other_id,
-                        vodId=a.source_id,
-                    )
+async def _hide(s: AsyncSession, vod: Vod, ids: set[str]) -> None:
+    """Hide these VODs (a merge's or split's sources: they leave the lists, their links lead to ``vod``).
+    ``synthetic.hid`` keeps the ones it hid, which deleting it shows again."""
+    hid = (
+        await s.execute(update(Vod).where(Vod.id.in_(ids), Vod.hidden.is_(False)).values(hidden=True).returning(Vod.id))
+    ).scalars()
+    meta = vod.synthetic or {}
+    vod.synthetic = {**meta, "hid": sorted({*meta.get("hid", []), *hid})}
+
+
+def _auto_tags(tags: list[str], auto: Any, stands_in: bool) -> list[str]:
+    """``compilation`` exactly while ``auto``; ``vods`` added for the legacy ``supersedes: true``."""
+    out = set(tags) - {site_tags.COMPILATION} | ({site_tags.COMPILATION} if auto else set())
+    return sorted(out | ({site_tags.VODS} if stands_in else set()))
 
 
 async def _write_segments(s: AsyncSession, vod_id: str, segments: list[Segment]) -> None:
@@ -167,7 +166,7 @@ def synthetic_json(vod: Vod, segments: list[Segment]) -> dict[str, Any]:
     return {
         "id": vod.id,
         "title": vod.title,
-        "supersedes": bool(meta.get("supersedes")),
+        "supersedes": False,  # ADR 0005: kept for older dashboards
         "tags": list(vod.tags or []),
         "hidden": vod.hidden,
         "duration": vod.duration,
@@ -184,15 +183,13 @@ def synthetic_json(vod: Vod, segments: list[Segment]) -> dict[str, Any]:
     }
 
 
-async def _checked(s: AsyncSession, vod_id: str, segments: list[Segment], supersedes: bool) -> dict[str, Source]:
+async def _checked(s: AsyncSession, vod_id: str, segments: list[Segment]) -> dict[str, Source]:
     sources = await _sources(s, {seg.source_id for seg in segments})
     _composed(compose.validate, segments, sources)  # type: ignore[no-untyped-call]
     if any(x.synthetic for x in sources.values()):
         _composed(  # type: ignore[no-untyped-call]
             compose.check_nesting, vod_id, segments, await _inner(s, {k for k, x in sources.items() if x.synthetic})
         )
-    if supersedes:
-        await _no_double_cover(s, vod_id, segments, sources)
     return sources
 
 
@@ -209,7 +206,8 @@ async def create(
     auto: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A new synthetic VOD; ``title`` defaults to the first source's. With ``auto``, its segments are
-    that game's windows (``segments`` is not used)."""
+    that game's windows (``segments`` is not used). ``supersedes``: hide its sources and tag it ``vods``
+    (a merge or split)."""
     async with get_sessionmaker()() as s, s.begin():
         return await create_in(s, vod_id, segments, title=title, supersedes=supersedes, tags=tags, auto=auto)
 
@@ -229,9 +227,10 @@ async def create_in(
     if auto is not None:
         segments = await _auto_segments(s, auto)
     tags = _composed(check_tags, list(tags), await vod_tags(s))  # type: ignore[no-untyped-call]
+    tags = _auto_tags(tags, auto, supersedes)
     if await s.get(Vod, vod_id) is not None:
         raise SyntheticError(409, f"There is already a VOD {vod_id}", vodId=vod_id)
-    sources = await _checked(s, vod_id, segments, supersedes)
+    sources = await _checked(s, vod_id, segments)
     first = sources[segments[0].source_id]
     vod = Vod(
         id=vod_id,
@@ -239,7 +238,6 @@ async def create_in(
         platform="twitch",
         chapters_locked=True,
         synthetic={
-            "supersedes": supersedes,
             "madeAt": (now := _now()),
             "changedAt": now,
             **({"auto": auto} if auto is not None else {}),
@@ -253,6 +251,8 @@ async def create_in(
     s.add(vod)
     await s.flush()
     await _write_segments(s, vod_id, segments)
+    if supersedes:
+        await _hide(s, vod, set(sources))
     await _notify(s, *sources)
     return synthetic_json(vod, segments)
 
@@ -267,7 +267,8 @@ async def change(
     auto: dict[str, Any] | str | None = KEEP,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Change what is given; returns the synthetic VOD (as ``synthetic_json``) before and after.
-    ``auto``: a game to follow (its windows replace the segments), None to stop, ``KEEP`` as it is."""
+    ``auto``: a game to follow (its windows replace the segments), None to stop, ``KEEP`` as it is.
+    ``supersedes=True`` hides the sources and adds ``vods``; False changes nothing (ADR 0005)."""
     async with get_sessionmaker()() as s, s.begin():
         vod = await _locked(s, vod_id)
         if tags is not None:
@@ -277,20 +278,20 @@ async def change(
         if isinstance(auto, dict):
             segments = await _auto_segments(s, auto)
         new = old if segments is None else segments
-        supersedes = before["supersedes"] if supersedes is None else supersedes
-        sources = await _checked(s, vod_id, new, supersedes)
+        sources = await _checked(s, vod_id, new)
         if title is not None:
             if not title.strip():
                 raise SyntheticError(422, "title must be a non-empty string")
             vod.title = title.strip()
-        if tags is not None:
-            vod.tags = tags
-        meta = {**(vod.synthetic or {}), "supersedes": supersedes}
+        meta = {k: v for k, v in (vod.synthetic or {}).items() if k != "supersedes"}
         if auto != KEEP:
             meta.pop("auto", None)
             if auto is not None:
                 meta["auto"] = auto
         vod.synthetic = meta
+        vod.tags = _auto_tags(list(vod.tags or []) if tags is None else tags, meta.get("auto"), bool(supersedes))
+        if supersedes:
+            await _hide(s, vod, set(sources))
         _apply(vod, compose.derive(new, sources))
         if vod.duration != before["duration"] or [x.json() for x in new] != before["segments"]:
             _changed(vod)
@@ -302,7 +303,8 @@ async def change(
 
 
 async def remove(vod_id: str) -> dict[str, Any]:
-    """Delete a synthetic VOD (its segments go with it); its sources are as they were. Returns what it was."""
+    """Delete a synthetic VOD (its segments go with it); its sources are as they were, the ones it hid
+    (``synthetic.hid``) shown again. Returns what it was."""
     async with get_sessionmaker()() as s, s.begin():
         vod = await _locked(s, vod_id)
         users = list(
@@ -325,7 +327,10 @@ async def remove(vod_id: str) -> dict[str, Any]:
             )
         segments = await _segments(s, vod_id)
         before = synthetic_json(vod, segments)
+        hid = (vod.synthetic or {}).get("hid") or []
         await s.execute(delete(Vod).where(Vod.id == vod_id))
+        if hid:  # the sources a merge or split hid are shown again
+            await s.execute(update(Vod).where(Vod.id.in_(hid)).values(hidden=False))
         await _notify(s, *{x.source_id for x in segments})
         return before
 
@@ -396,7 +401,7 @@ async def containing(source_id: str) -> list[dict[str, Any]]:
                 "id": vod.id,
                 "title": vod.title,
                 "tags": list(vod.tags or []),
-                "supersedes": bool((vod.synthetic or {}).get("supersedes")),
+                "supersedes": False,  # ADR 0005: kept for older dashboards
                 "segments": [],
             },
         )
@@ -408,11 +413,13 @@ async def containing(source_id: str) -> list[dict[str, Any]]:
 
 
 async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, float]]:
-    """Every window of a real, shown VOD playing ``game_id`` (``compose.game_windows``), oldest first."""
+    """Every window of a real VOD playing ``game_id`` (``compose.game_windows``), oldest first: a shown one,
+    or a hidden one a shown ``vods`` synthetic VOD plays (a merge's sources; ADR 0005)."""
+    shown = or_(not_hidden(), played_by_shown(Vod.id, tag=site_tags.VODS))
     vods = (
         await s.execute(
             select(Vod)
-            .where(real(), not_merged_away(), not_hidden(), Vod.chapters.contains([{"gameId": game_id}]))
+            .where(real(), not_merged_away(), shown, Vod.chapters.contains([{"gameId": game_id}]))
             .order_by(Vod.created_at, Vod.id)
         )
     ).scalars()
@@ -487,14 +494,35 @@ async def recompose(*vod_ids: str) -> list[str]:
     return done
 
 
-async def merge_candidates(vod_id: str, minutes: int) -> tuple[Vod, list[Vod]] | None:
+async def merge_candidates(vod_id: str, minutes: int, hours: int | None = None) -> tuple[Vod, list[Vod]] | None:
     """The VOD and those that started after it and no later than ``minutes`` after it ended (oldest
-    first, at most 20, none merged away): what the dashboard offers to merge it with. None: no VOD."""
+    first, at most 20, none merged away): what the dashboard offers to merge it with. With ``hours``:
+    those that start less than ``hours`` after it ends or end less than ``hours`` before it starts, either
+    side, oldest first (at most 50). None: no VOD."""
     async with get_sessionmaker()() as s:
         a = await s.get(Vod, vod_id)
         if a is None:
             return None
         ends = a.created_at + dt.timedelta(seconds=hhmmss_to_seconds(a.duration))
+        if hours is not None:
+            within = dt.timedelta(hours=hours)
+            rows = await s.execute(
+                select(Vod)
+                .where(
+                    Vod.id != a.id,
+                    Vod.merged_into.is_(None),
+                    Vod.created_at < ends + within,
+                    Vod.created_at > a.created_at - within - dt.timedelta(days=2),  # then by its end, below
+                )
+                .order_by(Vod.created_at)
+            )
+            near = [
+                v
+                for v in rows.scalars()
+                if v.created_at > a.created_at
+                or v.created_at + dt.timedelta(seconds=hhmmss_to_seconds(v.duration)) > a.created_at - within
+            ]
+            return a, near[:50]
         rows = await s.execute(
             select(Vod)
             .where(

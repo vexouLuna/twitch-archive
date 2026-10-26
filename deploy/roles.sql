@@ -32,7 +32,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON vods, games, emotes, logs, bot_logs, str
     vod_splices, vod_splice_logs, vod_splice_bot_logs, vod_segments TO archive_worker;
 -- The audit log is append-only for the worker.
 GRANT SELECT, INSERT ON admin_audit TO archive_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON admin_sessions, settings, site_settings, site_tag_shapes TO archive_worker;
+GRANT SELECT, INSERT, UPDATE, DELETE ON admin_sessions, media_leases, settings, site_settings, site_tag_shapes TO archive_worker;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO archive_worker;
 
 -- vex-platform (Alembic 0012). audit_log is append-only too. The jobs schema is procrastinate's queue

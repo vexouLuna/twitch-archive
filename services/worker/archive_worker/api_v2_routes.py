@@ -12,19 +12,24 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
     GET    /api/v2/vods                every VOD, hidden, merged and synthetic ones too, newest first, each
                                        with whether it is uploaded and its queued, running or paused jobs
     GET    /api/v2/vods/{vod_id}
-    PATCH  /api/v2/vods/{vod_id}       title, hidden, thumbnail_url, duration, created_at, tags
+    PATCH  /api/v2/vods/{vod_id}       title, hidden, thumbnail_url, duration, created_at, tags, cut_reason
     GET    /api/v2/vods/{vod_id}/games its games rows, by start
     PUT    /api/v2/vods/{vod_id}/games {games}: all of them replaced
     PUT    /api/v2/vods/{vod_id}/chapters {chapters, locked}: all of them replaced
     PUT    /api/v2/vods/{vod_id}/youtube {youtube}, /drive {drive}, /censor {censor}: each list replaced
+    GET    /api/v2/vods/{vod_id}/emotes  the saved emotes row, or null
+    POST   /api/v2/vods/{vod_id}/rearchive {type, part?, path?}: upload it again, replacing the old uploads
+    POST   /api/v2/vods/{vod_id}/youtube/delete {videos}: off YouTube and off its list
+    POST   /api/v2/jobs/{job_id}/censor-review {decision}: answer a job the censor check paused
     POST   /api/v2/synthetic           a synthetic VOD: segments of real ones (see compose, synthetic)
     GET    /api/v2/synthetic/{vod_id}
-    PUT    /api/v2/synthetic/{vod_id}  segments, title, supersedes, tags
+    PUT    /api/v2/synthetic/{vod_id}  segments, title, tags (supersedes: legacy, see synthetic.py)
     DELETE /api/v2/synthetic/{vod_id}  the whole undo: its sources were never changed
     GET    /api/v2/synthetic/{vod_id}/dmca  the DMCA claims on its sources: {overlapping, other}
-    GET    /api/v2/vods/{vod_id}/merge-candidates  VODs that started soon after it ended, oldest first
-    POST   /api/v2/vods/{vod_id}/merge {source, gap?}: a synthetic VOD of both, superseding them
-    POST   /api/v2/vods/{vod_id}/split {at}: two synthetic VODs, superseding it
+    GET    /api/v2/vods/{vod_id}/merge-candidates?hours=  VODs that started soon after it ended (or, with
+                                       hours, ended soon before it started), oldest first
+    POST   /api/v2/vods/{vod_id}/merge {sources, gaps?, id?}: one synthetic VOD of them all, hiding them
+    POST   /api/v2/vods/{vod_id}/split {at, ids?}: two synthetic VODs, hiding it
     GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
 """
 
@@ -32,15 +37,16 @@ from __future__ import annotations
 
 import datetime as dt
 import inspect
-from collections.abc import Callable
-from typing import Annotated, Any
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import Annotated, Any, Literal
 
 from archive_common import audit
 from archive_common.config import Settings
 from archive_common.db import get_sessionmaker
 from archive_common.models import Game, Vod
 from archive_common.segments import Segment
-from archive_common.serialize import duration_seconds, real, tagged
+from archive_common.serialize import EMOTES, duration_seconds, real, tagged
 from archive_common.timeutil import hhmmss_to_seconds
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import Field
@@ -50,11 +56,13 @@ from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, decode_curso
 from vex_platform.audit import AuditEntry
 from vex_platform.audit.sqlalchemy import record
 
-from . import compose, jobs, site_tags, synthetic, vod_edits
+from . import compose, jobs, site_tags, synthetic, vod_edits, youtube
+from .admin_shared import AdminContext, AdminError, log
 from .job_rows import ACTIVE, ALL_JOBS
 from .runtime_settings import RuntimeSettings
+from .steps import content_check
 from .storage import Storage, StorageError
-from .vods import notify_rows_moved
+from .vods import drop_youtube_entries, notify_rows_moved
 
 Auth = Callable[[Request], Any]
 VOD_LIST_MAX = 200
@@ -256,6 +264,7 @@ class VodRow(ApiModel):
     merged_into: dict[str, Any] | None = None  # {id, offset} once merged into that VOD
     tags: list[str]  # [] = a regular VOD
     synthetic: dict[str, Any] | None = None  # {supersedes} on a synthetic VOD
+    cut_reason: str | None = None  # why the VOD was cut, when an admin gave a reason
     uploaded: bool = False  # it has YouTube parts
     active_jobs: list[ActiveJob] = []  # queued, running or paused, oldest first
 
@@ -283,6 +292,7 @@ class VodPatch(ApiModel):
     duration: str | None = None  # HH:MM:SS
     created_at: str | None = None  # ISO 8601 with an offset
     tags: list[str] | None = None
+    cut_reason: str | None = None  # 500 characters at most; null for none
 
 
 class GameRow(ApiModel):
@@ -340,7 +350,8 @@ class ChaptersPut(ApiModel):
 
 
 class MergeCandidate(ApiModel):
-    """A VOD that started soon after this one ended: ``gap`` seconds after (negative: they overlap)."""
+    """A VOD that started soon after this one ended, or (``?hours=``) ended soon before it started:
+    ``gap`` seconds from the earlier one's end to the later one's start (negative: they overlap)."""
 
     id: str
     stream_id: str | None = None
@@ -365,7 +376,8 @@ class DrivePut(ApiModel):
 
 
 class CensorPut(ApiModel):
-    """Every range: ``{start, end, video ("blur", "black" or null), mute, note?}`` in VOD seconds. Uploads
+    """Every range: ``{start, end, video ("blur", "black", "pixelate", "color" or null), color?, region?, mute,
+    note?}`` in VOD seconds (docs/admin-api.md). Uploads
     made from now on carry them; re-archive the VOD to replace the ones already on YouTube."""
 
     censor: list[dict[str, Any]]
@@ -407,7 +419,7 @@ async def _locked_vod(s: Any, vod_id: str) -> Vod:
 
 
 # VodPatch field -> vod_edits.vod_fields' key.
-_V1_FIELDS = {"thumbnail_url": "thumbnailUrl", "created_at": "createdAt"}
+_V1_FIELDS = {"thumbnail_url": "thumbnailUrl", "created_at": "createdAt", "cut_reason": "cutReason"}
 
 
 def _row(vod: Vod) -> dict[str, Any]:
@@ -423,6 +435,7 @@ def _row(vod: Vod) -> dict[str, Any]:
         "merged_into": vod.merged_into,
         "tags": list(vod.tags or []),
         "synthetic": vod.synthetic,
+        "cut_reason": vod.cut_reason,
         "uploaded": bool(vod.youtube),
     }
 
@@ -519,18 +532,19 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
             if vod is None:
                 raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
             known = await site_tags.vod_tags(s, vod.tags) if "tags" in sent else ()
+            v1 = {_V1_FIELDS.get(k, k): v for k, v in sent.items()}
             try:
-                values = vod_edits.vod_fields({_V1_FIELDS.get(k, k): v for k, v in sent.items()}, known)
+                values = vod_edits.vod_fields(v1, known)
             except ValueError as exc:
                 raise ApiError(422, "invalid_vod", str(exc)) from None
-            if vod.merged_into is not None and set(sent) - vod_edits.MERGED_EDITABLE:
+            if vod.merged_into is not None and set(v1) - vod_edits.MERGED_EDITABLE:
                 raise ApiError(
                     409,
                     "vod_merged",
                     f"{vod.id} was merged into {vod.merged_into.get('id')}; its "
                     "contents are that VOD's now. Undo the merge first",
                 )
-            if vod.synthetic is not None and set(sent) - vod_edits.SYNTHETIC_EDITABLE:
+            if vod.synthetic is not None and set(v1) - vod_edits.SYNTHETIC_EDITABLE:
                 raise ApiError(
                     409,
                     "vod_synthetic",
@@ -703,8 +717,8 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
     @router.post("/synthetic", status_code=201)
     async def create_synthetic(request: Request, body: SyntheticCreate) -> SyntheticView:
         """A synthetic VOD of ``segments``: windows ``[start, end)`` of real VODs placed at ``at`` (a
-        missing ``at`` follows the segment before). ``supersedes``: the real VODs leave the public lists
-        and redirect into it (a merge, a split); untagged, it is listed as a regular VOD. With ``auto``
+        missing ``at`` follows the segment before). ``supersedes`` (older dashboards): hide the sources
+        and tag it ``vods``, as a merge does. With ``auto``
         (a playthrough that keeps itself up to date) the segments are every window of that game, kept so
         by the monitor, and ``segments`` is not needed. Audited as ``synthetic.create``."""
         view = await _synthetic(  # type: ignore[no-untyped-call]
@@ -761,14 +775,21 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         return SyntheticView(**view)
 
     @router.get("/vods/{vod_id}/merge-candidates")
-    async def merge_candidates(vod_id: str) -> Page[MergeCandidate]:
+    async def merge_candidates(
+        vod_id: str, hours: Annotated[int | None, Query(ge=1, le=168)] = None
+    ) -> Page[MergeCandidate]:
         """What to offer to merge this VOD with (``POST /vods/{vod_id}/merge``): VODs that started up to
-        ARCHIVE_MERGE_CANDIDATE_MINUTES after it ended and aren't merged into another."""
-        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes)
+        ARCHIVE_MERGE_CANDIDATE_MINUTES after it ended and aren't merged into another; with ``hours``,
+        those starting less than that after it ends or ending less than that before it starts."""
+        found = await synthetic.merge_candidates(vod_id, settings.merge_candidate_minutes, hours)
         if found is None:
             raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
         a, rows = found
-        duration = hhmmss_to_seconds(a.duration)
+
+        def gap(v: Vod) -> float:
+            first, then = (a, v) if v.created_at >= a.created_at else (v, a)
+            return round((then.created_at - first.created_at).total_seconds()) - hhmmss_to_seconds(first.duration)
+
         return Page[MergeCandidate](
             items=[
                 MergeCandidate(
@@ -777,7 +798,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
                     title=v.title,
                     created_at=v.created_at,
                     duration=v.duration,
-                    gap=round((v.created_at - a.created_at).total_seconds()) - duration,
+                    gap=gap(v),
                     titles_match=synthetic.normal_title(v.title) == synthetic.normal_title(a.title),
                 )
                 for v in rows
@@ -786,28 +807,39 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
 
     @router.post("/vods/{vod_id}/merge", status_code=201)
     async def merge_vods(request: Request, vod_id: str, body: MergeBody) -> SyntheticView:
-        """This VOD then ``source`` (a later one of the same broadcast) as one synthetic VOD
-        ``{vod_id}+{source}``, ``source`` placed where it started (or ``gap`` seconds after this one
-        ends). Both leave the lists and redirect into it."""
+        """This VOD and ``sources``, in the order they started, as one synthetic VOD tagged ``vods`` (id:
+        ``id``, default ``{first}-m``); each placed where it started, or ``gaps[i]`` seconds after the one
+        before ends. The old ``{source, gap?}`` makes ``{vod_id}+{source}``. The VODs are hidden: their
+        links lead to it, and deleting it shows them again (ADR 0005)."""
+        if body.sources is None and body.source is None:
+            raise ApiError(422, "invalid_synthetic", "send sources (the VODs to merge with this one)")
+        ids = [vod_id, *(body.sources if body.sources is not None else [body.source or ""])]
         async with get_sessionmaker()() as s:
-            vods = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_([vod_id, body.source])))).scalars()}
-        a, b = (_real(vods, i) for i in (vod_id, body.source))
-        segments = await _synthetic(compose.merge_segments, synthetic.source_of(a), synthetic.source_of(b), body.gap)  # type: ignore[no-untyped-call]
-        view = await _synthetic(synthetic.create, compose.merge_id(a.id, b.id), segments, supersedes=True)  # type: ignore[no-untyped-call]
-        await _audit(request, "synthetic.create", view["id"], after=view, detail={"merge": [a.id, b.id]})
+            vods = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_(ids)))).scalars()}
+        found = [synthetic.source_of(_real(vods, i)) for i in ids]
+        if body.sources is None:
+            segments = await _synthetic(compose.merge_segments, *found, body.gap)  # type: ignore[no-untyped-call]
+            new_id = compose.merge_id(*ids)
+        else:
+            gaps = body.gaps if body.gaps is not None else [None] * (len(found) - 1)
+            segments = await _synthetic(compose.merge_all, found, gaps)  # type: ignore[no-untyped-call]
+            new_id = body.id or compose.merge_all_id(segments[0].source_id)
+        view = await _synthetic(synthetic.create, new_id, segments, supersedes=True)  # type: ignore[no-untyped-call]
+        merged = [x.source_id for x in segments]
+        await _audit(request, "synthetic.create", view["id"], after=view, detail={"merge": merged})
         return SyntheticView(**view)
 
     @router.post("/vods/{vod_id}/split", status_code=201)
     async def split_vod(request: Request, vod_id: str, body: SplitBody) -> list[SyntheticView]:
-        """Two synthetic VODs ``{vod_id}-1`` and ``{vod_id}-2``, before and from ``at`` seconds (anywhere,
-        mid-upload included); the VOD leaves the lists and redirects into them."""
+        """Two synthetic VODs tagged ``vods``, ``ids`` (default ``{vod_id}-1`` and ``{vod_id}-2``), before and
+        from ``at`` seconds (anywhere, mid-upload included); the VOD is hidden, its links lead to them."""
         async with get_sessionmaker()() as s:
             found = await s.get(Vod, vod_id)
         vod = _real({vod_id: found} if found else {}, vod_id)
         halves = await _synthetic(compose.split_segments, synthetic.source_of(vod), body.at)  # type: ignore[no-untyped-call]
         made: list[dict[str, Any]] = []
         try:
-            for new_id, segments in zip(compose.split_ids(vod.id), halves, strict=True):
+            for new_id, segments in zip(body.ids or compose.split_ids(vod.id), halves, strict=True):
                 made.append(await _synthetic(synthetic.create, new_id, segments, supersedes=True))  # type: ignore[no-untyped-call]
         except ApiError:
             for view in made:  # both or neither
@@ -821,7 +853,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
     async def playthrough_candidates(game_id: Annotated[str, Query(min_length=1)]) -> Page[PlaythroughWindow]:
         """Every window of a real, shown VOD playing ``game_id`` (its chapters of it, adjacent ones
         joined), oldest first: trim them, then POST them to /synthetic as a playthrough (``tags:
-        ["compilation"]``, ``supersedes: false``); a window's ``segment`` is ready to send."""
+        ["playthroughs"]``); a window's ``segment`` is ready to send."""
         async with get_sessionmaker()() as s:
             windows = await synthetic.game_windows(s, game_id)
         items = [
@@ -904,12 +936,16 @@ class SyntheticDmca(ApiModel):
 
 
 class MergeBody(ApiModel):
-    source: str
+    sources: list[str] | None = Field(default=None, min_length=1, max_length=20)  # merged with this one
+    gaps: list[float | None] | None = None  # one per join, in start order; null: where it started
+    id: str | None = None  # default: the first VOD's id + "-m"
+    source: str | None = None  # older dashboards: one VOD, id "{vod_id}+{source}"
     gap: float | None = None
 
 
 class SplitBody(ApiModel):
     at: float
+    ids: tuple[str, str] | None = None  # default: "{vod_id}-1", "{vod_id}-2"
 
 
 class PlaythroughWindow(ApiModel):
@@ -962,3 +998,196 @@ def _real(vods: dict[str, Vod], vod_id: str) -> Vod:
 
 async def _audit(request: Request, action: str, vod_id: str, **kwargs: Any) -> None:
     await audit.write(AuditEntry(action, _actor(request), f"vod:{vod_id}", request_id=request_id(request), **kwargs))
+
+
+# ── VOD and job actions: the ones that reach YouTube or queue jobs ─────────
+
+
+class RearchiveBody(ApiModel):
+    """``type`` vod or live; one ``part``, or all of them; a local ``path`` to upload from instead of the
+    local copy or a new download."""
+
+    type: Literal["vod", "live"] = "vod"
+    part: int | None = Field(default=None, ge=1)
+    path: str | None = None
+
+
+class YoutubeDelete(ApiModel):
+    """Ids from the VOD's ``youtube`` list."""
+
+    videos: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+
+
+class CensorReview(ApiModel):
+    """``upload`` resumes the job with whatever censor ranges are set by now; ``cut`` first marks the
+    flagged games' chapters restricted (and locks the chapters) so ``split`` leaves them out."""
+
+    decision: Literal["upload", "cut"]
+
+
+class JobQueued(ApiModel):
+    job_id: int
+    message: str
+
+
+class FailedDelete(ApiModel):
+    id: str
+    error: str
+
+
+class UploadsDeleted(ApiModel):
+    deleted: list[str]
+    failed: list[FailedDelete]
+    describe_jobs: list[int]  # a describe job per type that still has uploads, to drop the dead links
+    vod: VodDetail
+
+
+_ADMIN_CODES = {400: "invalid", 404: "vod_not_found", 409: "conflict", 500: "not_configured"}
+
+
+@contextmanager
+def _admin_refusals() -> Iterator[None]:
+    """The /admin helpers' refusals (``AdminError``, the job service's errors) as problem details."""
+    try:
+        yield
+    except AdminError as exc:
+        raise ApiError(exc.status, _ADMIN_CODES.get(exc.status, "refused"), exc.msg) from None
+    except jobs.JobNotFound as exc:
+        raise ApiError(404, "job_not_found", str(exc)) from None
+    except jobs.JobConflict as exc:
+        raise ApiError(409, "job_conflict", str(exc)) from None
+    except jobs.InvalidJob as exc:
+        raise ApiError(422, "invalid_job", str(exc)) from None
+
+
+def _refuse_no_uploads(vod: Vod) -> None:
+    """A merged or synthetic VOD has no uploads of its own."""
+    if vod.merged_into is not None:
+        raise ApiError(
+            409,
+            "vod_merged",
+            f"{vod.id} was merged into {vod.merged_into.get('id')}; its uploads are that VOD's now. "
+            "Undo the merge first",
+        )
+    if vod.synthetic is not None:
+        raise ApiError(409, "vod_synthetic", f"{vod.id} is synthetic: it has no uploads of its own")
+
+
+async def _vod(vod_id: str) -> Vod:
+    async with get_sessionmaker()() as s:
+        vod = await s.get(Vod, vod_id)
+    if vod is None:
+        raise ApiError(404, "vod_not_found", f"no VOD {vod_id}")
+    return vod  # type: ignore[no-any-return]
+
+
+def actions_router(ctx: AdminContext, auth: Auth) -> APIRouter:
+    """The /admin VOD and job actions the dashboard still needed: emotes, re-archive, deleting uploads,
+    answering a censor review. They reuse the /admin helpers (``ctx``), so they refuse the same things."""
+    router = APIRouter(tags=["vods"], dependencies=[Depends(auth)])
+
+    @router.get("/vods/{vod_id}/emotes")
+    async def get_emotes(vod_id: str) -> dict[str, Any] | None:
+        """The saved emotes row as GET /emotes renders it (its own keys snake_case), or null if none was."""
+        await _vod(vod_id)
+        async with get_sessionmaker()() as s:
+            query = select(*EMOTES.columns()).where(EMOTES.table.c.vod_id == vod_id)
+            row = (await s.execute(query)).mappings().first()
+        return _snake(EMOTES.to_json(row), deep=False) if row else None
+
+    @router.post("/vods/{vod_id}/rearchive", status_code=202)
+    async def rearchive(request: Request, vod_id: str, body: RearchiveBody) -> JobQueued:
+        """Upload the VOD again with today's settings and censor ranges, deleting each upload it replaces
+        once the new one is in place: a ``download`` job (``reupload`` for one part) with ``replace``."""
+        vod = await _vod(vod_id)
+        _refuse_no_uploads(vod)
+        raw = body.model_dump(exclude_none=True)
+        with _admin_refusals():
+            payload = {**ctx.source_payload(vod, raw), "replace": True}
+            if body.part is not None:
+                ctx.single_part(payload, raw)
+                job = await ctx.enqueue("reupload", vod.id, payload)
+                message = f"Re-archiving {vod.id} part {body.part}; the old upload goes once the new one is up"
+            else:
+                job = await ctx.enqueue("download", vod.id, payload)
+                message = f"Re-archiving {vod.id}; the old uploads go once the new ones are up"
+        await _audit(request, "vod.rearchive", vod.id, detail={"job_id": job.id, **raw})
+        return JobQueued(job_id=job.id, message=message)
+
+    @router.post("/vods/{vod_id}/youtube/delete")
+    async def delete_uploads(request: Request, vod_id: str, body: YoutubeDelete) -> UploadsDeleted:
+        """Delete ``videos`` from YouTube (50 quota units each) and take them off the VOD's list; one
+        already gone from YouTube is just taken off. Partial: ``failed`` are still on both."""
+        vod = await _vod(vod_id)
+        listed = {str(e.get("id")) for e in vod.youtube or []}
+        unknown = [v for v in body.videos if v not in listed]
+        if unknown:
+            raise ApiError(422, "not_uploads", f"Not uploads of {vod.id}: {', '.join(unknown)}", videos=unknown)
+        deleted: list[str] = []
+        failed: list[FailedDelete] = []
+        for video_id in dict.fromkeys(body.videos):
+            try:
+                await ctx.deps.youtube.delete(video_id)
+            except youtube.YouTubeNotAuthorized as exc:
+                raise ApiError(409, "youtube_not_authorized", str(exc)) from None
+            except Exception as exc:
+                log.warning("could not delete %s from YouTube: %s", video_id, exc)
+                failed.append(FailedDelete(id=video_id, error=f"{type(exc).__name__}: {exc}"))
+                continue
+            deleted.append(video_id)
+        dropped = await drop_youtube_entries(vod.id, set(deleted))
+        after = await _vod(vod.id)
+        described = []
+        with _admin_refusals():
+            for typ in sorted({e.get("type") or "vod" for e in dropped}):
+                if any((e.get("type") or "vod") == typ for e in after.youtube or []):
+                    job = await ctx.enqueue("describe", vod.id, ctx.type_payload(after, {"type": typ}))
+                    described.append(job.id)
+        if dropped:
+            await _audit(
+                request,
+                "vod.youtube.delete",
+                vod.id,
+                before={"youtube": vod.youtube or []},
+                after={"youtube": after.youtube or []},
+                detail={"deleted": dropped, "failed": [f.model_dump() for f in failed]},
+            )
+        return UploadsDeleted(deleted=deleted, failed=failed, describe_jobs=described, vod=await _detail(after))
+
+    @router.post("/jobs/{job_id}/censor-review")
+    async def censor_review(request: Request, job_id: int, body: CensorReview) -> JobQueued:
+        """Answer a job the ``censor_check`` step paused (``payload.censor_review``)."""
+        with _admin_refusals():
+            job = await jobs.get(job_id)
+        review = (job.payload or {}).get("censor_review") or {}
+        if job.state != "paused" or not review.get("games"):
+            raise ApiError(409, "not_in_review", f"Job {job_id} is not paused for a censor review")
+        cut: list[str] = []
+        if body.decision == "cut":
+            cut = sorted({str(g["gameId"]) for g in review["games"] if g.get("gameId")})
+            if not cut:
+                raise ApiError(
+                    409, "nothing_to_cut", "IGDB could not be checked, so there are no games to cut; set censor ranges"
+                )
+            async with get_sessionmaker()() as s:
+                vod = await _locked_vod(s, str(job.vod_id))
+                # A database trigger tells archive-api to drop its cached copies.
+                chapters = content_check.cut_games(vod.chapters, set(cut))
+                await s.execute(update(Vod).where(Vod.id == vod.id).values(chapters=chapters, chapters_locked=True))
+                await s.commit()
+        with _admin_refusals():
+            run = await ctx.service.resume(job_id, actor=_actor(request))
+        message = f"Job {job_id} resumed at step {run.step} ({body.decision})"
+        ctx.service.note(run, message)
+        await audit.write(
+            AuditEntry(
+                "job.censor_review",
+                _actor(request),
+                f"job:{job_id}",
+                detail={"decision": body.decision, "vod": str(job.vod_id), "cut": cut},
+                request_id=request_id(request),
+            )
+        )
+        return JobQueued(job_id=job_id, message=message)
+
+    return router
