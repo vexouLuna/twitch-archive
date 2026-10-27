@@ -339,22 +339,23 @@ async def test_auto_playthrough_sources(admin):
 
     r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})
     assert r.status_code == 201, r.text
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # not the hidden A and B; not the gap
+    assert await _windows() == [(AB, 3600, 11100)]  # not the hidden A and B; one window over the gap
     async with get_sessionmaker()() as s:  # B shown again but still in the merge: counted once, as AB
         await s.execute(update(Vod).where(Vod.id == B).values(hidden=False))
         await s.commit()
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]
+    assert await _windows() == [(AB, 3600, 11100)]
 
     r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
     assert r.status_code == 201, r.text
     assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
-        (AB, 3600, 7200, 0),
-        (AB, 7500, 11100, 3600),
+        (AB, 3600, 11100, 0),
     ]
-    assert not [c for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    # it plays the merge's gap as the merge does, and nothing else is cut
+    cuts = [(c["start"], c["name"]) for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    assert cuts == [(3600, "Technical difficulties")]
     r = await admin.patch(f"/api/v2/vods/{P}", headers=KEY, json={"tags": ["compilation", "vods"]})
     assert r.status_code == 200, r.text
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # P is no source, and doesn't hide AB
+    assert await _windows() == [(AB, 3600, 11100)]  # P is no source, and doesn't hide AB
     assert P not in await synthetic.refresh_auto()
 
 

@@ -33,7 +33,7 @@ from archive_common.segments import EPS, MAX_DEPTH, Segment, resolve, total
 from archive_common.timeutil import format_hhmmss
 
 from . import timeline
-from .vod_edits import is_number
+from .vod_edits import GAP_KIND, is_number
 
 MAX_SEGMENTS = 200
 LABEL_MAX = 200
@@ -255,22 +255,27 @@ def merge_all_id(first_id: str) -> str:
 
 def game_windows(chapters: Any, game_id: str, join_within: float = 1.0) -> list[tuple[float, float]]:
     """Where a VOD plays ``game_id``: its chapters of that game, those less than ``join_within``
-    seconds apart joined (a playthrough's candidate windows). Cut chapters (a merge's gap, "Technical
-    difficulties") are left out and never joined over, so a playthrough plays none of them."""
+    seconds apart joined (a playthrough's candidate windows). A merge's gap chapter ("Technical
+    difficulties") is joined over, so a merged VOD's run of the game stays one window and plays the gap
+    as its watch page does. Other cut chapters are left out and never joined over."""
     out: list[tuple[float, float]] = []
-    cut = True  # a cut since the last window: the next one starts a new window
+    reach: float | None = None  # where the last window ends, through any gaps right after it; None: cut
     for ch in sorted(timeline._chapters(chapters), key=timeline.start_of):
         if timeline.length_of(ch) <= EPS:
             continue
+        s, e = timeline.start_of(ch), timeline.start_of(ch) + timeline.length_of(ch)
+        if ch.get("kind") == GAP_KIND:
+            if reach is not None and s - reach < join_within:
+                reach = max(reach, e)
+            continue
         if ch.get("restricted") is True:
-            cut = True
+            reach = None
             continue
         if str(ch.get("gameId")) != game_id:
             continue
-        s, e = timeline.start_of(ch), timeline.start_of(ch) + timeline.length_of(ch)
-        if out and not cut and s - out[-1][1] < join_within:
+        if out and reach is not None and s - reach < join_within:
             out[-1] = (out[-1][0], max(out[-1][1], e))
         else:
             out.append((s, e))
-        cut = False
+        reach = out[-1][1]
     return out
