@@ -1,13 +1,13 @@
-"""Drop cached responses as soon as a VOD (or its games) changes.
+"""Drop cached responses as soon as a VOD  changes.
 
 Database triggers (migration 0006) send ``NOTIFY vods_changed, '<vod id>'`` when
-any write to ``vods`` or ``games`` commits; this LISTENs on its own connection. While the connection is down
+any write to ``vods`` commits; this LISTENs on its own connection. While the connection is down
 nothing is heard, so every (re)connect clears the caches outright.
 
 A merge or split also moves the VOD's chat rows and emotes, and says so with a
 ``ROWS_MOVED`` notice, which drops the chat replay and emotes cached for it.
 
-A synthetic VOD's JSON is made from its sources' rows (games, segment ends), and a source's
+A synthetic VOD's JSON is made from its sources' rows (segment ends), and a source's
 lists the synthetic VODs made of it, so any change also drops every cached synthetic VOD
 (those ids are never only digits; there are few of them).
 """
@@ -30,7 +30,7 @@ RECONNECT_DELAY = 5.0
 PING_INTERVAL = 60.0  # a dead connection is only noticed when it is used
 
 # Cached responses that embed VODs, besides /vods/{id} itself.
-_LIST_PREFIXES = ("vods?", "games?", "games/", "v1/games-played")
+_LIST_PREFIXES = ("vods?", "v1/games-played")
 
 
 def asyncpg_dsn(database_url: str) -> str:

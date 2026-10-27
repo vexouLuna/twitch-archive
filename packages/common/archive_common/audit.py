@@ -71,7 +71,6 @@ ROUTE_ACTIONS: dict[str, str] = {
     "DELETE /admin/delete": "vod.delete",
     "POST /admin/duration": "vod.duration.refresh",
     "PATCH /admin/vods/{vod_id}": "vod.update",
-    "PUT /admin/vods/{vod_id}/games": "vod.games.replace",
     "PUT /admin/vods/{vod_id}/chapters": "vod.chapters.replace",
     "PUT /admin/vods/{vod_id}/youtube": "vod.youtube.replace",
     "PUT /admin/vods/{vod_id}/drive": "vod.drive.replace",

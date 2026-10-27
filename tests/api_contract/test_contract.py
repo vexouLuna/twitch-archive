@@ -44,7 +44,7 @@ ADDED_PAGE_FIELDS = {"sources"}
 
 
 def _without_additions(node):
-    """``node`` with the added vod/chapter fields removed (vods may be nested, e.g. games[].vod)."""
+    """``node`` with the added vod/chapter fields removed ."""
     if isinstance(node, list):
         return [_without_additions(v) for v in node]
     if not isinstance(node, dict):
@@ -114,7 +114,7 @@ async def test_select_returns_only_selected_fields(client: httpx.AsyncClient) ->
     resp = await client.get("/vods?$select[]=id&$select[]=title&$limit=5&$sort[createdAt]=-1")
     assert resp.status_code == 200
     item = resp.json()["data"][0]
-    assert set(item) == {"id", "title", "games"}
+    assert set(item) == {"id", "title"}
 
 
 async def test_chapter_filter_escapes_regex(client: httpx.AsyncClient) -> None:

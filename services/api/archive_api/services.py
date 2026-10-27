@@ -1,4 +1,4 @@
-"""Read-only Feathers-compatible services: /vods, /games, /emotes, /streams."""
+"""Read-only Feathers-compatible services: /vods, /emotes, /streams."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ from urllib.parse import unquote_plus
 from archive_common.config import ApiSettings
 from archive_common.serialize import (
     EMOTES,
-    GAMES,
     STREAMS,
     VODS,
     Resource,
-    attach_games,
     attach_segments,
     live_spans,
     not_hidden,
@@ -23,7 +21,6 @@ from archive_common.serialize import (
     plain,
     reachable,
     tagged,
-    vods_json,
 )
 from sqlalchemy import ColumnElement, and_, false, func, or_, select, true
 from sqlalchemy.exc import DBAPIError
@@ -31,12 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from . import feathers_query as fq
 from .errors import FeathersError, bad_literal
-
-
-async def _vods_by_id(conn: AsyncConnection, vod_ids: list[str]) -> dict[str, dict[str, Any]]:
-    if not vod_ids:
-        return {}
-    return {v["id"]: v for v in await vods_json(conn, VODS.table.c.id.in_(vod_ids), not_hidden())}
 
 
 class Service:
@@ -119,7 +110,6 @@ class VodsService(Service):
         return item
 
     async def embed(self, conn: AsyncConnection, items: list[dict[str, Any]]) -> None:
-        await attach_games(conn, items)
         await attach_segments(conn, items)
 
     async def specials(self, conn: AsyncConnection, qs: str) -> dict[str, fq.Special]:
@@ -190,20 +180,9 @@ def _tags_filter(value: Any) -> ColumnElement[bool]:
     return VODS.table.c.tags.contains(values)
 
 
-class GamesService(Service):
-    def __init__(self, settings: ApiSettings) -> None:
-        super().__init__(GAMES, settings, shown=of_shown_vod(GAMES.table.c.vod_id))
-
-    async def embed(self, conn: AsyncConnection, items: list[dict[str, Any]]) -> None:
-        vods = await _vods_by_id(conn, list({i["vodId"] for i in items if "vodId" in i}))
-        for item in items:
-            item["vod"] = vods.get(item.get("vodId"))  # type: ignore[arg-type]
-
-
 def build_services(settings: ApiSettings) -> dict[str, Service]:
     return {
         "vods": VodsService(settings),
-        "games": GamesService(settings),
         "emotes": Service(EMOTES, settings, shown=of_shown_vod(EMOTES.table.c.vod_id)),
         "streams": Service(STREAMS, settings),
     }

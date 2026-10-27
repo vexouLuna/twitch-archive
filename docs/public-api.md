@@ -2,14 +2,14 @@
 
 [← README](../README.md)
 
-This is what the frontend uses. The output is compatible with the old Feathers API. Tests replay 62 responses captured from the old API, and they match field for field (ignoring the added fields below).
+This is what the frontend uses. The output is compatible with the old Feathers API. Tests replay 61 responses captured from the old API, and they match field for field (ignoring the added fields below).
 
 | Route | Notes |
 |---|---|
-| `GET /vods` | Feathers envelope `{total, limit, skip, data}`. Each vod includes `games[]`. |
+| `GET /vods` | Feathers envelope `{total, limit, skip, data}`. |
 | `GET /vods/:id` | Single vod, or a 404 in the Feathers error format. |
 | `GET /emotes?vod_id=` | `data[0]` has `ffz_emotes`, `bttv_emotes` (BTTV globals included), `7tv_emotes`, and `global_emotes` (`{"7tv": [...], "bttv": [...], "ffz": [...]}`, each `{id, code}`, 7TV also `flags`) with `global_emotes_source` (`captured` or `backfilled`) and `global_emotes_at`. The three `global_*` fields are `null` until the VOD is backfilled. |
-| `GET /games`, `/games/:id`, `/streams`, `/streams/:id`, `/emotes/:id` | Read-only. |
+| `GET /streams`, `/streams/:id`, `/emotes/:id` | Read-only. |
 | `GET /v1/vods/:id/comments?content_offset_seconds=N` | Chat replay. 200-row buckets plus a `cursor`. |
 | `GET /v1/vods/:id/comments?cursor=...` | Next page. |
 | `GET /v2/badges` | `{channel: [...], global: [...]}` in the Helix `chat/badges` format, cached for 1h. |

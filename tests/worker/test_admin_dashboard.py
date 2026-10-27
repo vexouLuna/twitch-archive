@@ -13,7 +13,7 @@ from archive_api.invalidation import asyncpg_dsn
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
 from archive_common.db import VOD_CHANGED, execute, get_sessionmaker
-from archive_common.models import Emote, Game, Job, Stream, Vod
+from archive_common.models import Emote, Job, Stream, Vod
 from archive_common.twitch.helix import HELIX, TOKEN_URL
 from archive_worker import events as events_mod
 from archive_worker import jobs
@@ -41,7 +41,6 @@ async def _reset(audit_after: int | None = None):
         await s.execute(text("SET LOCAL search_path TO jobs, public"))  # procrastinate's SQL is unqualified
         await s.execute(text("DELETE FROM procrastinate_jobs WHERE lock LIKE :vod"), {"vod": f"vod:{VOD}:%"})
         await s.execute(delete(Emote).where(Emote.vod_id == VOD))
-        await s.execute(delete(Game).where(Game.vod_id == VOD))
         await s.execute(delete(Vod).where(Vod.id == VOD))
         await s.execute(delete(Stream).where(Stream.id == STREAM))
         if audit_after is not None:
@@ -193,7 +192,7 @@ async def test_vod_editing(vod, app, make_ctx, monkeypatch):
     await app[1].enqueue("emotes", vod, paused=True)
     async with client(app) as c:
         got = (await c.get(f"/admin/vods/{vod}", headers=KEY)).json()
-        assert (got["id"], got["title"], got["chaptersLocked"], got["games"]) == (vod, "old title", False, [])
+        assert (got["id"], got["title"], got["chaptersLocked"]) == (vod, "old title", False)
         assert got["duration_seconds"] == 7200  # the public API's own fields
         assert got["botChat"] is None  # not read from doomtp-bot yet
         assert [j["kind"] for j in got["jobs"]] == ["emotes"]
@@ -275,7 +274,6 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
     chapters = [{**chapter(0, 60), "gameId": "test-hidden-game", "end": 60, "duration": "00:00:00"}]
     await execute(update(Vod).where(Vod.id == vod).values(chapters=chapters))
     async with get_sessionmaker()() as s:
-        s.add(Game(vod_id=vod, start_time=0, end_time=60, game_name="Hidden game"))
         s.add(Emote(vod_id=vod, ffz_emotes=[]))
         await s.commit()
 
@@ -288,7 +286,6 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
             "get": (await api.get(f"/vods/{vod}")).status_code,
             "find": (await api.get(f"/vods?id={vod}")).json()["total"],
             "merged": (await api.get(f"/vods?id={vod}&$merged=true")).json()["total"],
-            "games": (await api.get(f"/games?vodId={vod}")).json()["total"],
             "emotes": (await api.get(f"/emotes/{vod}")).status_code,
             # A new offset each time: this app's chat cache isn't dropped (no listener runs here)
             "chat": (
@@ -316,7 +313,6 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
         "get": 200,
         "find": 1,
         "merged": 1,
-        "games": 1,
         "emotes": 200,
         "chat": 200,
         "played": True,
@@ -326,7 +322,6 @@ async def test_a_hidden_vod_answers_like_a_missing_one(vod, app, api):
         "get": 404,
         "find": 0,
         "merged": 0,
-        "games": 0,
         "emotes": 404,
         "chat": 404,
         "played": False,
@@ -351,17 +346,13 @@ async def test_vod_edit_notifies_the_api(vod, app):
         await conn.close()
 
 
-async def test_any_vod_or_game_write_notifies_the_api(vod):
+async def test_any_vod_write_notifies_the_api(vod):
     """The trigger covers writers outside the admin API (job steps, the monitor)."""
     conn, heard = await _listen()
     try:
         await execute(update(Vod).where(Vod.id == vod).values(duration="03:00:00"))
         assert await asyncio.wait_for(heard.get(), 5) == vod
         await execute(update(Vod).where(Vod.id == vod).values(duration="03:00:00"))  # no change: silent
-        async with get_sessionmaker()() as s:
-            s.add(Game(vod_id=vod, game_name="Just Chatting"))
-            await s.commit()
-        assert await asyncio.wait_for(heard.get(), 5) == vod
         await asyncio.sleep(0.2)
         assert heard.empty()
     finally:

@@ -17,8 +17,6 @@ KEYS = [
     "vods/1",
     "vods/12",
     "vods?$limit=10",
-    "games?vodId=1",
-    "games/5",
     "v1/games-played",
     "emotes/1",
     "emotes/12",

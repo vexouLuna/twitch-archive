@@ -35,7 +35,6 @@ VOD_QUERIES = [
     "/vods?platform=twitch&$limit=5&$sort[createdAt]=1",
     "/vods?$select[]=id&$select[]=title&$limit=5&$sort[createdAt]=-1",
     "/vods/does-not-exist",
-    "/games",
     "/streams",
     "/nope",
 ]
