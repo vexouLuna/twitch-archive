@@ -110,7 +110,7 @@ def flatten(
     resolved segments) becomes the parts of that VOD's own (flattened) segments its window covers,
     placed where the window is; its ``label`` wins over theirs. Streams are numbered in order of first
     appearance: a new one wherever the source changes from the segment before (as the site does when
-    told nothing); a merge or a split (``supersedes``) is one broadcast, so all of it is that one
+    told nothing); a merge or a split (tagged ``vods``) is one broadcast, so all of it is that one
     stream, while a playthrough's streams stay apart. ``one_stream``: ``top`` is such a broadcast itself,
     so everything is stream 0. Deeper than ``MAX_DEPTH`` is a ValueError."""
     if _depth > MAX_DEPTH:

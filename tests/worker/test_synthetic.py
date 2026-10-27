@@ -163,7 +163,7 @@ async def test_merge_split_and_undo(admin):
         "lastLiveAt": "2001-03-04T23:05:00.000Z",
         "segments": [
             {"vodId": A, "start": 0, "end": 7200, "at": 0, "label": None, "stream": 0},
-            {"vodId": B, "start": 0, "end": 3600, "at": OFFSET, "label": None, "stream": 1},
+            {"vodId": B, "start": 0, "end": 3600, "at": OFFSET, "label": None, "stream": 0},  # one broadcast
         ],
     }
     assert (vod["duration"], vod["tags"], vod["createdAt"]) == ("03:05:00", ["vods"], "2001-03-04T20:00:00.000Z")
@@ -372,7 +372,7 @@ async def test_nested_synthetic(admin):
     vod = (await public(f"/vods/{P}")).json()
     assert vod["synthetic"]["segments"] == [
         {"vodId": A, "start": 3600, "end": 7200, "at": 0, "label": None, "stream": 0},
-        {"vodId": B, "start": 0, "end": 3600, "at": 3900, "label": None, "stream": 1},
+        {"vodId": B, "start": 0, "end": 3600, "at": 3900, "label": None, "stream": 0},  # the merge is one stream
     ]
     page = (await public(f"/v1/vods/{P}/comments?content_offset_seconds=0")).json()
     assert [s["vodId"] for s in page["segments"]] == [A, B]
