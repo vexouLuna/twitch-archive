@@ -7,11 +7,11 @@
 - **`migrate`** runs `alembic upgrade head` as the superuser, from the api image.
 - **`roles`** runs `deploy/roles.sql`: the `archive_api` and `archive_worker` roles, their passwords (taken from `secrets/api_database_url` and `secrets/worker_database_url`) and their grants.
 
-If either step fails, the running api and worker are left as they are. Only the compose network reaches the database; the api port is published on `ARCHIVE_PUBLISH_ADDR` and the admin port on `ARCHIVE_ADMIN_PUBLISH_ADDR` (both default `127.0.0.1`; the admin one follows `ARCHIVE_PUBLISH_ADDR` when unset). You need:
+If either step fails, the running api and worker are left as they are. Only the compose network reaches the database; the api port is published on `ARCHIVE_PUBLISH_ADDR` and the admin port on `ARCHIVE_ADMIN_PUBLISH_ADDR` (both default `127.0.0.1`, each on its own). You need:
 
 - Docker with the compose plugin.
 - A data directory for the worker, set as `ARCHIVE_HOST_DATA_DIR` (default `./data`). A VOD needs about 3–3.5 GB per hour of stream while it is processed; twice that with `MULTI_TRACK`. Files are deleted after upload.
-- A reverse proxy in front of the API port if the frontend is public. A proxy on another host needs `ARCHIVE_PUBLISH_ADDR=0.0.0.0` (or the address it connects to). Set `ARCHIVE_ADMIN_PUBLISH_ADDR` separately (`127.0.0.1`, or a private interface the proxy reaches): left unset it follows `ARCHIVE_PUBLISH_ADDR`, and `0.0.0.0` would publish the admin API, over plain HTTP, on every interface. See [Admin API](admin-api.md) for what the admin port may be reached through.
+- A reverse proxy in front of the API port if the frontend is public. A proxy on another host needs `ARCHIVE_PUBLISH_ADDR=0.0.0.0` (or the address it connects to). The admin port stays on `127.0.0.1` unless you set `ARCHIVE_ADMIN_PUBLISH_ADDR` (a private interface the proxy reaches); `0.0.0.0` would publish the admin API, over plain HTTP, on every interface. Up to 0.31.2 it followed `ARCHIVE_PUBLISH_ADDR` when unset: a deployment that relied on that must set it now, or its proxy loses the admin API. See [Admin API](admin-api.md) for what the admin port may be reached through.
 
 If the host is an unprivileged LXC container, Docker needs `nesting=1,keyctl=1`, and a bind-mounted data directory must be writable by the container's uid.
 
