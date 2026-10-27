@@ -201,10 +201,31 @@ def test_split_anywhere():
     assert compose.split_ids("123") == ("123-1", "123-2") and compose.merge_id("1", "2") == "1+2"
 
 
-def test_playthrough_windows_never_join_over_a_cut():
-    """A merge's gap ("Technical difficulties") between two chapters of the game: two windows, not one
-    that plays the gap."""
-    chapters = [_ch(0, 100, "Minecraft", "27471"), _ch(100, 0.5, "Technical difficulties", None, True)]
+def _gap(start, length):
+    return {**_ch(start, length, "Technical difficulties", None, True), "kind": "gap"}
+
+
+def test_playthrough_windows_join_over_a_merge_gap():
+    """2872697620-m (The Blood of Dawnwalker): the game, a 33 s gap, 2 min, a 12 s gap, the rest, then
+    another game. One window across the gaps, not three that look like three VODs."""
+    dawnwalker = "1357871551"
+    chapters = [_ch(0, 11311, "The Blood of Dawnwalker", dawnwalker), _gap(11311, 33)]
+    chapters += [_ch(11344, 120, "The Blood of Dawnwalker", dawnwalker), _gap(11464, 12)]
+    chapters += [_ch(11476, 16244, "The Blood of Dawnwalker", dawnwalker), _ch(27720, 14234, "League", "21779")]
+    assert compose.game_windows(chapters, dawnwalker) == [(0, 27720)]
+    # a gap before the game, or after its last chapter, is not part of the window
+    assert compose.game_windows([_gap(0, 30), _ch(30, 100, "x", dawnwalker), _gap(130, 5)], dawnwalker) == [(30, 130)]
+
+
+def test_playthrough_windows_split_on_another_game_or_a_cut():
+    """A real VOD that plays another game in between: two windows. So does a merge whose other game sits
+    between two gaps, and a cut (a restricted chapter) that isn't a merge's gap."""
+    chapters = [_ch(0, 100, "Minecraft", "27471"), _ch(100, 50), _ch(150, 100, "Minecraft", "27471")]
+    assert compose.game_windows(chapters, "27471") == [(0, 100), (150, 250)]
+    chapters = [_ch(0, 100, "Minecraft", "27471"), _gap(100, 10), _ch(110, 50), _gap(160, 10)]
+    chapters.append(_ch(170, 100, "Minecraft", "27471"))
+    assert compose.game_windows(chapters, "27471") == [(0, 100), (170, 270)]
+    chapters = [_ch(0, 100, "Minecraft", "27471"), _ch(100, 0.5, "No category", None, True)]
     chapters.append(_ch(100.5, 100, "Minecraft", "27471"))
     assert compose.game_windows(chapters, "27471") == [(0, 100), (100.5, 200.5)]
 

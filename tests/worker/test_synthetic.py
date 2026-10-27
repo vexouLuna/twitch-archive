@@ -15,7 +15,7 @@ from archive_api.main import create_app
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
 from archive_common.db import get_engine, get_sessionmaker
-from archive_common.models import Game, Job, Vod, VodSegment
+from archive_common.models import Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
 from archive_worker.vods import splice_reason
@@ -50,7 +50,6 @@ async def _clean():
         await s.execute(delete(Job).where(Job.vod_id.like("test-syn-%")))
         await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_(synthetic_ids)))
         await s.execute(delete(Vod).where(mine, Vod.synthetic.is_not(None)))
-        await s.execute(delete(Game).where(Game.vod_id.in_((A, B))))
         await s.execute(delete(Vod).where(mine))
         await s.commit()
 
@@ -83,7 +82,6 @@ async def vods(db):
             ]
         )
         await s.flush()
-        s.add(Game(vod_id=B, start_time=100, end_time=200, game_name="Test Game", video_id="g1"))
         await s.commit()
     yield
     await _clean()
@@ -175,8 +173,6 @@ async def test_merge_split_and_undo(admin):
         (7200, "gap"),
         (OFFSET, None),
     ]
-    [game] = vod["games"]
-    assert (game["vodId"], game["sourceVodId"], game["start_time"], game["end_time"]) == (AB, B, "7600", "7700")
 
     # Hidden, and played by one shown synthetic VOD: still answered, and its links lead there.
     original = (await public(f"/vods/{A}")).json()
@@ -190,7 +186,6 @@ async def test_merge_split_and_undo(admin):
     page = (await public(f"/v1/vods/{quote(AB)}/comments?content_offset_seconds=0")).json()
     assert page["comments"] == [] and [s["vodId"] for s in page["segments"]] == [A, B]
     assert (await public(f"/v1/vods/{B}/comments?content_offset_seconds=0")).status_code != 404
-    assert (await public(f"/games?vodId={B}")).json()["total"] == 1
 
     # Jobs: the originals are left alone, so they still run; the synthetic VOD is no Twitch VOD.
     assert await splice_reason(A) is None and await splice_reason(B) is None
@@ -344,22 +339,23 @@ async def test_auto_playthrough_sources(admin):
 
     r = await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})
     assert r.status_code == 201, r.text
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # not the hidden A and B; not the gap
+    assert await _windows() == [(AB, 3600, 11100)]  # not the hidden A and B; one window over the gap
     async with get_sessionmaker()() as s:  # B shown again but still in the merge: counted once, as AB
         await s.execute(update(Vod).where(Vod.id == B).values(hidden=False))
         await s.commit()
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]
+    assert await _windows() == [(AB, 3600, 11100)]
 
     r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": GAME}})
     assert r.status_code == 201, r.text
     assert [(x["vod_id"], x["start"], x["end"], x["at"]) for x in r.json()["segments"]] == [
-        (AB, 3600, 7200, 0),
-        (AB, 7500, 11100, 3600),
+        (AB, 3600, 11100, 0),
     ]
-    assert not [c for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    # it plays the merge's gap as the merge does, and nothing else is cut
+    cuts = [(c["start"], c["name"]) for c in (await public(f"/vods/{P}")).json()["chapters"] if c.get("restricted")]
+    assert cuts == [(3600, "Technical difficulties")]
     r = await admin.patch(f"/api/v2/vods/{P}", headers=KEY, json={"tags": ["compilation", "vods"]})
     assert r.status_code == 200, r.text
-    assert await _windows() == [(AB, 3600, 7200), (AB, 7500, 11100)]  # P is no source, and doesn't hide AB
+    assert await _windows() == [(AB, 3600, 11100)]  # P is no source, and doesn't hide AB
     assert P not in await synthetic.refresh_auto()
 
 
@@ -378,8 +374,6 @@ async def test_nested_synthetic(admin):
         {"vodId": A, "start": 3600, "end": 7200, "at": 0, "label": None, "stream": 0},
         {"vodId": B, "start": 0, "end": 3600, "at": 3900, "label": None, "stream": 1},
     ]
-    [game] = vod["games"]
-    assert (game["sourceVodId"], game["start_time"], game["end_time"]) == (B, "4000", "4100")
     page = (await public(f"/v1/vods/{P}/comments?content_offset_seconds=0")).json()
     assert [s["vodId"] for s in page["segments"]] == [A, B]
     assert (await public(f"/vods/{quote(AB)}")).json()["appears_in"] == [

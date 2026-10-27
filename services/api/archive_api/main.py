@@ -41,14 +41,14 @@ from .third_party_emotes import fetch_third_party_emotes
 log = logging.getLogger("archive_api")
 READY_TIMEOUT_S = 5  # /readyz: a database slower than this counts as down
 
-# Legacy: the limiter covered /vods and the custom routes, not /games /emotes /streams.
+# Legacy: the limiter covered /vods and the custom routes, not /emotes /streams.
 RATE_LIMITED_PREFIXES = ("/vods", "/v1/", "/v2/")
 # Seek-bar sheets and tag shapes are static and cached for good; hovering a long VOD's bar asks for
 # many sheets at once, and a page can show up to 32 tag shapes.
 UNLIMITED_PREFIXES = ("/v1/previews/", "/v1/site/tags/")
 SITE_TAGS_TTL = 60  # /v1/site/tags; an admin's change shows within this
 SITE_TAG_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # fullmatch
-SERVICES = ("vods", "games", "emotes", "streams")
+SERVICES = ("vods", "emotes", "streams")
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:

@@ -1,6 +1,6 @@
 """ORM mapping of the existing Feathers/Sequelize schema plus the new jobs tables.
 
-The legacy tables (vods, games, emotes, logs, streams) are mapped exactly as
+The legacy tables (vods, emotes, logs, streams) are mapped exactly as
 Sequelize created them: camelCase ``createdAt``/``updatedAt`` columns with no
 database default, the ``"7tv_emotes"`` column, and ``logs._id`` as a serial
 that is *not* the primary key. Never ``create_all`` against production; use
@@ -97,26 +97,6 @@ class VodSegment(Base):
     end_s: Mapped[Decimal | None] = mapped_column(Numeric)
     at_s: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     label: Mapped[str | None] = mapped_column(Text)
-
-
-class Game(Base):
-    __tablename__ = "games"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    vod_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("vods.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False
-    )
-    start_time: Mapped[Decimal | None] = mapped_column(Numeric)
-    end_time: Mapped[Decimal | None] = mapped_column(Numeric)
-    video_provider: Mapped[str | None] = mapped_column(Text)
-    video_id: Mapped[str | None] = mapped_column(Text)
-    thumbnail_url: Mapped[str | None] = mapped_column(Text)
-    game_id: Mapped[str | None] = mapped_column(Text)
-    game_name: Mapped[str | None] = mapped_column(Text)
-    title: Mapped[str | None] = mapped_column(Text)
-    chapter_image: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[dt.datetime] = _created()
-    updated_at: Mapped[dt.datetime] = _updated()
 
 
 class Emote(Base):

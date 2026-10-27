@@ -67,8 +67,12 @@ async def _reload_settings(runtime: RuntimeSettings, service: jobs.JobService) -
     while True:
         await asyncio.sleep(SETTINGS_RELOAD_S)
         try:
+            before = {k: row.value for k, row in runtime.overrides.items()}
             await runtime.load()
             service.apply_settings()
+            after = {k: row.value for k, row in runtime.overrides.items()}
+            if changed := sorted(k for k in before.keys() | after.keys() if before.get(k, ...) != after.get(k, ...)):
+                log.info("runtime settings changed: %s", ", ".join(changed))
         except Exception:
             log.exception("could not reload the runtime settings")
 

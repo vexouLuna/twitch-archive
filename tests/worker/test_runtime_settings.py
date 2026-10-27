@@ -215,28 +215,35 @@ async def test_settings_routes(app, clean, deps):
     assert (reset.before, reset.after) == ({"runner_concurrency": 6}, {"runner_concurrency": 3})
 
 
-async def test_the_worker_reloads_settings_the_admin_apart_wrote(monkeypatch):
-    """With ARCHIVE_ADMIN_APART the worker re-reads the overrides and applies them, and a failed read
-    doesn't stop it."""
+async def test_the_worker_reloads_settings_the_admin_apart_wrote(monkeypatch, caplog):
+    """With ARCHIVE_ADMIN_APART the worker re-reads the overrides and applies them, logs which ones changed,
+    and a failed read doesn't stop it."""
     import asyncio
+    from types import SimpleNamespace
 
     from archive_worker import main
 
     calls: list[str] = []
 
     class Runtime:
+        overrides: dict[str, Any] = {}
+
         async def load(self) -> None:
             calls.append("load")
             if len(calls) == 1:
                 raise OSError("database down")
+            self.overrides = {"runner_concurrency": SimpleNamespace(value=2)}  # the same on every later read
 
     class Service:
         def apply_settings(self) -> None:
             calls.append("apply")
 
     monkeypatch.setattr(main, "SETTINGS_RELOAD_S", 0)
+    caplog.set_level("INFO", logger="archive_worker")
     task = asyncio.create_task(main._reload_settings(Runtime(), Service()))  # type: ignore[arg-type]
-    while len(calls) < 3:
+    while len(calls) < 5:
         await asyncio.sleep(0.01)
     task.cancel()
-    assert calls[:3] == ["load", "load", "apply"]
+    assert calls[:5] == ["load", "load", "apply", "load", "apply"]
+    changed = [r.getMessage() for r in caplog.records if r.getMessage().startswith("runtime settings changed")]
+    assert changed == ["runtime settings changed: runner_concurrency"]  # once: the third read changed nothing
