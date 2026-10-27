@@ -230,6 +230,13 @@ def test_playthrough_windows_split_on_another_game_or_a_cut():
     assert compose.game_windows(chapters, "27471") == [(0, 100), (100.5, 200.5)]
 
 
+def test_playthrough_windows_of_several_games():
+    """Followed games back to back in one VOD make one window; another game between them still splits it."""
+    chapters = [_ch(0, 100, "Part 1", "1"), _ch(100, 200, "Part 2", "2"), _ch(300, 50), _ch(350, 100, "Part 2", "2")]
+    assert compose.game_windows(chapters, ["1", "2"]) == [(0, 300), (350, 450)]
+    assert compose.game_windows(chapters, ["2"]) == compose.game_windows(chapters, "2") == [(100, 300), (350, 450)]
+
+
 def test_playthrough_windows_back_to_back():
     chapters = [
         _ch(0, 600),
