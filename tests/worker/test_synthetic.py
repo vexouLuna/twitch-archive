@@ -510,6 +510,7 @@ def test_live_span_without_a_start():
 
 
 async def test_auto_playthrough(admin):
+    """``{"game_id"}`` stores the one-game ``{"gameId"}`` older rows keep, which still follows and refreshes."""
     bad = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": {"game_id": "test-syn-none"}})
     assert bad.status_code == 422
     r = await admin.post(
@@ -556,6 +557,64 @@ async def test_auto_playthrough(admin):
     assert r.json()["tags"] == ["compilation"]
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": None})
     assert r.json()["auto"] is None and len(r.json()["segments"]) == 2
+
+
+def test_followed_games():
+    assert synthetic.followed_games({"gameId": "1"}) == ["1"]
+    assert synthetic.followed_games({"gameIds": ["2", "1", "2"]}) == ["2", "1"]
+    bad: Any
+    for bad in (None, {}, {"gameIds": []}, {"gameIds": [""]}, {"gameIds": "1"}, {"gameId": "1", "gameIds": ["1"]}):
+        with pytest.raises(synthetic.SyntheticError):
+            synthetic.followed_games(bad)
+
+
+async def test_auto_playthrough_of_several_games(admin):
+    """Every window of any followed game, oldest VOD first: the games interleave across VODs, and two
+    back to back in one VOD are one segment."""
+    early, late, GAME2 = "test-syn-early", "test-syn-late", "test-syn-game-2"
+    async with get_sessionmaker()() as s:
+        s.add_all(
+            [
+                Vod(
+                    id=early,
+                    title="part 1",
+                    created_at=START - dt.timedelta(days=1),
+                    duration="00:30:00",
+                    chapters=[_ch(0, 1800, "Test Game 2", GAME2)],
+                    tags=["vods"],
+                ),
+                Vod(
+                    id=late,
+                    title="both",
+                    created_at=START + dt.timedelta(days=1),
+                    duration="01:10:00",
+                    chapters=[_ch(0, 1800, "Test Game 2", GAME2), _ch(1800, 1800, "Test Game", GAME), _ch(3600, 600)],
+                    tags=["vods"],
+                ),
+            ]
+        )
+        await s.commit()
+    both = {"game_ids": [GAME, GAME2]}
+    bad: dict[str, Any]
+    for bad in ({"game_ids": []}, {"game_id": GAME, "game_ids": [GAME]}):
+        r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": bad})
+        assert r.status_code == 422, r.text
+    r = await admin.post("/api/v2/synthetic", headers=KEY, json={"id": P, "auto": both})
+    assert r.status_code == 201, r.text
+    assert r.json()["auto"] == both and r.json()["tags"] == ["compilation"]
+    assert [(x["vod_id"], x["start"], x["end"]) for x in r.json()["segments"]] == [
+        (early, 0, 1800),
+        (A, 3600, 7200),
+        (B, 0, 3600),
+        (late, 0, 3600),
+    ]
+    assert P not in await synthetic.refresh_auto()
+
+    # Following one game less rebuilds the segments from the rest.
+    r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"auto": {"game_ids": [GAME2]}})
+    assert [(x["vod_id"], x["start"], x["end"]) for x in r.json()["segments"]] == [(early, 0, 1800), (late, 0, 1800)]
+    r = await admin.get("/api/v2/playthrough-candidates", headers=KEY, params={"game_id": [GAME, GAME2]})
+    assert [x["vod_id"] for x in r.json()["items"]] == [early, A, B, late]
 
 
 async def test_compile_sources(admin, make_ctx):

@@ -25,7 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -253,11 +253,13 @@ def merge_all_id(first_id: str) -> str:
     return f"{first_id}-m"
 
 
-def game_windows(chapters: Any, game_id: str, join_within: float = 1.0) -> list[tuple[float, float]]:
-    """Where a VOD plays ``game_id``: its chapters of that game, those less than ``join_within``
-    seconds apart joined (a playthrough's candidate windows). A merge's gap chapter ("Technical
+def game_windows(chapters: Any, game_ids: str | Collection[str], join_within: float = 1.0) -> list[tuple[float, float]]:
+    """Where a VOD plays ``game_ids`` (one id or several): its chapters of those games, those less than
+    ``join_within`` seconds apart joined (a playthrough's candidate windows), so back-to-back games of a
+    series make one window. A merge's gap chapter ("Technical
     difficulties") is joined over, so a merged VOD's run of the game stays one window and plays the gap
     as its watch page does. Other cut chapters are left out and never joined over."""
+    ids = {game_ids} if isinstance(game_ids, str) else set(game_ids)
     out: list[tuple[float, float]] = []
     reach: float | None = None  # where the last window ends, through any gaps right after it; None: cut
     for ch in sorted(timeline._chapters(chapters), key=timeline.start_of):
@@ -271,7 +273,7 @@ def game_windows(chapters: Any, game_id: str, join_within: float = 1.0) -> list[
         if ch.get("restricted") is True:
             reach = None
             continue
-        if str(ch.get("gameId")) != game_id:
+        if str(ch.get("gameId")) not in ids:
             continue
         if out and reach is not None and s - reach < join_within:
             out[-1] = (out[-1][0], max(out[-1][1], e))
