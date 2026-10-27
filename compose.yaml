@@ -106,7 +106,7 @@ services:
       - archive_twitch_client_secret
     ports:
       # Localhost by default. ARCHIVE_PUBLISH_ADDR=0.0.0.0 (or one address) when a proxy on another host
-      # serves it; set ARCHIVE_ADMIN_PUBLISH_ADDR too, or the admin port follows it.
+      # serves it. The admin port has its own address (ARCHIVE_ADMIN_PUBLISH_ADDR) and stays on localhost.
       - "${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}:${ARCHIVE_API_PORT:-3030}:${ARCHIVE_API_PORT:-3030}"
     volumes:
       # Read-only, for the seek-bar previews the worker makes (GET /v1/previews/...). The whole data dir, not
@@ -131,10 +131,10 @@ services:
       - archive_doomtp_api_key
     ports:
       # The admin API: never published to the internet (docs/admin-api.md). Its own address, so exposing the api to
-      # a proxy on another host doesn't expose this too; unset, it follows ARCHIVE_PUBLISH_ADDR.
+      # a proxy on another host doesn't expose this too; unset, it stays on 127.0.0.1.
       # With the admin apart (below) this port serves only the worker's health: give it another host port
       # (ARCHIVE_WORKER_PUBLISH_PORT) so worker-admin can take the admin's.
-      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_WORKER_PUBLISH_PORT:-${ARCHIVE_ADMIN_PORT:-3031}}:${ARCHIVE_ADMIN_PORT:-3031}"
+      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-127.0.0.1}:${ARCHIVE_WORKER_PUBLISH_PORT:-${ARCHIVE_ADMIN_PORT:-3031}}:${ARCHIVE_ADMIN_PORT:-3031}"
     volumes:
       - ${ARCHIVE_HOST_DATA_DIR:-./data}:/data
     stop_grace_period: 60s  # let ffmpeg / uploads be cancelled cleanly; jobs resume on start
@@ -159,7 +159,7 @@ services:
       - archive_google_client_secret
       - archive_doomtp_api_key
     ports:
-      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-${ARCHIVE_PUBLISH_ADDR:-127.0.0.1}}:${ARCHIVE_ADMIN_PORT:-3031}:${ARCHIVE_ADMIN_PORT:-3031}"
+      - "${ARCHIVE_ADMIN_PUBLISH_ADDR:-127.0.0.1}:${ARCHIVE_ADMIN_PORT:-3031}:${ARCHIVE_ADMIN_PORT:-3031}"
     volumes:
       - ${ARCHIVE_HOST_DATA_DIR:-./data}:/data  # the storage page lists and deletes folders
 
