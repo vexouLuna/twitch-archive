@@ -20,10 +20,11 @@ the site can tell a viewer who finished it that there is more now. ``compiledFro
 backfill or an edit of a source reaches the synthetic VODs made of it. A source may be a synthetic
 VOD itself (``compose.check_nesting``); one that others are made of cannot be deleted.
 
-A playthrough can keep itself up to date: ``synthetic.auto = {"gameId": ...}`` makes its segments
-every window of that game in the shown ``vods`` VODs (``game_windows``). ``refresh_auto`` (also every
-monitor round) writes them again when they differ, so a new stream of the game, or a source's chapters
-edited, reaches it. Sending segments by hand ends that (the API clears ``auto``).
+A playthrough can keep itself up to date: ``synthetic.auto = {"gameIds": [...]}`` makes its segments
+every window of any of those games in the shown ``vods`` VODs, oldest VOD first (``game_windows``); rows
+from before a playthrough could follow several games keep ``{"gameId": ...}``, which reads as one.
+``refresh_auto`` (also every monitor round) writes them again when they differ, so a new stream of a
+game, or a source's chapters edited, reaches it. Sending segments by hand ends that (the API clears ``auto``).
 
 Its thumbnail is the first source's that has one, unless an admin set its own (``synthetic.thumbnailUrl``,
 PATCH /api/v2/vods): that one is kept over the derived one through every recompose and change.
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Collection
 from typing import Any
 
 from archive_common import audit, site_tags
@@ -48,7 +50,7 @@ from archive_common.serialize import (
     played_by_shown,
 )
 from archive_common.timeutil import hhmmss_to_seconds
-from sqlalchemy import ARRAY, Text, cast, delete, func, select, update
+from sqlalchemy import ARRAY, Text, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from vex_platform.actor import SYSTEM
@@ -208,7 +210,7 @@ async def create(
     auto: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A new synthetic VOD; ``title`` defaults to the first source's. With ``auto``, its segments are
-    that game's windows (``segments`` is not used). ``supersedes``: hide its sources and tag it ``vods``
+    its games' windows (``segments`` is not used). ``supersedes``: hide its sources and tag it ``vods``
     (a merge or split)."""
     async with get_sessionmaker()() as s, s.begin():
         return await create_in(s, vod_id, segments, title=title, supersedes=supersedes, tags=tags, auto=auto)
@@ -269,7 +271,7 @@ async def change(
     auto: dict[str, Any] | str | None = KEEP,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Change what is given; returns the synthetic VOD (as ``synthetic_json``) before and after.
-    ``auto``: a game to follow (its windows replace the segments), None to stop, ``KEEP`` as it is.
+    ``auto``: the games to follow (their windows replace the segments), None to stop, ``KEEP`` as it is.
     ``supersedes=True`` hides the sources and adds ``vods``; False changes nothing (ADR 0005)."""
     async with get_sessionmaker()() as s, s.begin():
         vod = await _locked(s, vod_id)
@@ -425,12 +427,13 @@ async def containing(source_id: str) -> list[dict[str, Any]]:
 # ── Freshness ─────────────────────────────────────────────────────────────
 
 
-async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, float]]:
-    """Every window of a VOD playing ``game_id`` (``compose.game_windows``), oldest first: what an auto
+async def game_windows(s: AsyncSession, game_ids: str | Collection[str]) -> list[tuple[Vod, float, float]]:
+    """Every window of a VOD playing any of ``game_ids`` (``compose.game_windows``), oldest first: what an auto
     playthrough is made of. Its sources are the shown ``vods`` VODs, synthetic ones included (a merge or a
     split), never a ``compilation`` and never one whose footage a shown ``vods`` synthetic VOD plays: that
     one wins, so nothing counts twice. Each window stops at its VOD's end (chapters can run a fraction of
     a second past the whole-second duration, which would leave a gap in the playthrough)."""
+    ids = [game_ids] if isinstance(game_ids, str) else list(game_ids)
     covered = played_by_shown(Vod.id, tag=site_tags.VODS, without=site_tags.COMPILATION)
     vods = (
         await s.execute(
@@ -441,7 +444,7 @@ async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, 
                 Vod.tags.contains([site_tags.VODS]),
                 ~Vod.tags.contains([site_tags.COMPILATION]),
                 ~covered,
-                Vod.chapters.contains([{"gameId": game_id}]),
+                or_(*(Vod.chapters.contains([{"gameId": g}]) for g in ids)),
             )
             .order_by(Vod.created_at, Vod.id)
         )
@@ -449,7 +452,7 @@ async def game_windows(s: AsyncSession, game_id: str) -> list[tuple[Vod, float, 
     out = []
     for vod in vods:
         ends = float(hhmmss_to_seconds(vod.duration)) or float("inf")
-        out += [(vod, a, min(b, ends)) for a, b in compose.game_windows(vod.chapters, game_id) if a < ends - EPS]
+        out += [(vod, a, min(b, ends)) for a, b in compose.game_windows(vod.chapters, ids) if a < ends - EPS]
     return out
 
 
@@ -458,13 +461,20 @@ def window_segment(vod: Vod, start: float, end: float) -> dict[str, Any]:
     return {"vodId": vod.id, "start": start, "end": end, "label": f"{vod.created_at:%d %b %Y}"}
 
 
+def followed_games(auto: Any) -> list[str]:
+    """The games ``auto`` follows: ``{"gameIds": [...]}``, or ``{"gameId": ...}`` as older rows keep one."""
+    keys = set(auto) if isinstance(auto, dict) else set()
+    ids = auto["gameIds"] if keys == {"gameIds"} else [auto["gameId"]] if keys == {"gameId"} else None
+    if not isinstance(ids, list) or not ids or not all(isinstance(g, str) and g for g in ids):
+        raise SyntheticError(422, 'auto must be {"gameIds": ["<game id>", ...]}')
+    return list(dict.fromkeys(ids))
+
+
 async def _auto_segments(s: AsyncSession, auto: dict[str, Any]) -> list[Segment]:
-    game_id = auto.get("gameId")
-    if set(auto) != {"gameId"} or not isinstance(game_id, str) or not game_id:
-        raise SyntheticError(422, 'auto must be {"gameId": "<game id>"}')
-    windows = await game_windows(s, game_id)
+    ids = followed_games(auto)
+    windows = await game_windows(s, ids)
     if not windows:
-        raise SyntheticError(422, f"no VOD plays game {game_id}")
+        raise SyntheticError(422, f"no VOD plays {'game' if len(ids) == 1 else 'any of the games'} {', '.join(ids)}")
     return _composed(compose.parse, [window_segment(*w) for w in windows])  # type: ignore[no-any-return, no-untyped-call]
 
 

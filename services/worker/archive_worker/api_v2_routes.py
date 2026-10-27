@@ -28,7 +28,7 @@ one (settings, VODs), right after it otherwise (a storage delete is files, not r
                                        hours, ended soon before it started), oldest first
     POST   /api/v2/vods/{vod_id}/merge {sources, gaps?, id?}: one synthetic VOD of them all, hiding them
     POST   /api/v2/vods/{vod_id}/split {at, ids?}: two synthetic VODs, hiding it
-    GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game, oldest first
+    GET    /api/v2/playthrough-candidates?game_id=  where real VODs play that game (repeat it for several), oldest first
 """
 
 from __future__ import annotations
@@ -602,7 +602,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         """A synthetic VOD of ``segments``: windows ``[start, end)`` of real VODs placed at ``at`` (a
         missing ``at`` follows the segment before). ``supersedes`` (older dashboards): hide the sources
         and tag it ``vods``, as a merge does. With ``auto``
-        (a playthrough that keeps itself up to date) the segments are every window of that game, kept so
+        (a playthrough that keeps itself up to date) the segments are every window of its games, kept so
         by the monitor, and ``segments`` is not needed. Audited as ``synthetic.create``."""
         view = await _synthetic(  # type: ignore[no-untyped-call]
             synthetic.create,
@@ -629,7 +629,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
 
     @router.put("/synthetic/{vod_id}")
     async def change_synthetic(request: Request, vod_id: str, body: SyntheticChange) -> SyntheticView:
-        """Only the fields sent change; ``auto`` follows a game (its windows replace the segments) or,
+        """Only the fields sent change; ``auto`` follows games (their windows replace the segments) or,
         null, stops. Segments sent without ``auto`` are a hand edit, which stops it too. Audited as
         ``synthetic.update``, before and after."""
         if "auto" in body.model_fields_set:
@@ -733,8 +733,8 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         return [SyntheticView(**view) for view in made]
 
     @router.get("/playthrough-candidates")
-    async def playthrough_candidates(game_id: Annotated[str, Query(min_length=1)]) -> Page[PlaythroughWindow]:
-        """Every window of a VOD an auto playthrough of ``game_id`` would play (``synthetic.game_windows``:
+    async def playthrough_candidates(game_id: Annotated[list[str], Query(min_length=1)]) -> Page[PlaythroughWindow]:
+        """Every window of a VOD an auto playthrough of the ``game_id`` games would play (``synthetic.game_windows``:
         its chapters of it, adjacent ones joined), oldest first: trim them, then POST them to /synthetic as a
         playthrough (``tags: ["playthroughs"]``); a window's ``segment`` is ready to send."""
         async with get_sessionmaker()() as s:
@@ -765,12 +765,17 @@ class SegmentIn(ApiModel):
 
 
 class AutoIn(ApiModel):
-    game_id: str = Field(min_length=1)
+    """The games to follow: ``game_ids``, or one ``game_id`` as older dashboards send it."""
+
+    game_id: str | None = Field(default=None, min_length=1)
+    game_ids: list[str] | None = None
 
 
 def _auto(auto: AutoIn | None) -> dict[str, Any] | None:
-    """As ``synthetic.auto`` stores it."""
-    return None if auto is None else {"gameId": auto.game_id}
+    """As ``synthetic.auto`` stores it (``synthetic.followed_games`` checks it: one of the two, not both)."""
+    if auto is None:
+        return None
+    return {k: v for k, v in (("gameId", auto.game_id), ("gameIds", auto.game_ids)) if v is not None}
 
 
 class SyntheticCreate(ApiModel):
@@ -800,7 +805,7 @@ class SyntheticView(ApiModel):
     created_at: UtcDatetime | None = None
     made_at: UtcDatetime | None = None
     changed_at: UtcDatetime | None = None
-    auto: dict[str, Any] | None = None  # {"game_id"}: it follows that game
+    auto: dict[str, Any] | None = None  # {"game_ids"} (or an older row's {"game_id"}): it follows those games
     segments: list[dict[str, Any]]
     compiled: dict[str, Any] | None = None  # {"outdated"} when it has compiled uploads (steps/compile)
 
