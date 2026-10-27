@@ -1,5 +1,5 @@
 """Validation for hand edits of a VOD (admin API): its fields (title, hidden, thumbnail,
-duration, date), chapters, YouTube and Drive lists, and games rows.
+duration, date), chapters, YouTube and Drive lists.
 
 Pure functions: each takes the request's list and returns what to store, or
 raises ValueError with a message fit for the response.
@@ -11,7 +11,6 @@ import datetime as dt
 import math
 import re
 from collections.abc import Collection
-from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -331,11 +330,11 @@ def tags(value: Any, known: Collection[str] = KNOWN_TAGS) -> list[str]:
     return out
 
 
-def check_fits(chapters: Any, games_end: float, seconds: float) -> None:
-    """A new duration must still hold the VOD's chapters and games rows (ValueError otherwise)."""
-    for what, end in (("chapters", content_end(chapters)), ("games rows", games_end)):
-        if end > seconds + DURATION_SLACK:
-            raise ValueError(f"The {what} run to {end:g}s, past the new duration ({seconds:g}s); shorten them first")
+def check_fits(chapters: Any, seconds: float) -> None:
+    """A new duration must still hold the VOD's chapters (ValueError otherwise)."""
+    end = content_end(chapters)
+    if end > seconds + DURATION_SLACK:
+        raise ValueError(f"The chapters run to {end:g}s, past the new duration ({seconds:g}s); shorten them first")
 
 
 def content_end(chapters: Any) -> float:
@@ -346,53 +345,3 @@ def content_end(chapters: Any) -> float:
         if isinstance(c, dict) and is_number(c.get("start")) and is_number(c.get("end"))
     ]
     return max(ends, default=0)
-
-
-# ── Games rows (PUT /admin/vods/{id}/games) ──────────────────────────────
-
-GAME_TEXT = ("game_id", "game_name", "title", "video_provider", "video_id")
-GAME_URLS = ("thumbnail_url", "chapter_image")
-GAME_READ_ONLY = {"id", "vodId", "createdAt", "updatedAt"}  # as GET returns them; ignored
-
-
-def _seconds(value: Any, where: str) -> float:
-    """A number of seconds; the numeric strings GET returns are taken too."""
-    if isinstance(value, str):
-        try:
-            value = float(value)
-        except ValueError:
-            pass
-    if not is_number(value) or value < 0:
-        raise ValueError(f"{where} must be a number of seconds >= 0")
-    return value  # type: ignore[no-any-return]
-
-
-def games(items: Any, vod_duration: float) -> list[dict[str, Any]]:
-    """Admin games rows (the shape GET /games renders) -> column values, sorted by start, no
-    overlaps, each inside ``vod_duration`` seconds (unchecked when that is 0/unknown)."""
-    out: list[dict[str, Any]] = []
-    prev_start = prev_end = None
-    for i, item in enumerate(_list(items, "games")):
-        where = f"games[{i}]"
-        row = _object(item, where, {"start_time", "end_time", "game_name"}, {*GAME_TEXT, *GAME_URLS} | GAME_READ_ONLY)
-        start, end = _seconds(row["start_time"], f"{where}.start_time"), _seconds(row["end_time"], f"{where}.end_time")
-        if end <= start:
-            raise ValueError(f"{where} must end after it starts")
-        if prev_start is not None and start < prev_start:
-            raise ValueError(f"{where} starts before games[{i - 1}]; sort games by start_time")
-        if prev_end is not None and start < prev_end - OVERLAP_SLACK:
-            raise ValueError(f"{where} starts at {start:g}s, inside games[{i - 1}] (which ends at {prev_end:g}s)")
-        if vod_duration > 0 and end > vod_duration + DURATION_SLACK:
-            raise ValueError(f"{where} ends at {end:g}s, after the end of the VOD ({vod_duration:g}s)")
-        if not (_optional_str(row, "game_name", where) or "").strip():
-            raise ValueError(f"{where}.game_name must be a non-empty string")
-        prev_start, prev_end = start, end
-        out.append(
-            {
-                "start_time": Decimal(str(planning.num_seconds(start))),
-                "end_time": Decimal(str(planning.num_seconds(end))),
-                **{k: _optional_str(row, k, where) for k in GAME_TEXT},
-                **{k: http_url(row.get(k), f"{where}.{k}") for k in GAME_URLS},
-            }
-        )
-    return out

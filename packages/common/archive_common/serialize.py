@@ -23,8 +23,8 @@ from typing import Any
 from sqlalchemy import Column, Table, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
-from archive_common.models import BotLog, Emote, Game, Log, Stream, Vod, VodSegment
-from archive_common.segments import EPS, MAX_DEPTH, Segment, flatten, resolve, seconds
+from archive_common.models import BotLog, Emote, Log, Stream, Vod, VodSegment
+from archive_common.segments import MAX_DEPTH, Segment, flatten, resolve, seconds
 from archive_common.site_tags import VODS as VODS_TAG
 from archive_common.timeutil import hhmmss_to_seconds
 
@@ -144,7 +144,7 @@ def _t(model) -> Table:  # type: ignore[no-untyped-def]
     return model.__table__  # type: ignore[no-any-return]
 
 
-_vt, _gt, _et, _lt, _st, _bt = _t(Vod), _t(Game), _t(Emote), _t(Log), _t(Stream), _t(BotLog)
+_vt, _et, _lt, _st, _bt = _t(Vod), _t(Emote), _t(Log), _t(Stream), _t(BotLog)
 _sgt = _t(VodSegment)
 
 VODS = Resource(
@@ -200,7 +200,7 @@ def played_by_shown(
 
 
 def reachable() -> Any:
-    """VODs ``GET /vods/{id}``, their chat, games and emotes answer for: shown ones, and hidden ones a shown
+    """VODs ``GET /vods/{id}``, their chat and emotes answer for: shown ones, and hidden ones a shown
     synthetic VOD plays (those say ``hidden: true``)."""
     return or_(not_hidden(), played_by_shown(_vt.c.id))
 
@@ -221,31 +221,10 @@ def real() -> Any:
 
 
 def of_shown_vod(vod_id: Any) -> Any:
-    """Rows (games, emotes) whose ``vod_id`` is not a hidden VOD's, or a hidden one a shown synthetic VOD plays."""
+    """Rows (emotes) whose ``vod_id`` is not a hidden VOD's, or a hidden one a shown synthetic VOD plays."""
     hid = _vt.alias()
     return ~exists().where(hid.c.id == vod_id, hid.c.hidden.is_(True), ~played_by_shown(hid.c.id))
 
-
-GAMES = Resource(
-    _gt,
-    (
-        Field("id", _gt.c.id, _as_str),
-        Field("vodId", _gt.c.vod_id),
-        Field("start_time", _gt.c.start_time, _as_str),
-        Field("end_time", _gt.c.end_time, _as_str),
-        Field("video_provider", _gt.c.video_provider),
-        Field("video_id", _gt.c.video_id),
-        Field("thumbnail_url", _gt.c.thumbnail_url),
-        Field("game_id", _gt.c.game_id),
-        Field("game_name", _gt.c.game_name),
-        Field("title", _gt.c.title),
-        Field("chapter_image", _gt.c.chapter_image),
-        Field("createdAt", _gt.c.createdAt, js_iso),
-        Field("updatedAt", _gt.c.updatedAt, js_iso),
-    ),
-    "id",
-    {"vod_id": "vodId"},
-)
 
 EMOTES = Resource(
     _et,
@@ -328,44 +307,6 @@ STREAMS = Resource(
 # ── Associations ──────────────────────────────────────────────────────────
 
 
-async def _games_for(conn: AsyncConnection, vod_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    out: dict[str, list[dict[str, Any]]] = {v: [] for v in vod_ids}
-    if not vod_ids:
-        return out
-    rows = await conn.execute(
-        select(*GAMES.columns()).where(GAMES.table.c.vod_id.in_(vod_ids)).order_by(GAMES.table.c.id)
-    )
-    for row in rows.mappings():
-        out[row["vodId"]].append(GAMES.to_json(row))  # type: ignore[arg-type]
-    return out
-
-
-async def attach_games(conn: AsyncConnection, vods: list[dict[str, Any]]) -> None:
-    """``games`` on each VOD, as the legacy include() hook added it."""
-    games = await _games_for(conn, [v["id"] for v in vods])
-    for vod in vods:
-        vod["games"] = games[vod["id"]]
-
-
-def _game_in(game: dict[str, Any], seg: Segment, synthetic_id: str) -> dict[str, Any] | None:
-    """A source's game row cut to ``seg``'s window and moved to where it plays on the synthetic VOD."""
-    try:
-        start, end = float(game["start_time"]), float(game["end_time"])
-    except (TypeError, ValueError):
-        return None
-    start, end = max(start, seg.start), min(end, seg.end)  # type: ignore[assignment, type-var]
-    if end - start <= EPS:
-        return None
-    shift = seg.at - seg.start
-    return {
-        **game,
-        "vodId": synthetic_id,
-        "sourceVodId": game["vodId"],
-        "start_time": str(seconds(start + shift)),
-        "end_time": str(seconds(end + shift)),
-    }
-
-
 async def nested_segments(
     conn: AsyncConnection | AsyncSession, ids: Iterable[str], levels: int
 ) -> tuple[dict[str, list[Segment]], dict[str, bool]]:
@@ -440,7 +381,7 @@ async def live_spans(conn: AsyncConnection) -> dict[str, tuple[dt.datetime, dt.d
 async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> None:
     """Synthetic VODs get ``synthetic.segments`` (``flat_segments``: real VODs only, ends resolved,
     streams numbered), ``madeAt`` and ``changedAt`` (as stored), ``firstLiveAt`` and ``lastLiveAt`` (``_live_span``)
-    and the games of their sources' windows (after ``attach_games``); a VOD a shown synthetic VOD is
+    a VOD a shown synthetic VOD is
     made of gets ``appears_in`` (those synthetic VODs); a hidden one also ``hidden: true``, and
     ``superseded_by`` (where each part of it went) in place of ``appears_in`` when it is in only one."""
     ids = [v["id"] for v in vods if "id" in v]
@@ -463,7 +404,6 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
         return
     resolved = await flat_segments(conn, list({r["vod_id"] for r in rows if r["vod_id"] in ids}))
     real = list({x.source_id for v in resolved.values() for x in v})
-    games = await _games_for(conn, real)
     live = dict((await conn.execute(select(_vt.c.id, _vt.c.createdAt).where(_vt.c.id.in_(real)))).all()) if real else {}
     # The shown synthetic VODs each source is in, for appears_in; a hidden source in exactly one is
     # superseded_by it instead (each of its parts there, so a link's ?t= maps over; ADR 0005).
@@ -498,13 +438,6 @@ async def attach_segments(conn: AsyncConnection, vods: list[dict[str, Any]]) -> 
                 "changedAt": meta.get("changedAt"),
                 **_live_span(segs, live),
             }
-            if "games" in vod:
-                vod["games"] = [
-                    g
-                    for x in segs
-                    for g in (_game_in(g, x, vod["id"]) for g in games.get(x.source_id, []))
-                    if g is not None
-                ]
         entry = used.get(vod["id"])  # type: ignore[assignment]
         if entry:
             if vod["id"] in hidden:
@@ -523,7 +456,6 @@ async def vods_json(
     if order_by is not None:
         stmt = stmt.order_by(order_by)
     vods = [VODS.to_json(r) for r in (await conn.execute(stmt)).mappings()]  # type: ignore[arg-type]
-    await attach_games(conn, vods)
     await attach_segments(conn, vods)
     return vods
 
