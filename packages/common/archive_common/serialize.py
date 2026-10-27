@@ -311,7 +311,8 @@ async def nested_segments(
     conn: AsyncConnection | AsyncSession, ids: Iterable[str], levels: int
 ) -> tuple[dict[str, list[Segment]], dict[str, bool]]:
     """The stored segments of each synthetic VOD among ``ids``, then of the synthetic VODs they are
-    made of, ``levels`` levels down; and whether each of those supersedes its sources."""
+    made of, ``levels`` levels down; and whether each of those is one broadcast (a merge or split: tagged
+    ``vods``, ADR 0005; ``synthetic.supersedes`` before 0022)."""
     raw: dict[str, list[Segment]] = {}
     supersedes: dict[str, bool] = {}
     todo = set(ids)
@@ -322,7 +323,7 @@ async def nested_segments(
         rows = (
             (
                 await conn.execute(
-                    select(_sgt, _vt.c.synthetic)
+                    select(_sgt, _vt.c.synthetic, _vt.c.tags)
                     .join(_vt, _vt.c.id == _sgt.c.vod_id)
                     .where(_sgt.c.vod_id.in_(todo))
                     .order_by(_sgt.c.vod_id, _sgt.c.pos)
@@ -333,7 +334,7 @@ async def nested_segments(
         )
         for r in rows:
             raw.setdefault(r["vod_id"], []).append(Segment.of_row(r))
-            supersedes[r["vod_id"]] = bool((r["synthetic"] or {}).get("supersedes"))
+            supersedes[r["vod_id"]] = VODS_TAG in (r["tags"] or []) or bool((r["synthetic"] or {}).get("supersedes"))
         todo = {x.source_id for k in todo for x in raw.get(k, [])}
     return raw, supersedes
 
