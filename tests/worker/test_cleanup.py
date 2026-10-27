@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 from archive_worker.context import JobContext
 from archive_worker.steps import media
-from vex_platform.jobs import SkipTo
+from vex_platform.actor import Actor
+from vex_platform.jobs import JobRun, SkipTo
 
 
 @pytest.mark.parametrize(("kind", "then"), [("archive", "cleanup"), ("live_file", None)])
@@ -81,11 +82,15 @@ class FakeRuntime:
         self.cancelled.append(run_id)
 
 
-def _run(id: int, state: str, kind: str = "archive", vod: str = "100", queued_key: str | None = None) -> Any:
-    steps = ["cleanup"] if kind == "cleanup" else ["download", "upload", "cleanup"]
-    return SimpleNamespace(
-        id=id, kind=kind, state=state, subject=f"vod:{vod}", payload={"type": "vod"}, steps=steps, queued_key=queued_key
-    )
+def _run(id: int, state: str, kind: str = "archive", vod: str = "100", queued_key: str | None = None) -> JobRun:
+    # The real type: a stand-in that accepts any attribute hid a read of a field JobRun doesn't have.
+    now = dt.datetime.now(dt.UTC)
+    return JobRun(
+        id=id, kind=kind, subject=f"vod:{vod}", state=state, step=None, payload={"type": "vod"}, attempts=0,
+        last_error=None, not_before=None, pause_before=None, pause_next=False, cancel_requested=False,
+        queued_key=queued_key, active_key=None, actor=Actor("job", "1", "t", "job"), procrastinate_job_id=None,
+        created_at=now, updated_at=now, started_at=None, finished_at=None,
+    )  # fmt: skip
 
 
 def _runtime_ctx(deps: Any, kind: str, me: Any, runs: list[Any]) -> Any:
@@ -107,8 +112,6 @@ def _runtime_ctx(deps: Any, kind: str, me: Any, runs: list[Any]) -> Any:
 )
 async def test_delayed_cleanup_keeps_files_a_newer_run_uses(deps, other, kept):
     me = SimpleNamespace(id=5, parent_id=4, subject="vod:100")
-    if other.kind == "previews_fetch":
-        other.steps = ["previews_fetch"]
     ctx = _runtime_ctx(deps, "cleanup", me, [other])
     _files(ctx)
     await media.cleanup(ctx)

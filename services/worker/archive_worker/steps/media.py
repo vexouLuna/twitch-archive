@@ -234,7 +234,8 @@ async def _newer_owner(ctx: JobContext) -> int | None:
     # shortcut: the newest 500 such runs, plenty while failed runs get retried or cancelled.
     for run in await ctx.run.runtime.list(states=[*ACTIVE, "failed"], limit=500):
         # Only a pipeline that ends in its own cleanup step takes the files over.
-        if run.kind == "cleanup" or "cleanup" not in run.steps or (run.state == "failed" and run.id < since):
+        ends_in_cleanup = run.kind != "cleanup" and "cleanup" in KINDS.get(run.kind, ())
+        if not ends_in_cleanup or (run.state == "failed" and run.id < since):
             continue
         if _work_dir_of(ctx, run) == ctx.work_dir:
             return int(run.id)
