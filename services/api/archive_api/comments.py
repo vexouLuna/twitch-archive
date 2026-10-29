@@ -174,18 +174,12 @@ class Comments:
                         return await self._synthetic(conn, vod_id)
                     result = await self._offset_search(conn, src, vod_id, seconds, vod.createdAt)
                 if result is None:
-                    # A chat asked for by name that has nothing at or after the offset (the VOD lacks it, or the
-                    # seek is past its last message) is an empty page, so a site can see (from ``sources``) what
-                    # there is instead; without ``source`` the legacy error stays.
-                    if source != "auto":
-                        return {**EMPTY, "sources": counts}
-                    raise LegacyError(500, f"No chat at or after offset {fixed}")
+                    # No chat at or after the offset (the VOD lacks it, or the seek is past its last message) is
+                    # an empty page, not an error; ``sources`` tells a site what there is.
+                    return {**EMPTY, "sources": counts}
                 return {**result, "sources": counts}
 
-            # An empty page (named source) and the legacy error (``auto``) differ for the same offset and source,
-            # so whether the source was named is part of the key.
-            named = "" if source == "auto" else ":named"
-            return await self.cache.get_or_render(f"offset:{vod_id}:{seconds}{src.key}{named}", by_offset)
+            return await self.cache.get_or_render(f"offset:{vod_id}:{seconds}{src.key}", by_offset)
 
         async def by_cursor() -> dict[str, Any]:
             cursor_json = _decode_cursor(cursor or "")
@@ -201,9 +195,7 @@ class Comments:
                     return EMPTY
                 if result is None and vod is not None and vod.synthetic is not None:
                     return await self._synthetic(conn, vod_id)
-            if result is None:
-                raise LegacyError(500, f"No chat after cursor {cursor}")
-            return result
+            return EMPTY if result is None else result  # past the last page: nothing more
 
         # The cursor names its source, so the key needs nothing else.
         return await self.long_cache.get_or_render(f"cursor:{vod_id}:{cursor}", by_cursor)
