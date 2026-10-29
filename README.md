@@ -49,7 +49,7 @@ flowchart LR
 - [YouTube OAuth setup](docs/youtube-oauth.md)
 - [Admin API](docs/admin-api.md)
 - [Live recordings and multiTrack](docs/live-recordings.md)
-- [Public API reference](docs/public-api.md)
+- [Public API reference](docs/public-api.md); the running API serves its OpenAPI document at `/openapi.json` and a browsable version at `/docs`
 - [Deployment (Docker Compose)](docs/deployment.md)
 - [Operations and troubleshooting](docs/operations.md)
 - [Development](docs/development.md)
@@ -69,7 +69,7 @@ docker compose -f compose.dev.yaml up -d       # Postgres 17 on 127.0.0.1:55433 
 docker compose -f compose.dev.yaml exec -T db pg_restore -U postgres -d archive --no-owner < archive.dump
 
 uv run alembic upgrade head                    # legacy baseline (no-op on existing tables) + jobs/indexes
-uv run archive-api                             # http://127.0.0.1:3030/vods
+uv run archive-api                             # http://127.0.0.1:3030/vods, docs at /docs
 ARCHIVE_ADMIN_API_KEY=dev uv run archive-worker run --dry-run
 ```
 

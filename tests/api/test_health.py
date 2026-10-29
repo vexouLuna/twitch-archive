@@ -30,3 +30,19 @@ async def test_readyz_is_503_without_the_database(down: httpx.AsyncClient) -> No
         r = await c.get("/readyz")
     assert r.status_code == 503
     assert r.json()["ok"] is False and r.json()["error"].startswith("database: ")
+
+
+async def test_openapi_documents_the_public_routes(down: httpx.AsyncClient) -> None:
+    async with down as c:
+        spec = (await c.get("/openapi.json")).json()
+        docs = await c.get("/docs")
+    assert docs.status_code == 200
+    assert spec["info"]["title"] == "archive-api"
+    assert {"/vods", "/vods/{item_id}", "/v1/vods/{vod_id}/comments", "/v1/status", "/v2/badges"} <= set(spec["paths"])
+    for path, ops in spec["paths"].items():
+        assert "schema" in ops["get"]["responses"]["200"].get("content", {}).get("application/json", {}) or path in {
+            "/healthz",
+            "/readyz",
+            "/v1/previews/{youtube_id}/{name}",
+            "/v1/site/tags/{file}",
+        }, path
