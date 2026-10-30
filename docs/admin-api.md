@@ -16,7 +16,7 @@ H=(-H "Authorization: Bearer $KEY" -H "Content-Type: application/json")
 
 ## /api/v2
 
-The same API is moving to `/api/v2`, shared with doomtp-bot (the conventions are vex-platform's `docs/conventions.md`). It takes the same key or dashboard login, but answers differently:
+The same API is moving to `/api/v2`, shared with doomtp-bot. Its rules are the workspace's wire conventions, [`.conventions/API.md`](../.conventions/API.md), which vex-platform implements (`docs/conventions.md`); `/admin/*` is **legacy**: it keeps its shapes until the dashboard has moved off each route (ADR 0003), and a new route goes under `/api/v2`, never `/admin`. It takes the same key or dashboard login, but answers differently:
 
 - JSON keys are snake_case and times are ISO 8601 in UTC (`2026-09-30T12:00:00Z`).
 - Lists are `{items, next_cursor}`. Pass `cursor=<next_cursor>` for the next page; `limit` is at most 500.
@@ -24,6 +24,36 @@ The same API is moving to `/api/v2`, shared with doomtp-bot (the conventions are
 - Every response has an `X-Request-ID` (yours, if you send one). Audit rows keep it.
 - A write that is refused or fails is audited too (`request.denied`, `request.failed`).
 - OpenAPI is at `/api/v2/docs`, behind the same login.
+
+Known exceptions to the conventions, kept because the dashboard reads them (a new field never copies them; a unit goes in the name, `_seconds`, `_ms`, `_bytes`):
+
+- Numbers without their unit in the name: `gap` (merge candidates, merge), a segment's `start`, `end` and `at` (seconds), `size` (`/vods/{id}/media`, bytes) and the storage `disk`'s `total`, `used` and `free` (bytes); a site tag's `width`, `height`, `text_size`, `text_x`, `text_y` and `pattern_size` (px) and `rotate` and `text_rotate` (degrees); the YouTube check's `planned` and `gaps` (seconds).
+- Stored lists returned as they are stored, in the legacy camelCase shape: a VOD's `chapters`, `youtube`, `drive`, `censor`, `bot_chat`, `merged_into` and `synthetic`.
+- `POST /vods/{id}/split` answers a bare list of the VODs it made.
+
+Routes added to `/admin` after `/api/v2` existed now have `/api/v2` twins (ADR 0003, step 7). The `/admin` routes stay, unchanged, until the dashboard has moved:
+
+| `/admin` | `/api/v2` |
+|---|---|
+| `GET`, `PUT /admin/site/tags` | `GET`, `PUT /api/v2/site/tags` |
+| `PUT`, `DELETE /admin/site/tags/{tag}/shape` | `PUT`, `DELETE /api/v2/site/tags/{tag}/shape` |
+| `GET`, `PUT /admin/site/options` | `GET`, `PUT /api/v2/site/options` |
+| `GET /admin/twitch/videos` | `GET /api/v2/twitch/videos` |
+| `POST /admin/twitch/import` | `POST /api/v2/twitch/videos/import` |
+| `GET`, `PUT`, `DELETE /admin/twitch/viewer` | `GET`, `PUT`, `DELETE /api/v2/twitch/viewer` |
+| `POST /admin/twitch/viewer/device`, `GET .../device/{flowId}` | `POST /api/v2/twitch/viewer/device`, `GET .../device/{flow_id}` |
+| `GET /admin/youtube/videos`, `POST .../videos/check` | `GET /api/v2/youtube/videos`, `POST .../videos/check` |
+
+The twins answer what their `/admin` route does, in snake_case with `Z` times, and differ only where the conventions ask:
+
+- Refusals are problem details: 422 `invalid_site_tag` (with `tag` and `field`), `unsafe_svg`, `invalid_site_options`, `token_refused`, `invalid`; 404 `site_tag_not_found`; 413 `too_large`; 415 `unsupported_media_type`; 400 `twitch_refused` (Twitch turned the device flow down; not a 5xx, which Cloudflare would replace); 409 `check_running`; 502 `viewer_check_failed`.
+- `site/options` drops `home_cards` (the old shape of `cards`) and takes only `cards` and `play_default`.
+- A key a body doesn't have (at the top, in a tag or in a card), `/admin`'s camelCase keys and old-shape card `kind` among them, is 422 `invalid` with `errors` (`loc`, `msg`, `type`), as on every `/api/v2` route; a tag's `shape` is accepted and ignored, so a listed tag can be sent back. The `detail` of a refusal names fields in snake_case.
+- `twitch/videos` is `{items, next_cursor}` (always one page) and adds `duration_seconds`. The import takes `{vod_ids, paused}` and answers 202 `{added: [{vod_id, job_id}], skipped: [{vod_id, reason}]}`.
+- The device flow answers 201 with `expires_in_seconds` and `interval_seconds`; the unlink answers 204.
+- Each change writes its own audit row, with the same action as its `/admin` route and the request id.
+
+The pipeline triggers added in the same time (`/admin/previews`, `/admin/previews/backfill`, `/admin/live-gaps/backfill`) already had one: `POST /api/v2/jobs` with their kind.
 
 ```bash
 curl -s "${H[@]}" "$A/api/v2/jobs?state=paused&subject=vod:123"   # runs; also kind=, cursor=, limit=
@@ -345,15 +375,15 @@ vexoul.net sites is an archive admin, and get the dashboard session if they are.
 1. The page asks vex-auth for a one-time code for this worker's client:
 
    ```js
-   const me = await fetch(`${AUTH}/v1/me`, { credentials: "include" });   // 401: not signed in, so not an admin
+   const me = await fetch(`${AUTH}/v2/me`, { credentials: "include" });   // 401: not signed in, so not an admin
    const { csrf } = await me.json();
-   const r = await fetch(`${AUTH}/v1/codes`, {
+   const r = await fetch(`${AUTH}/v2/codes`, {
      method: "POST",
      credentials: "include",
-     headers: { "Content-Type": "application/json", "X-Vex-CSRF": csrf },
+     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
      body: JSON.stringify({ client_id: "vods-admin" }),   // ARCHIVE_ADMIN_AUTH_CLIENT_ID
    });
-   // 200 {code}; 401 signed_out (not an admin); 400 unknown_client, 403 csrf, 409 scope_missing, 429 rate_limited
+   // 200 {code}; problem+json `code`: 401 signed_out (not an admin); 400 unknown_client, 403 csrf, 409 scope_missing, 429 rate_limited
    ```
 
 2. It hands the code to the worker, as the dashboard reaches it:
@@ -367,7 +397,7 @@ vexoul.net sites is an archive admin, and get the dashboard session if they are.
    });
    ```
 
-The worker redeems the code with vex-auth's `POST /v1/token` (its client id and secret, and the
+The worker redeems the code with vex-auth's `POST /v2/token` (its client id and secret, and the
 redirect URI the code carries: `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL`), then:
 
 | Answer | When |

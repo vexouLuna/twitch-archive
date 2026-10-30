@@ -228,3 +228,57 @@ async def test_an_expired_token_that_cannot_refresh_is_not_sent(clean, settings,
     assert await viewer.auth() is None
     status = await viewer.check()
     assert status["linked"] is True and status["valid"] is False and "link the account again" in status["error"]
+
+
+async def test_v2_link_paste_and_unlink(clean, deps, make_service, respx_mock):
+    deps.settings.admin_api_key = SecretStr("k")
+    deps.settings.twitch_viewer_client_id = CLIENT
+    app = create_admin_app(deps, await make_service(start=False))
+    key = {"Authorization": "Bearer k"}
+    device = respx_mock.post(twitch_viewer.DEVICE_URL)
+    device.respond(
+        json={
+            "device_code": "device-code-stand-in",
+            "user_code": "ABCDEFGH",
+            "verification_uri": "https://www.twitch.tv/activate?device-code=ABCDEFGH",
+            "expires_in": 1800,
+            "interval": 5,
+        }
+    )
+    respx_mock.post(twitch_viewer.TOKEN_URL).respond(400, json={"status": 400, "message": "authorization_pending"})
+    respx_mock.get(twitch_viewer.VALIDATE_URL).mock(side_effect=_validate)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://admin") as c:
+        assert (await c.get("/api/v2/twitch/viewer")).status_code == 401
+        assert (await c.get("/api/v2/twitch/viewer", headers=key)).json()["linked"] is False
+        r = await c.post("/api/v2/twitch/viewer/device", headers=key)
+        assert r.status_code == 201
+        flow = r.json()
+        assert set(flow) == {"flow_id", "user_code", "verification_uri", "expires_in_seconds", "interval_seconds"}
+        assert (flow["expires_in_seconds"], flow["interval_seconds"]) == (1800, 5)
+        poll = f"/api/v2/twitch/viewer/device/{flow['flow_id']}"
+        assert (await c.get(poll, headers=key)).json() == {"state": "pending"}
+        assert (await c.get("/api/v2/twitch/viewer/device/nope", headers=key)).json()["state"] == "failed"
+
+        bad = await c.put("/api/v2/twitch/viewer", headers=key, json={"token": "not-a-token"})
+        assert bad.status_code == 422 and bad.json()["code"] == "token_refused"
+        assert (await c.put("/api/v2/twitch/viewer", headers=key, json={"token": " "})).json()["code"] == "invalid"
+        assert (await c.put("/api/v2/twitch/viewer", headers=key, json={"token": "x", "extra": 1})).status_code == 422
+        ok = await c.put("/api/v2/twitch/viewer", headers=key, json={"token": f"OAuth {PASTED_TOKEN}"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["valid"] is True and ok.json()["client_id"] == "web-client"
+        assert ok.json()["checked_at"].endswith("Z")
+
+        r = await c.delete("/api/v2/twitch/viewer", headers=key)
+        assert r.status_code == 204 and not r.content
+        assert await twitch_viewer.load_token() is None
+
+        device.respond(400, json={"status": 400, "message": "invalid client"})
+        refused = await c.post("/api/v2/twitch/viewer/device", headers=key)
+        assert refused.status_code == 400 and refused.json()["code"] == "twitch_refused"
+
+    rows = await _audit()
+    assert [r["action"] for r in rows] == ["twitch_viewer.link.start", "twitch_viewer.paste", "twitch_viewer.unlink"]
+    assert all(r["request_id"] for r in rows)
+    assert rows[1]["after"]["login"] == "vexouluna" and rows[2]["before"]["login"] == "vexouluna"
+    assert PASTED_TOKEN not in json.dumps(rows, default=str)

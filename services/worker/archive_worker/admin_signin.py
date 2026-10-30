@@ -7,7 +7,7 @@ The session id is checked again every ``CHECK_S`` seconds, so "sign out everywhe
 ends the dashboard session too.
 
 A *code* sign-in (``POST /admin/session {code}``) needs no redirect at all: the site mints a code with
-vex-auth's ``POST /v1/codes`` from the browser and hands it over, and the worker redeems it like
+vex-auth's ``POST /v2/codes`` from the browser and hands it over, and the worker redeems it like
 the callback's. Such a code carries the client's first registered redirect URI (``code_redirect_uri``),
 not the callback's.
 """
@@ -43,7 +43,7 @@ class SignInError(Exception):
 def _refusal(r: httpx.Response) -> SignInError:
     """Why vex-auth turned down a code: the worker's setup, the code itself, or a passing problem."""
     try:
-        code = r.json().get("error")
+        code = r.json().get("code")  # /v2 problem+json
     except ValueError:
         code = None
     msg = f"vex-auth refused the code ({r.status_code} {code or 'no error code'})"
@@ -57,7 +57,7 @@ def _refusal(r: httpx.Response) -> SignInError:
 
 @dataclass(frozen=True)
 class SignedIn:
-    user: dict[str, Any]  # {id, login, displayName, avatar, color}
+    user: dict[str, Any]  # {id, login, display_name, avatar, color, created_at}
     sid: str
 
 
@@ -65,7 +65,7 @@ class AuthClient(Protocol):
     def authorize_url(self, state: str) -> str: ...
 
     async def redeem(self, code: str, fetched: bool = False) -> SignedIn:
-        """The user and session behind ``code``; ``fetched``: minted by ``POST /v1/codes``, not
+        """The user and session behind ``code``; ``fetched``: minted by ``POST /v2/codes``, not
         ``/authorize``. Raises SignInError."""
         ...
 
@@ -117,7 +117,7 @@ class VexAuth:
     async def redeem(self, code: str, fetched: bool = False) -> SignedIn:
         redirect_uri = self.code_redirect_uri if fetched else self.redirect_uri
         try:
-            r = await self._http.post("/v1/token", json={"code": code, "redirect_uri": redirect_uri})
+            r = await self._http.post("/v2/token", json={"code": code, "redirect_uri": redirect_uri})
         except httpx.HTTPError as exc:
             raise SignInError(f"vex-auth unreachable: {exc}") from exc
         if r.status_code != 200:
@@ -127,7 +127,7 @@ class VexAuth:
 
     async def active(self, sid: str) -> bool:
         try:
-            r = await self._http.get(f"/v1/sessions/{sid}")
+            r = await self._http.get(f"/v2/sessions/{sid}")
         except httpx.HTTPError as exc:
             raise SignInError(f"vex-auth unreachable: {exc}") from exc
         if r.status_code == 404:

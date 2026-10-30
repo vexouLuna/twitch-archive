@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from archive_common.audit import legacy_actor
 from archive_common.models import Vod
+from fastapi import APIRouter
 from sqlalchemy import func, select
 from vex_platform.actor import SYSTEM, Actor
 
@@ -196,3 +197,4 @@ class AdminContext:
     source_payload: Callable[[Vod, dict[str, Any]], dict[str, Any]]
     single_part: Callable[[dict[str, Any], dict[str, Any]], int]
     viewer_check: Callable[..., Awaitable[dict[str, Any] | None]]
+    v2: APIRouter  # a module's /api/v2 twins of its routes (paths without the prefix), behind /api/v2's auth

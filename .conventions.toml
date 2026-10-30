@@ -1,6 +1,6 @@
 # Which version of vexouLuna/conventions this repo follows, and how.
 # See https://github.com/vexouLuna/conventions#conventionstoml
-version = "v3.0.0"
+version = "v3.2.0"
 profile = "python-service"
 flow = "dev"
 extra_checks = ["image-worker / build"]   # the second image; `image` builds the api

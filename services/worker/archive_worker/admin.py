@@ -31,7 +31,7 @@ from archive_common.audit import actor_of, route_entry
 from archive_common.audit import write as write_audit
 from archive_common.db import get_sessionmaker
 from archive_common.models import Vod
-from fastapi import Body, Depends, FastAPI, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.middleware.base import RequestResponseEndpoint
 from vex_platform.api import ApiError, problem
@@ -368,7 +368,7 @@ def create_admin_app(
 
     async def code_login(request: Request, code: Any) -> Response:
         """``POST /admin/session {code}``: a Twitch sign-in from a code the site minted with vex-auth's
-        ``POST /v1/codes``, without a redirect. An admin gets the dashboard session the callback would
+        ``POST /v2/codes``, without a redirect. An admin gets the dashboard session the callback would
         make; anyone else ``{"admin": false}`` and no cookie. Refusals are problem details."""
         origin = request.headers.get("origin")
         if origin is not None and not site_origin(origin):
@@ -571,6 +571,7 @@ def create_admin_app(
         source_payload=source_payload,
         single_part=single_part,
         viewer_check=viewer_check,
+        v2=APIRouter(dependencies=[Depends(verify_v2)]),
     )
     # In this order: FastAPI matches routes in the order they were added (e.g. /admin/jobs/{job_id}
     # after the fixed paths under it, all within admin_jobs).
@@ -591,6 +592,7 @@ def create_admin_app(
             api_v2_routes.vods_router(verify_v2, settings),
             api_v2_routes.actions_router(ctx, verify_v2),
             api_v2_media.media_router(verify_v2, settings),
+            ctx.v2,  # what the /admin modules added: the site, Twitch and YouTube routes
         ],
     )
 

@@ -29,6 +29,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import schemas
 from .comments import Comments
 from .errors import FeathersError, LegacyError, bad_literal, legacy_error
 from .games_played import games_played
@@ -48,6 +49,9 @@ RATE_LIMITED_PREFIXES = ("/vods", "/v1/", "/v2/")
 UNLIMITED_PREFIXES = ("/v1/previews/", "/v1/site/tags/")
 SITE_TAGS_TTL = 60  # /v1/site/tags; an admin's change shows within this
 SITE_TAG_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # fullmatch
+API_VERSION = (
+    "1.0.0"  # of the documented contract (shapes only grow), not the release; the image carries no release number
+)
 SERVICES = ("vods", "emotes", "streams")
 
 
@@ -78,7 +82,19 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         await close_client()
         await engine.dispose()
 
-    app = FastAPI(title="archive-api", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(
+        title="archive-api",
+        summary="Read-only API for the vexoul VOD archive.",
+        description=(
+            "The public, read-only API behind vods.vexoul.net and the other archive sites. `/vods`, `/emotes` and "
+            "`/streams` are Feathers-compatible (`$limit`, `$skip`, `$sort`, `$select`, operator filters such as "
+            "`createdAt[$gte]=...`); everything under `/v1` and `/v2` is newer. Writes are always 405. Errors are "
+            "either Feathers `{name, message, code, className}` or `{error: true, msg}`. The operator API is "
+            "separate and not documented here."
+        ),
+        version=API_VERSION,
+        lifespan=lifespan,
+    )
     app.add_middleware(GZipMiddleware, minimum_size=GZIP_MIN_SIZE)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -156,13 +172,20 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             async with engine.connect() as conn:
                 return await method(conn, arg)
 
-        @app.get(f"/{name}", name=f"{name}-find")
+        @app.get(
+            f"/{name}",
+            name=f"{name}-find",
+            response_model=None,
+            responses={200: {"model": schemas.FeathersPage}},
+        )
         async def find(request: Request):  # type: ignore[no-untyped-def]
             qs = request.url.query
             body = await service_cache.get_or_render(f"{name}?{qs}", lambda: query(svc.find, qs))
             return body.response(request)
 
-        @app.get(f"/{name}/{{item_id}}", name=f"{name}-get")
+        @app.get(
+            f"/{name}/{{item_id}}", name=f"{name}-get", response_model=None, responses={200: {"model": dict[str, Any]}}
+        )
         async def get(item_id: str, request: Request):  # type: ignore[no-untyped-def]
             body = await service_cache.get_or_render(f"{name}/{item_id}", lambda: query(svc.get, item_id))
             return body.response(request)
@@ -178,7 +201,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     # ── Additions for the new sites (not in the legacy API) ───────────────
 
-    @app.get("/v1/games-played")
+    @app.get("/v1/games-played", response_model=None, responses={200: {"model": list[schemas.GamePlayed]}})
     async def games_played_route(request: Request):  # type: ignore[no-untyped-def]
         async def fetch() -> list[dict[str, Any]]:
             async with engine.connect() as conn:
@@ -186,7 +209,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
         return (await service_cache.get_or_render("v1/games-played", fetch)).response(request)
 
-    @app.get("/v1/status")
+    @app.get("/v1/status", response_model=None, responses={200: {"model": schemas.Status}})
     async def status_route(request: Request):  # type: ignore[no-untyped-def]
         async def fetch() -> dict[str, Any]:
             async with engine.connect() as conn:
@@ -194,7 +217,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
         return (await status_cache.get_or_render("status", fetch)).response(request)
 
-    @app.get("/v1/emotes/third-party")
+    @app.get("/v1/emotes/third-party", response_model=None, responses={200: {"model": schemas.ThirdPartyEmotes}})
     async def third_party_emotes(request: Request):  # type: ignore[no-untyped-def]
         body = emotes_cache.get("emotes") or emotes_partial_cache.get("emotes")
         if body is None:
@@ -226,7 +249,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     # ── Site tags (how vods.vexoul.net shows each VOD tag; the worker's admin routes save them) ──
 
-    @app.get("/v1/site/tags")
+    @app.get("/v1/site/tags", response_model=None, responses={200: {"model": schemas.SiteTags}})
     async def site_tag_list(request: Request):  # type: ignore[no-untyped-def]
         async def fetch() -> dict[str, Any]:
             async with engine.connect() as conn:
@@ -239,7 +262,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         response.headers["Cache-Control"] = f"public, max-age={SITE_TAGS_TTL}"
         return response
 
-    @app.get("/v1/site/options")
+    @app.get("/v1/site/options", response_model=None, responses={200: {"model": schemas.SiteOptions}})
     async def site_option_list(request: Request):  # type: ignore[no-untyped-def]
         async def fetch() -> dict[str, Any]:
             async with engine.connect() as conn:
@@ -275,7 +298,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     # ── Chat replay ───────────────────────────────────────────────────────
 
-    @app.get("/v1/vods/{vod_id}/comments")
+    @app.get("/v1/vods/{vod_id}/comments", response_model=None, responses={200: {"model": schemas.CommentsPage}})
     async def vod_comments(vod_id: str, request: Request):  # type: ignore[no-untyped-def]
         params = request.query_params
         body = await comments.handle(
@@ -285,7 +308,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     # ── Badges ────────────────────────────────────────────────────────────
 
-    @app.get("/v2/badges")
+    @app.get("/v2/badges", response_model=None, responses={200: {"model": schemas.Badges}})
     async def badges(request: Request):  # type: ignore[no-untyped-def]
         async def fetch() -> dict[str, Any]:
             if not helix.configured:

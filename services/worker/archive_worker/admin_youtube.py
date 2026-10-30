@@ -1,4 +1,5 @@
-"""YouTube: the OAuth consent flow and its callback, token status and the uploads check."""
+"""YouTube: the OAuth consent flow and its callback, token status and the uploads check. The uploads
+check also has /api/v2 twins (ADR 0003, step 7)."""
 
 from __future__ import annotations
 
@@ -8,12 +9,14 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from vex_platform.actor import Actor
+from vex_platform.api import ApiError
 
 from . import (
     youtube,
     youtube_check,
 )
 from .admin_shared import AdminContext, AdminError, _actor, _ok
+from .api_v2_routes import _wire
 
 
 def register(app: FastAPI, ctx: AdminContext) -> None:
@@ -58,6 +61,18 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         if deps.youtube_check.running:
             raise AdminError(409, "A YouTube check is already running")
         return {"running": False, "last": await deps.youtube_check.run()}
+
+    @ctx.v2.get("/youtube/videos", tags=["youtube"])
+    async def v2_youtube_videos() -> dict[str, Any]:
+        """``{running, last}``: whether a check runs now, and the last one's result (null before the first)."""
+        return {"running": deps.youtube_check.running, "last": _wire(await youtube_check.last())}
+
+    @ctx.v2.post("/youtube/videos/check", tags=["youtube"])
+    async def v2_youtube_videos_check() -> dict[str, Any]:
+        """Check every upload now (409 ``check_running`` while one runs); ``{running: false, last}``."""
+        if deps.youtube_check.running:
+            raise ApiError(409, "check_running", "A YouTube check is already running")
+        return {"running": False, "last": _wire(await deps.youtube_check.run())}
 
     # With the slash too (the old app's redirect URI): FastAPI would answer it with a redirect built from
     # the Host header, which behind the site's proxy loses the /backend-admin prefix and lands on the site.

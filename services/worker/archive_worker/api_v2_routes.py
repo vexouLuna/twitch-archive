@@ -75,16 +75,47 @@ def _changed_by(actor: Actor) -> str:
     return actor.login or audit.legacy_actor(actor.kind, actor.id)
 
 
+def _snake_key(key: str) -> str:
+    return "".join(f"_{c.lower()}" if c.isupper() else c for c in key)
+
+
 def _snake(value: Any, deep: bool = True) -> Any:
     """v1's camelCase keys, snake_case (recursively unless ``deep`` is false)."""
     if isinstance(value, dict):
-        return {
-            "".join(f"_{c.lower()}" if c.isupper() else c for c in k): _snake(v) if deep else v
-            for k, v in value.items()
-        }
+        return {_snake_key(k): _snake(v) if deep else v for k, v in value.items()}
     if isinstance(value, list) and deep:
         return [_snake(v) for v in value]
     return value
+
+
+def _wire(value: Any) -> Any:
+    """``_snake``, and v1's ``+00:00`` times (keys ending ``_at``) ending in ``Z``: for the /api/v2 twins
+    of the /admin routes (ADR 0003, step 7), which answer what their /admin route does."""
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            key = _snake_key(k)
+            if key.endswith("_at") and isinstance(v, str) and v.endswith("+00:00"):
+                v = v.removesuffix("+00:00") + "Z"
+            out[key] = _wire(v)
+        return out
+    if isinstance(value, list):
+        return [_wire(v) for v in value]
+    return value
+
+
+def _camel(value: Any) -> Any:
+    """A v2 body's snake_case keys, camelCase for the v1 helpers that check and store it (recursively)."""
+    if isinstance(value, dict):
+        return {_camel_key(k): _camel(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_camel(v) for v in value]
+    return value
+
+
+def _camel_key(key: str) -> str:
+    head, *rest = key.split("_")
+    return head + "".join(p.title() for p in rest)
 
 
 # ── Settings ───────────────────────────────────────────────────────────────

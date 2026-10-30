@@ -548,3 +548,110 @@ async def test_vod_takes_the_sites_tags(app, vod):
         await c.put("/admin/site/tags", headers=KEY, json={"tags": AUTO})
         assert (await patch(c, ["speedrun", "compilation"])).status_code == 200
         assert (await patch(c, ["complete"])).status_code == 422
+
+
+# ── /api/v2 twins ─────────────────────────────────────────────────────────
+
+
+def _problem(r: httpx.Response, status: int, code: str) -> dict[str, Any]:
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == "application/problem+json"
+    assert r.json()["code"] == code
+    return r.json()  # type: ignore[no-any-return]
+
+
+def v2_tag(name: str, **fields) -> dict[str, Any]:
+    return {"name": name, "label": name.title(), "drawn": False, "page": None, "page_label": None, **fields}
+
+
+V2_AUTO = [v2_tag("new"), v2_tag("updated"), v2_tag("compilation"), v2_tag("vods")]
+
+
+async def test_v2_tags_in_snake_case_with_problems_and_audit(app, clean):
+    async with client(app) as c:
+        _problem(await c.get("/api/v2/site/tags"), 401, "unauthenticated")
+        assert (await c.get("/api/v2/site/tags", headers=KEY)).json() == {
+            "tags": [],
+            "updated_at": None,
+            "updated_by": None,
+        }
+        r = await c.put(
+            "/api/v2/site/tags",
+            headers=KEY,
+            json={"tags": [v2_tag("speedrun", page="runs", page_label="Runs"), *V2_AUTO]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["updated_by"] == "api-key" and body["updated_at"].endswith("Z")
+        assert body["tags"][0]["page_label"] == "Runs" and "pageLabel" not in body["tags"][0]
+        assert (await c.get("/api/v2/site/tags", headers=KEY)).json() == body
+        # and /admin still reads it in its own shape
+        assert (await c.get("/admin/site/tags", headers=KEY)).json()["tags"][0]["pageLabel"] == "Runs"
+
+        refused = _problem(
+            await c.put("/api/v2/site/tags", headers=KEY, json={"tags": V2_AUTO[:2]}), 422, "invalid_site_tag"
+        )
+        assert (refused["tag"], refused["field"]) == ("compilation", "name")
+        bad = [*V2_AUTO, v2_tag("x", page="p", page_label="")]
+        refused = _problem(await c.put("/api/v2/site/tags", headers=KEY, json={"tags": bad}), 422, "invalid_site_tag")
+        assert refused["field"] == "page_label" and "(x).page_label:" in refused["detail"]
+        refused = _problem(
+            await c.put("/api/v2/site/tags", headers=KEY, json={"tags": [*V2_AUTO, v2_tag("x", text_color="url(x)")]}),
+            422,
+            "invalid_site_tag",
+        )
+        assert "text_color" in refused["detail"] and "textColor" not in refused["detail"]
+        # /admin keeps its camelCase texts
+        r = await c.put("/admin/site/tags", headers=KEY, json={"tags": [*AUTO, tag("x", page="p", pageLabel="")]})
+        assert r.status_code == 400 and "(x).pageLabel:" in r.json()["msg"]
+
+        # unknown keys, /admin's camelCase among them, are 422 invalid with FastAPI's errors
+        camel = [*V2_AUTO[:3], {**V2_AUTO[3], "pageLabel": None, "nope": 1}]
+        unknown = _problem(
+            await c.put("/api/v2/site/tags", headers=KEY, json={"tags": camel, "extra": True}), 422, "invalid"
+        )
+        assert unknown["errors"] == [
+            {"loc": ["body", "extra"], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"},
+            {
+                "loc": ["body", "tags", 3, "pageLabel"],
+                "msg": "Extra inputs are not permitted",
+                "type": "extra_forbidden",
+            },
+            {"loc": ["body", "tags", 3, "nope"], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"},
+        ]
+
+        r = await c.put("/api/v2/site/tags/speedrun/shape", headers=SVG, content=STAR)
+        assert r.status_code == 200 and r.json()["tags"][0]["shape"].startswith("v1/site/tags/speedrun.svg")
+        _problem(
+            await c.put("/api/v2/site/tags/new/shape", headers={**KEY, "content-type": "text/xml"}, content=STAR),
+            415,
+            "unsupported_media_type",
+        )
+        big = STAR[:-6] + b" " * 65536 + b"</svg>"
+        _problem(await c.put("/api/v2/site/tags/new/shape", headers=SVG, content=big), 413, "too_large")
+        evil = STAR.replace(b"<path", b"<script>alert(1)</script><path")
+        _problem(await c.put("/api/v2/site/tags/new/shape", headers=SVG, content=evil), 422, "unsafe_svg")
+        _problem(await c.put("/api/v2/site/tags/nope/shape", headers=SVG, content=STAR), 404, "site_tag_not_found")
+        r = await c.delete("/api/v2/site/tags/speedrun/shape", headers=KEY)
+        assert r.status_code == 200 and r.json()["tags"][0]["shape"] is None
+
+    rows = await _audit(clean)
+    assert [(r.action, r.target) for r in rows] == [
+        ("site.tags.replace", "site:tags"),
+        ("site.tag.shape.set", "site-tag:speedrun"),
+        ("site.tag.shape.clear", "site-tag:speedrun"),
+    ]
+    assert all(r.request_id for r in rows)
+    assert rows[1].before["shape"] is None and "<svg" not in str(rows[1].after)
+
+
+async def test_v2_session_needs_the_csrf_header(app, clean):
+    async with client(app) as c:
+        session = (await c.post("/admin/session", json={"password": "pw"})).json()
+        assert (await c.get("/api/v2/site/tags")).status_code == 200
+        assert (await c.put("/api/v2/site/tags", json={"tags": V2_AUTO})).status_code == 403
+        r = await c.put("/api/v2/site/tags", headers={"X-CSRF-Token": session["csrf"]}, json={"tags": V2_AUTO})
+        assert r.status_code == 200 and r.json()["updated_by"] == "password"
+        # the tags a GET lists can be sent back as they are (every field, shape ignored)
+        r = await c.put("/api/v2/site/tags", headers={"X-CSRF-Token": session["csrf"]}, json={"tags": r.json()["tags"]})
+        assert r.status_code == 200, r.text

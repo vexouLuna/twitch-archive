@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -45,3 +46,28 @@ class _Conn:
 
     async def __aexit__(self, *exc: object) -> None:
         return None
+
+
+@pytest.mark.parametrize("source", ["auto", "replay"])
+async def test_no_chat_is_an_empty_page_not_an_error(monkeypatch, source) -> None:
+    comments = Comments(ResponseCache(300), ResponseCache(300))
+    vod = SimpleNamespace(hidden=False, merged_into=None, synthetic=None, createdAt=None)
+
+    async def lookup(conn: Any, vod_id: str) -> Any:
+        return vod
+
+    async def counts(engine: Any, vod_id: str) -> dict[str, int]:
+        return {"bot": 0, "replay": 0}
+
+    async def nothing(*args: Any) -> None:
+        return None
+
+    monkeypatch.setattr(comments, "_vod", lookup)
+    monkeypatch.setattr(comments, "_counts", counts)
+    monkeypatch.setattr(comments, "_offset_search", nothing)
+    monkeypatch.setattr(comments, "_cursor_search", nothing)
+    engine = SimpleNamespace(connect=lambda: _Conn())
+    page = await comments.handle(engine, "123", "10", None, source)  # type: ignore[arg-type]
+    assert json.loads(page.raw) == {"comments": [], "sources": {"bot": 0, "replay": 0}}
+    cursor = _encode_cursor({"id": 1, "src": "replay"})
+    assert json.loads((await comments.handle(engine, "123", None, cursor)).raw) == {"comments": []}  # type: ignore[arg-type]
