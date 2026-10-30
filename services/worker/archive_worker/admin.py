@@ -368,7 +368,7 @@ def create_admin_app(
 
     async def code_login(request: Request, code: Any) -> Response:
         """``POST /admin/session {code}``: a Twitch sign-in from a code the site minted with vex-auth's
-        ``POST /v1/codes``, without a redirect. An admin gets the dashboard session the callback would
+        ``POST /v2/codes``, without a redirect. An admin gets the dashboard session the callback would
         make; anyone else ``{"admin": false}`` and no cookie. Refusals are problem details."""
         origin = request.headers.get("origin")
         if origin is not None and not site_origin(origin):

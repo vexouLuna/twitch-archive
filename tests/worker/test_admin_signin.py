@@ -19,8 +19,8 @@ from archive_worker.admin_signin import (
 )
 from pydantic import SecretStr
 
-ALICE = {"id": "100", "login": "alice", "displayName": "Alice", "avatar": None, "color": None}
-MALLORY = {"id": "666", "login": "mallory", "displayName": "Mallory", "avatar": None, "color": None}
+ALICE = {"id": "100", "login": "alice", "display_name": "Alice", "avatar": None, "color": None}
+MALLORY = {"id": "666", "login": "mallory", "display_name": "Mallory", "avatar": None, "color": None}
 
 
 class Clock:
@@ -40,7 +40,7 @@ class FakeAuth:
         self.down = False
         self.refuse: str | None = None
         self.checks = 0
-        self.fetched: list[bool] = []  # per redemption: was it a POST /v1/codes code
+        self.fetched: list[bool] = []  # per redemption: was it a POST /v2/codes code
 
     def authorize_url(self, state: str) -> str:
         return f"https://auth.test/authorize?client_id=vods-admin&state={state}"
@@ -418,7 +418,7 @@ async def test_a_fetched_code_is_redeemed_with_the_first_registered_redirect_uri
 
     def handler(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
-        return httpx.Response(200, json={"user": ALICE, "sid": "s1", "expiresAt": "x"})
+        return httpx.Response(200, json={"user": ALICE, "sid": "s1", "expires_at": "x"})
 
     client = VexAuth(
         "https://auth.test",
@@ -439,11 +439,11 @@ async def test_client_talks_to_vex_auth():
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        if request.url.path == "/v1/token":
-            return httpx.Response(200, json={"user": ALICE, "sid": "s1", "expiresAt": "x"})
-        if request.url.path == "/v1/sessions/s1":
+        if request.url.path == "/v2/token":
+            return httpx.Response(200, json={"user": ALICE, "sid": "s1", "expires_at": "x"})
+        if request.url.path == "/v2/sessions/s1":
             return httpx.Response(200, json={"active": True})
-        if request.url.path == "/v1/sessions/gone":
+        if request.url.path == "/v2/sessions/gone":
             return httpx.Response(404, json={"active": False})
         return httpx.Response(500)
 
@@ -467,10 +467,10 @@ async def test_client_talks_to_vex_auth():
 @pytest.mark.parametrize(
     ("status", "body", "reason"),
     [
-        (401, {"error": "invalid_client"}, "misconfigured"),
-        (400, {"error": "invalid_request"}, "misconfigured"),
-        (400, {"error": "invalid_grant"}, "expired"),
-        (429, {"error": "rate_limited"}, "unavailable"),
+        (401, {"code": "invalid_client"}, "misconfigured"),
+        (400, {"code": "invalid_request"}, "misconfigured"),
+        (400, {"code": "invalid_grant"}, "expired"),
+        (429, {"code": "rate_limited"}, "unavailable"),
         (502, None, "unavailable"),
     ],
 )
