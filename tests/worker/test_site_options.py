@@ -177,3 +177,29 @@ async def test_card_of_a_tag_no_longer_a_home_category_goes(app, api, clean):
         assert got["homeCards"] == old and [x["type"] for x in got["cards"]] == ["live", "games", "vods"]
     async with api:
         assert (await api.get("/v1/site/options")).json()["homeCards"] == old
+
+
+async def test_v2_options_in_snake_case(app, clean):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://admin") as c:
+        assert (await c.get("/api/v2/site/options")).status_code == 401
+        got = (await c.get("/api/v2/site/options", headers=KEY)).json()
+        assert got == {
+            "cards": DEFAULTS["cards"],
+            "play_default": DEFAULTS["playDefault"],
+            "updated_at": None,
+            "updated_by": None,
+        }
+        cards = [GAMES_, LIVE]
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": cards, "play_default": "compiled"})
+        assert r.status_code == 200, r.text
+        assert r.json()["cards"] == cards and r.json()["play_default"] == "compiled" and "home_cards" not in r.json()
+        assert r.json()["updated_at"].endswith("Z")
+        for body in ({"cards": [LIVE, LIVE]}, {"home_cards": [LATEST]}, {"playDefault": "segments"}):
+            r = await c.put("/api/v2/site/options", headers=KEY, json=body)
+            assert r.status_code == 422 and r.json()["code"] == "invalid_site_options", body
+        assert (await c.get("/admin/site/options", headers=KEY)).json()["playDefault"] == "compiled"
+    async with get_sessionmaker()() as s:
+        c_ = AUDIT_LOG.c
+        rows = (await s.execute(select(AUDIT_LOG).where(c_.id > clean, c_.action == "site.options.update"))).all()
+    assert [(r.target, r.after) for r in rows] == [("site:options", {"cards": cards, "playDefault": "compiled"})]
+    assert rows[0].request_id

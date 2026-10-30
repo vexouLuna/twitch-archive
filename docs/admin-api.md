@@ -27,11 +27,32 @@ The same API is moving to `/api/v2`, shared with doomtp-bot. Its rules are the w
 
 Known exceptions to the conventions, kept because the dashboard reads them (a new field never copies them; a unit goes in the name, `_seconds`, `_ms`, `_bytes`):
 
-- Numbers without their unit in the name: `gap` (merge candidates, merge), a segment's `start`, `end` and `at` (seconds), `size` (`/vods/{id}/media`, bytes) and the storage `disk`'s `total`, `used` and `free` (bytes).
+- Numbers without their unit in the name: `gap` (merge candidates, merge), a segment's `start`, `end` and `at` (seconds), `size` (`/vods/{id}/media`, bytes) and the storage `disk`'s `total`, `used` and `free` (bytes); a site tag's `width`, `height`, `text_size`, `text_x`, `text_y` and `pattern_size` (px) and `rotate` and `text_rotate` (degrees); the YouTube check's `planned` and `gaps` (seconds).
 - Stored lists returned as they are stored, in the legacy camelCase shape: a VOD's `chapters`, `youtube`, `drive`, `censor`, `bot_chat`, `merged_into` and `synthetic`.
 - `POST /vods/{id}/split` answers a bare list of the VODs it made.
 
-Routes added to `/admin` after `/api/v2` existed, with no `/api/v2` twin yet (ADR 0003, step 7): the site tags and options (`/admin/site/*`), the Twitch videos, import and viewer account (`/admin/twitch/videos`, `/admin/twitch/import`, `/admin/twitch/viewer*`) and the YouTube uploads check (`/admin/youtube/videos*`). The pipeline triggers added in the same time (`/admin/previews`, `/admin/previews/backfill`, `/admin/live-gaps/backfill`) already have one: `POST /api/v2/jobs` with their kind.
+Routes added to `/admin` after `/api/v2` existed now have `/api/v2` twins (ADR 0003, step 7). The `/admin` routes stay, unchanged, until the dashboard has moved:
+
+| `/admin` | `/api/v2` |
+|---|---|
+| `GET`, `PUT /admin/site/tags` | `GET`, `PUT /api/v2/site/tags` |
+| `PUT`, `DELETE /admin/site/tags/{tag}/shape` | `PUT`, `DELETE /api/v2/site/tags/{tag}/shape` |
+| `GET`, `PUT /admin/site/options` | `GET`, `PUT /api/v2/site/options` |
+| `GET /admin/twitch/videos` | `GET /api/v2/twitch/videos` |
+| `POST /admin/twitch/import` | `POST /api/v2/twitch/videos/import` |
+| `GET`, `PUT`, `DELETE /admin/twitch/viewer` | `GET`, `PUT`, `DELETE /api/v2/twitch/viewer` |
+| `POST /admin/twitch/viewer/device`, `GET .../device/{flowId}` | `POST /api/v2/twitch/viewer/device`, `GET .../device/{flow_id}` |
+| `GET /admin/youtube/videos`, `POST .../videos/check` | `GET /api/v2/youtube/videos`, `POST .../videos/check` |
+
+The twins answer what their `/admin` route does, in snake_case with `Z` times, and differ only where the conventions ask:
+
+- Refusals are problem details: 422 `invalid_site_tag` (with `tag` and `field`), `unsafe_svg`, `invalid_site_options`, `token_refused`, `invalid`; 404 `site_tag_not_found`; 413 `too_large`; 415 `unsupported_media_type`; 400 `twitch_refused` (Twitch turned the device flow down; not a 5xx, which Cloudflare would replace); 409 `check_running`; 502 `viewer_check_failed`.
+- `site/options` drops `home_cards` (the old shape of `cards`) and takes only `cards` and `play_default`.
+- `twitch/videos` is `{items, next_cursor}` (always one page) and adds `duration_seconds`. The import takes `{vod_ids, paused}` and answers 202 `{added: [{vod_id, job_id}], skipped: [{vod_id, reason}]}`.
+- The device flow answers 201 with `expires_in_seconds` and `interval_seconds`; the unlink answers 204.
+- Each change writes its own audit row, with the same action as its `/admin` route and the request id.
+
+The pipeline triggers added in the same time (`/admin/previews`, `/admin/previews/backfill`, `/admin/live-gaps/backfill`) already had one: `POST /api/v2/jobs` with their kind.
 
 ```bash
 curl -s "${H[@]}" "$A/api/v2/jobs?state=paused&subject=vod:123"   # runs; also kind=, cursor=, limit=

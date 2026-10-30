@@ -1,13 +1,17 @@
-"""The site's tags and options. Runtime settings and storage are /api/v2's (api_v2_routes.py)."""
+"""The site's tags and options, under /admin and as their /api/v2 twins (ADR 0003, step 7). Runtime
+settings and storage are /api/v2's (api_v2_routes.py)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
+from archive_common import audit
 from archive_common import site_options as site_options_common
 from archive_common import site_tags as site_tags_common
 from archive_common.db import get_sessionmaker
 from fastapi import Body, FastAPI, Request
+from vex_platform.api import ApiError, request_id
+from vex_platform.audit import AuditEntry
 
 from . import (
     site_options,
@@ -15,6 +19,7 @@ from . import (
     svg_clean,
 )
 from .admin_shared import AdminContext, AdminError
+from .api_v2_routes import _camel, _changed_by, _snake_key, _wire
 
 
 def register(app: FastAPI, ctx: AdminContext) -> None:
@@ -101,3 +106,92 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         request.state.audit_target = "site:options"
         request.state.audit_detail = {"before": before, "after": after}
         return view
+
+    # ── /api/v2 twins: snake_case, problem details, and each change audits itself ──
+
+    v2 = ctx.v2
+
+    def tag_refusal(exc: site_tags.SiteTagError) -> ApiError:
+        if exc.status == 404:
+            return ApiError(404, "site_tag_not_found", exc.msg)
+        field = {"field": _snake_key(exc.field)} if exc.field else {}
+        return ApiError(422, "invalid_site_tag", exc.msg, tag=exc.tag, **field)
+
+    async def v2_change(request: Request, action: str, target: str, pending: Any) -> dict[str, Any]:
+        """A site tags change, audited once it committed (the change has its own transaction)."""
+        try:
+            before, after, view = await pending
+        except site_tags.SiteTagError as exc:
+            raise tag_refusal(exc) from None
+        actor = request.state.actor
+        await audit.write(AuditEntry(action, actor, target, before=before, after=after, request_id=request_id(request)))
+        return _wire(view)  # type: ignore[no-any-return]  # _wire of a dict is a dict
+
+    def v2_changed_by(request: Request) -> str:
+        return _changed_by(request.state.actor)
+
+    @v2.get("/site/tags", tags=["site"])
+    async def v2_get_site_tags() -> dict[str, Any]:
+        """``{tags, updated_at, updated_by}``: the tags in display order."""
+        return _wire(await site_tags_view())  # type: ignore[no-any-return]  # _wire of a dict is a dict
+
+    @v2.put("/site/tags", tags=["site"])
+    async def v2_put_site_tags(request: Request, body: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+        """``{tags: [...]}``: the whole list, or nothing when a tag is refused (422 ``invalid_site_tag``,
+        naming its ``tag`` and ``field``). Audited as ``site.tags.replace``."""
+        try:
+            tags = site_tags.validate(_camel(body))
+        except site_tags.SiteTagError as exc:
+            raise tag_refusal(exc) from None
+        return await v2_change(request, "site.tags.replace", "site:tags", site_tags.save(tags, v2_changed_by(request)))
+
+    @v2.put("/site/tags/{tag}/shape", tags=["site"])
+    async def v2_put_site_tag_shape(tag: str, request: Request) -> dict[str, Any]:
+        """The raw SVG as ``content-type: image/svg+xml``, cleaned. Audited as ``site.tag.shape.set``."""
+        media = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media != "image/svg+xml":
+            raise ApiError(415, "unsupported_media_type", "Send the SVG as content-type: image/svg+xml")
+        raw = await request.body()
+        if len(raw) > site_tags_common.SHAPE_MAX_BYTES:
+            raise ApiError(413, "too_large", f"The SVG is over {site_tags_common.SHAPE_MAX_BYTES // 1024} KB")
+        try:
+            svg = svg_clean.clean(raw)
+        except svg_clean.UnsafeSvg as exc:
+            raise ApiError(422, "unsafe_svg", f"Refused SVG: {exc}") from None
+        return await v2_change(request, "site.tag.shape.set", f"site-tag:{tag}", site_tags.set_shape(tag, svg))
+
+    @v2.delete("/site/tags/{tag}/shape", tags=["site"])
+    async def v2_delete_site_tag_shape(tag: str, request: Request) -> dict[str, Any]:
+        """No shape: the site draws the tag's label only. Audited as ``site.tag.shape.clear``."""
+        return await v2_change(request, "site.tag.shape.clear", f"site-tag:{tag}", site_tags.set_shape(tag, None))
+
+    @v2.get("/site/options", tags=["site"])
+    async def v2_get_site_options() -> dict[str, Any]:
+        """``{cards, play_default, updated_at, updated_by}``; an option never saved reads as its default."""
+        async with get_sessionmaker()() as s:
+            view = site_options.view(await site_options_common.load(s))
+        view.pop("homeCards", None)  # the old shape of ``cards``, for /admin's readers only
+        return _wire(view)  # type: ignore[no-any-return]  # _wire of a dict is a dict
+
+    @v2.put("/site/options", tags=["site"])
+    async def v2_put_site_options(request: Request, body: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+        """Any of ``cards`` and ``play_default``; the others keep their value. All or nothing (422
+        ``invalid_site_options``). Audited as ``site.options.update``."""
+        if not body or set(body) - {"cards", "play_default"}:  # not /admin's camelCase, nor its old home_cards
+            raise ApiError(422, "invalid_site_options", "send an object with any of: cards, play_default")
+        try:
+            before, after, view = await site_options.save(_camel(body), v2_changed_by(request))
+        except site_options.SiteOptionError as exc:
+            raise ApiError(422, "invalid_site_options", exc.msg) from None
+        await audit.write(
+            AuditEntry(
+                "site.options.update",
+                request.state.actor,
+                "site:options",
+                before=before,
+                after=after,
+                request_id=request_id(request),
+            )
+        )
+        view.pop("homeCards", None)
+        return _wire(view)  # type: ignore[no-any-return]  # _wire of a dict is a dict

@@ -53,5 +53,5 @@ check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 # The response models subclass vex_platform's ApiModel, which is Any until vex-platform ships py.typed.
-module = ["archive_worker.api_v2_routes", "archive_worker.api_v2_media"]
+module = ["archive_worker.api_v2_routes", "archive_worker.api_v2_media", "archive_worker.admin_twitch"]
 disallow_subclassing_any = false
