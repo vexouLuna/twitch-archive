@@ -194,9 +194,21 @@ async def test_v2_options_in_snake_case(app, clean):
         assert r.status_code == 200, r.text
         assert r.json()["cards"] == cards and r.json()["play_default"] == "compiled" and "home_cards" not in r.json()
         assert r.json()["updated_at"].endswith("Z")
-        for body in ({"cards": [LIVE, LIVE]}, {"home_cards": [LATEST]}, {"playDefault": "segments"}):
-            r = await c.put("/api/v2/site/options", headers=KEY, json=body)
-            assert r.status_code == 422 and r.json()["code"] == "invalid_site_options", body
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": [LIVE, LIVE]})
+        assert r.status_code == 422 and r.json()["code"] == "invalid_site_options"
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"play_default": "nope"})
+        assert r.json()["code"] == "invalid_site_options" and r.json()["detail"].startswith("play_default must be")
+        r = await c.put("/api/v2/site/options", headers=KEY, json={})
+        assert "play_default" in r.json()["detail"] and "playDefault" not in r.json()["detail"]
+        for key in ("home_cards", "playDefault"):
+            r = await c.put("/api/v2/site/options", headers=KEY, json={key: "segments"})
+            assert r.status_code == 422 and r.json()["code"] == "invalid", key
+            assert r.json()["errors"] == [
+                {"loc": ["body", key], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"}
+            ]
+        # /admin keeps its camelCase texts
+        r = await c.put("/admin/site/options", headers=KEY, json={"playDefault": "nope"})
+        assert r.status_code == 400 and r.json()["msg"].startswith("playDefault must be")
         assert (await c.get("/admin/site/options", headers=KEY)).json()["playDefault"] == "compiled"
     async with get_sessionmaker()() as s:
         c_ = AUDIT_LOG.c
