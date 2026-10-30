@@ -22,7 +22,7 @@ permissions:
 jobs:
   prepare:
     if: github.event_name == 'workflow_dispatch'
-    uses: vexouLuna/conventions/.github/workflows/release-prepare.yml@v3.0.0
+    uses: vexouLuna/conventions/.github/workflows/release-prepare.yml@v3.2.0
     with:
       bump: ${{ inputs.bump }}
     secrets:
@@ -30,6 +30,6 @@ jobs:
 
   finish:
     if: github.event.pull_request.merged
-    uses: vexouLuna/conventions/.github/workflows/release-finish.yml@v3.0.0
+    uses: vexouLuna/conventions/.github/workflows/release-finish.yml@v3.2.0
     secrets:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
