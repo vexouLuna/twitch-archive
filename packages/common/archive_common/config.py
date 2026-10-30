@@ -231,7 +231,7 @@ class AdminSettings(_Base):
     admin_auth_client_secret: SecretStr = SecretStr("")
     # This worker's /admin/signin/callback as browsers reach it; registered with vex-auth.
     admin_auth_redirect_url: str = ""
-    # The redirect URI a code from vex-auth's POST /v1/codes carries: the client's first registered
+    # The redirect URI a code from vex-auth's POST /v2/codes carries: the client's first registered
     # one. Empty = admin_auth_redirect_url.
     admin_auth_code_redirect_url: str = ""
     # Site origins (e.g. https://vods.example.net) that may call /admin/session from the browser, with

@@ -353,15 +353,15 @@ vexoul.net sites is an archive admin, and get the dashboard session if they are.
 1. The page asks vex-auth for a one-time code for this worker's client:
 
    ```js
-   const me = await fetch(`${AUTH}/v1/me`, { credentials: "include" });   // 401: not signed in, so not an admin
+   const me = await fetch(`${AUTH}/v2/me`, { credentials: "include" });   // 401: not signed in, so not an admin
    const { csrf } = await me.json();
-   const r = await fetch(`${AUTH}/v1/codes`, {
+   const r = await fetch(`${AUTH}/v2/codes`, {
      method: "POST",
      credentials: "include",
-     headers: { "Content-Type": "application/json", "X-Vex-CSRF": csrf },
+     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
      body: JSON.stringify({ client_id: "vods-admin" }),   // ARCHIVE_ADMIN_AUTH_CLIENT_ID
    });
-   // 200 {code}; 401 signed_out (not an admin); 400 unknown_client, 403 csrf, 409 scope_missing, 429 rate_limited
+   // 200 {code}; problem+json `code`: 401 signed_out (not an admin); 400 unknown_client, 403 csrf, 409 scope_missing, 429 rate_limited
    ```
 
 2. It hands the code to the worker, as the dashboard reaches it:
@@ -375,7 +375,7 @@ vexoul.net sites is an archive admin, and get the dashboard session if they are.
    });
    ```
 
-The worker redeems the code with vex-auth's `POST /v1/token` (its client id and secret, and the
+The worker redeems the code with vex-auth's `POST /v2/token` (its client id and secret, and the
 redirect URI the code carries: `ARCHIVE_ADMIN_AUTH_CODE_REDIRECT_URL`), then:
 
 | Answer | When |
