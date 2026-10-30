@@ -177,3 +177,49 @@ async def test_card_of_a_tag_no_longer_a_home_category_goes(app, api, clean):
         assert got["homeCards"] == old and [x["type"] for x in got["cards"]] == ["live", "games", "vods"]
     async with api:
         assert (await api.get("/v1/site/options")).json()["homeCards"] == old
+
+
+async def test_v2_options_in_snake_case(app, clean):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://admin") as c:
+        assert (await c.get("/api/v2/site/options")).status_code == 401
+        got = (await c.get("/api/v2/site/options", headers=KEY)).json()
+        assert got == {
+            "cards": DEFAULTS["cards"],
+            "play_default": DEFAULTS["playDefault"],
+            "updated_at": None,
+            "updated_by": None,
+        }
+        cards = [GAMES_, LIVE]
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": cards, "play_default": "compiled"})
+        assert r.status_code == 200, r.text
+        assert r.json()["cards"] == cards and r.json()["play_default"] == "compiled" and "home_cards" not in r.json()
+        assert r.json()["updated_at"].endswith("Z")
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": [LIVE, LIVE]})
+        assert r.status_code == 422 and r.json()["code"] == "invalid_site_options"
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"play_default": "nope"})
+        assert r.json()["code"] == "invalid_site_options" and r.json()["detail"].startswith("play_default must be")
+        r = await c.put("/api/v2/site/options", headers=KEY, json={})
+        assert "play_default" in r.json()["detail"] and "playDefault" not in r.json()["detail"]
+        for key in ("home_cards", "playDefault"):
+            r = await c.put("/api/v2/site/options", headers=KEY, json={key: "segments"})
+            assert r.status_code == 422 and r.json()["code"] == "invalid", key
+            assert r.json()["errors"] == [
+                {"loc": ["body", key], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"}
+            ]
+        # and inside each card: an unknown key, a camelCase one, the old shape's kind
+        bad_cards = [LIVE, {**vods("a", "vods", 1), "nope": 1, "cardId": "x"}, LATEST]
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": bad_cards})
+        assert r.status_code == 422 and r.json()["code"] == "invalid"
+        assert r.json()["errors"] == [
+            {"loc": ["body", "cards", i, k], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"}
+            for i, k in [(1, "nope"), (1, "cardId"), (2, "kind")]
+        ]
+        # /admin keeps its camelCase texts (its cards still take the old shape: test_defaults_save_and_serve)
+        r = await c.put("/admin/site/options", headers=KEY, json={"playDefault": "nope"})
+        assert r.status_code == 400 and r.json()["msg"].startswith("playDefault must be")
+        assert (await c.get("/admin/site/options", headers=KEY)).json()["playDefault"] == "compiled"
+    async with get_sessionmaker()() as s:
+        c_ = AUDIT_LOG.c
+        rows = (await s.execute(select(AUDIT_LOG).where(c_.id > clean, c_.action == "site.options.update"))).all()
+    assert [(r.target, r.after) for r in rows] == [("site:options", {"cards": cards, "playDefault": "compiled"})]
+    assert rows[0].request_id

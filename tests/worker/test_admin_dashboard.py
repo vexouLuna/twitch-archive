@@ -477,6 +477,59 @@ async def test_twitch_import_queues_paused_archive_jobs(vod, app, monkeypatch):
             await s.commit()
 
 
+@respx.mock
+async def test_v2_twitch_videos_and_import(vod, app, respx_mock):
+    settings = app[1].deps.settings
+    settings.twitch_client_id, settings.twitch_client_secret = "cid", SecretStr("secret")
+    respx_mock.post(TOKEN_URL).respond(json={"access_token": "t", "expires_in": 3600})
+    respx_mock.get(f"{HELIX}/videos").respond(
+        json={"data": [_video(vod, settings.twitch_id), _video(NEW_VOD, settings.twitch_id)], "pagination": {}}
+    )
+    try:
+        async with client(app) as c:
+            r = await c.get("/api/v2/twitch/videos", headers=KEY)
+            assert r.status_code == 200, r.text
+            assert r.json()["next_cursor"] is None
+            got = {v["id"]: v for v in r.json()["items"]}
+            assert got[vod]["in_archive"] and got[vod]["uploaded"] and got[vod]["archive_job"] is None
+            assert got[NEW_VOD] == {
+                "id": NEW_VOD,
+                "title": f"title {NEW_VOD}",
+                "created_at": "2026-10-01T18:00:00Z",
+                "duration": "01:02:03",
+                "duration_seconds": 3723,
+                "thumbnail_url": None,
+                "in_archive": False,
+                "uploaded": False,
+                "archive_job": None,
+            }
+
+            bodies: list[dict[str, Any]] = [{"vod_ids": []}, {"vodIds": [vod]}, {"vod_ids": [""]}]
+            for body in bodies:
+                bad = await c.post("/api/v2/twitch/videos/import", headers=KEY, json=body)
+                assert bad.status_code == 422 and bad.json()["code"] == "invalid", body
+            r = await c.post("/api/v2/twitch/videos/import", headers=KEY, json={"vod_ids": [NEW_VOD, "gone"]})
+            assert r.status_code == 202, r.text
+            [added] = r.json()["added"]
+            assert added["vod_id"] == NEW_VOD
+            assert r.json()["skipped"] == [{"vod_id": "gone", "reason": "Not on Twitch"}]
+            job = await jobs.get(added["job_id"])
+            assert (job.kind, job.state) == ("archive", "paused")
+            got = {v["id"]: v for v in (await c.get("/api/v2/twitch/videos", headers=KEY)).json()["items"]}
+            assert got[NEW_VOD]["archive_job"] == {"id": job.id, "state": "paused", "step": "capture"}
+        async with get_sessionmaker()() as s:
+            [row] = (await s.execute(select(AUDIT_LOG).where(AUDIT_LOG.c.action == "vod.twitch_import"))).all()
+        assert row.detail["paused"] is True and row.detail["added"] == [added] and row.request_id
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(delete(Job).where(Job.vod_id == NEW_VOD))
+            await s.execute(delete(RUNS).where(RUNS.c.subject == subject_of(NEW_VOD)))
+            await s.execute(text("SET LOCAL search_path TO jobs, public"))
+            await s.execute(text("DELETE FROM procrastinate_jobs WHERE lock LIKE :vod"), {"vod": f"vod:{NEW_VOD}:%"})
+            await s.execute(delete(Vod).where(Vod.id == NEW_VOD))
+            await s.commit()
+
+
 # ── Health ────────────────────────────────────────────────────────────────
 
 
@@ -641,6 +694,17 @@ async def test_youtube_check_reports_removed_uploads_and_keeps_the_last(vod, app
 
             async with deps.youtube_check.lock:
                 assert (await c.post("/admin/youtube/videos/check", headers=KEY)).status_code == 409
+                busy = await c.post("/api/v2/youtube/videos/check", headers=KEY)
+                assert busy.status_code == 409 and busy.json()["code"] == "check_running"
+                assert (await c.get("/api/v2/youtube/videos", headers=KEY)).json()["running"] is True
+
+            ran = await c.post("/api/v2/youtube/videos/check", headers=KEY)
+            assert ran.status_code == 200 and ran.json()["running"] is False
+            last = ran.json()["last"]
+            assert last["checked_at"].endswith("Z") and "on_youtube" in last and "onYoutube" not in last
+            [mine] = [p for p in last["problems"] if p["id"] == VOD]
+            assert mine["created_at"] and [i["kind"] for i in mine["issues"]] == ["removed", "incomplete"]
+            assert (await c.get("/api/v2/youtube/videos", headers=KEY)).json() == {"running": False, "last": last}
     finally:
         async with get_sessionmaker()() as s:
             await s.execute(delete(AppState).where(AppState.key == youtube_check.STATE_KEY))
