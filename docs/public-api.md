@@ -4,6 +4,8 @@
 
 This is what the frontend uses. The output is compatible with the old Feathers API. Tests replay 61 responses captured from the old API, and they match field for field (ignoring the added fields below).
 
+**Every route here is legacy.** The Feathers routes (`/vods`, `/games`, `/emotes`: camelCase, `{total, limit, skip, data}`, `$limit`/`$sort` queries, `{name, message, code, className}` errors) and `/v1/*` (camelCase, `{error: true, msg}` errors) keep their shapes for the sites that read them, and grow only fields those sites ask for. A new public route follows the workspace's wire conventions, [`.conventions/API.md`](../.conventions/API.md): snake_case, UTC times ending in `Z`, `{items, next_cursor}`, problem details.
+
 | Route | Notes |
 |---|---|
 | `GET /vods` | Feathers envelope `{total, limit, skip, data}`. |
