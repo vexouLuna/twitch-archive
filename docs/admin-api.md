@@ -16,7 +16,7 @@ H=(-H "Authorization: Bearer $KEY" -H "Content-Type: application/json")
 
 ## /api/v2
 
-The same API is moving to `/api/v2`, shared with doomtp-bot (the conventions are vex-platform's `docs/conventions.md`). It takes the same key or dashboard login, but answers differently:
+The same API is moving to `/api/v2`, shared with doomtp-bot. Its rules are the workspace's wire conventions, [`.conventions/API.md`](../.conventions/API.md), which vex-platform implements (`docs/conventions.md`); `/admin/*` is **legacy**: it keeps its shapes until the dashboard has moved off each route (ADR 0003), and a new route goes under `/api/v2`, never `/admin`. It takes the same key or dashboard login, but answers differently:
 
 - JSON keys are snake_case and times are ISO 8601 in UTC (`2026-09-30T12:00:00Z`).
 - Lists are `{items, next_cursor}`. Pass `cursor=<next_cursor>` for the next page; `limit` is at most 500.
@@ -24,6 +24,14 @@ The same API is moving to `/api/v2`, shared with doomtp-bot (the conventions are
 - Every response has an `X-Request-ID` (yours, if you send one). Audit rows keep it.
 - A write that is refused or fails is audited too (`request.denied`, `request.failed`).
 - OpenAPI is at `/api/v2/docs`, behind the same login.
+
+Known exceptions to the conventions, kept because the dashboard reads them (a new field never copies them; a unit goes in the name, `_seconds`, `_ms`, `_bytes`):
+
+- Numbers without their unit in the name: `gap` (merge candidates, merge), a segment's `start`, `end` and `at` (seconds), `size` (`/vods/{id}/media`, bytes) and the storage `disk`'s `total`, `used` and `free` (bytes).
+- Stored lists returned as they are stored, in the legacy camelCase shape: a VOD's `chapters`, `youtube`, `drive`, `censor`, `bot_chat`, `merged_into` and `synthetic`.
+- `POST /vods/{id}/split` answers a bare list of the VODs it made.
+
+Routes added to `/admin` after `/api/v2` existed, with no `/api/v2` twin yet (ADR 0003, step 7): the site tags and options (`/admin/site/*`), the Twitch videos, import and viewer account (`/admin/twitch/videos`, `/admin/twitch/import`, `/admin/twitch/viewer*`) and the YouTube uploads check (`/admin/youtube/videos*`). The pipeline triggers added in the same time (`/admin/previews`, `/admin/previews/backfill`, `/admin/live-gaps/backfill`) already have one: `POST /api/v2/jobs` with their kind.
 
 ```bash
 curl -s "${H[@]}" "$A/api/v2/jobs?state=paused&subject=vod:123"   # runs; also kind=, cursor=, limit=

@@ -58,6 +58,10 @@ pull request, and none changes a migration (they stay additive: tables stay, cod
    merges were converted and the code removed; `/admin/vods/*/merge|split|unmerge|unsplit` answer 410.
 6. **Legacy auth header.** Exit: every script sends `Bearer`. Accepted: the worker logs a warning for any
    other word (once per word per process) for one release, and the release after that accepts only `Bearer`.
+7. **`/admin` routes added after `/api/v2`.** The site tags and options, the Twitch videos, import and
+   viewer account, and the YouTube uploads check were added to `/admin` after `/api/v2` existed. Exit:
+   each has an `/api/v2` twin in the wire conventions (`.conventions/API.md`), the dashboard uses it, and
+   the `/admin` route goes, as in steps 3 and 4. Not started.
 
 ## Status (production checks, 2026-10-23)
 
@@ -71,6 +75,7 @@ Run read-only on both production archives.
 | 4. VOD routes | The dashboard calls most `/admin/vods/{id}/*` routes; games, chapters and the VOD `PATCH` were written in the last 30 days. No scripts; nothing matches on error text | **Done:** emotes, re-archive, the YouTube delete, the censor review and `cut_reason` joined `/api/v2`, the dashboard moved, and the `/admin` writes (and the merge/split 410s) were removed without waiting for a quiet week (owner's call). `GET /admin/vods/{id}` and its merge candidates stay: the v2 VOD lacks the public shape's games and links. `_v1_conflicts()`: removed |
 | 5. Merge and split | 4 active merges, on one archive (ADR 0004, phase 0) | **Done:** converted to synthetic VODs; the splice code is gone |
 | 6. Auth header | No API-key writes through the old routes in 30 days | The warning ships; `Bearer` only the release after |
+| 7. Late `/admin` routes | Listed in admin-api.md's `/api/v2` section (2026-10-29) | Port them; the dashboard moves after |
 
 ## Consequences
 
