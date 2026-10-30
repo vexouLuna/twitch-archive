@@ -48,7 +48,7 @@ The twins answer what their `/admin` route does, in snake_case with `Z` times, a
 
 - Refusals are problem details: 422 `invalid_site_tag` (with `tag` and `field`), `unsafe_svg`, `invalid_site_options`, `token_refused`, `invalid`; 404 `site_tag_not_found`; 413 `too_large`; 415 `unsupported_media_type`; 400 `twitch_refused` (Twitch turned the device flow down; not a 5xx, which Cloudflare would replace); 409 `check_running`; 502 `viewer_check_failed`.
 - `site/options` drops `home_cards` (the old shape of `cards`) and takes only `cards` and `play_default`.
-- A key a body doesn't have, `/admin`'s camelCase keys among them, is 422 `invalid` with `errors` (`loc`, `msg`, `type`), as on every `/api/v2` route; a tag's `shape` is accepted and ignored, so a listed tag can be sent back. The `detail` of a refusal names fields in snake_case.
+- A key a body doesn't have (at the top, in a tag or in a card), `/admin`'s camelCase keys and old-shape card `kind` among them, is 422 `invalid` with `errors` (`loc`, `msg`, `type`), as on every `/api/v2` route; a tag's `shape` is accepted and ignored, so a listed tag can be sent back. The `detail` of a refusal names fields in snake_case.
 - `twitch/videos` is `{items, next_cursor}` (always one page) and adds `duration_seconds`. The import takes `{vod_ids, paused}` and answers 202 `{added: [{vod_id, job_id}], skipped: [{vod_id, reason}]}`.
 - The device flow answers 201 with `expires_in_seconds` and `interval_seconds`; the unlink answers 204.
 - Each change writes its own audit row, with the same action as its `/admin` route and the request id.

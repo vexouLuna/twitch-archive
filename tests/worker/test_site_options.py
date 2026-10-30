@@ -206,7 +206,15 @@ async def test_v2_options_in_snake_case(app, clean):
             assert r.json()["errors"] == [
                 {"loc": ["body", key], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"}
             ]
-        # /admin keeps its camelCase texts
+        # and inside each card: an unknown key, a camelCase one, the old shape's kind
+        bad_cards = [LIVE, {**vods("a", "vods", 1), "nope": 1, "cardId": "x"}, LATEST]
+        r = await c.put("/api/v2/site/options", headers=KEY, json={"cards": bad_cards})
+        assert r.status_code == 422 and r.json()["code"] == "invalid"
+        assert r.json()["errors"] == [
+            {"loc": ["body", "cards", i, k], "msg": "Extra inputs are not permitted", "type": "extra_forbidden"}
+            for i, k in [(1, "nope"), (1, "cardId"), (2, "kind")]
+        ]
+        # /admin keeps its camelCase texts (its cards still take the old shape: test_defaults_save_and_serve)
         r = await c.put("/admin/site/options", headers=KEY, json={"playDefault": "nope"})
         assert r.status_code == 400 and r.json()["msg"].startswith("playDefault must be")
         assert (await c.get("/admin/site/options", headers=KEY)).json()["playDefault"] == "compiled"

@@ -23,6 +23,7 @@ from .admin_shared import AdminContext, AdminError
 from .api_v2_routes import _camel, _changed_by, _snake_key, _wire
 
 V2_TAG_KEYS = {_snake_key(f) for f in site_tags_common.FIELDS} | {"shape"}  # shape: read back, ignored
+V2_CARD_KEYS = {"id", "type", "tag", "count"}  # a card in the cards shape; /admin's old ``kind`` shape is refused
 # The camelCase fields the validators name in their refusals; quoted words are values (a card's id), not fields.
 V1_NAMES = re.compile(
     r"(?<!')\b("
@@ -212,7 +213,11 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         """Any of ``cards`` and ``play_default``; the others keep their value. All or nothing (422
         ``invalid_site_options``; 422 ``invalid`` for another key, /admin's ``home_cards`` among them).
         Audited as ``site.options.update``."""
-        refuse_unknown(unknown_keys([], body, {"cards", "play_default"}))
+        errors = unknown_keys([], body, {"cards", "play_default"})
+        if isinstance(body.get("cards"), list):
+            for i, card in enumerate(body["cards"]):
+                errors += unknown_keys(["cards", i], card, V2_CARD_KEYS)
+        refuse_unknown(errors)
         try:
             before, after, view = await site_options.save(_camel(body), v2_changed_by(request))
         except site_options.SiteOptionError as exc:
