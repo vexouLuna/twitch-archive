@@ -48,7 +48,7 @@ from archive_common.serialize import EMOTES, duration_seconds, real, tagged
 from archive_common.timeutil import hhmmss_to_seconds
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import Field
-from sqlalchemy import exists, func, or_, select, tuple_, update
+from sqlalchemy import exists, func, or_, select, text, tuple_, update
 from vex_platform.actor import Actor
 from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, decode_cursor, page_of, request_id, utc_iso
 from vex_platform.audit import AuditEntry
@@ -437,13 +437,15 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         is_synthetic: Annotated[bool | None, Query(alias="synthetic")] = None,
         uploaded: bool | None = None,
         busy: bool | None = None,
+        fully_cut: bool | None = None,
         cursor: str | None = None,
         limit: Annotated[int, Query(ge=1, le=VOD_LIST_MAX)] = 50,
     ) -> Page[VodRow]:
         """``q`` matches the id exactly or the title (case-insensitive substring); ``hidden`` and
         ``synthetic`` filter; ``tag`` keeps the VODs with that tag (``tag=`` empty: untagged ones);
         ``uploaded`` is whether any part is on YouTube, ``busy`` whether a job is queued, running or
-        paused for it (``uploaded=false&busy=false``: the VODs nothing is archiving)."""
+        paused for it (``uploaded=false&busy=false``: the VODs nothing is archiving); ``fully_cut`` whether
+        it has chapters and every one is restricted, so there is nothing left to upload."""
         stmt = select(Vod).order_by(Vod.created_at.desc(), Vod.id.desc()).limit(limit + 1)
         if term := q.strip():
             like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -460,6 +462,11 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         if busy is not None:
             has_job = exists().where(ALL_JOBS.c.vod_id == Vod.id, ALL_JOBS.c.state.in_(ACTIVE))
             stmt = stmt.where(has_job if busy else ~has_job)
+        if fully_cut is not None:
+            chapters = func.jsonb_array_elements(func.coalesce(Vod.chapters, text("'[]'::jsonb"))).table_valued("value")
+            kept = exists().select_from(chapters).where(~chapters.c.value.op("@>")(text("'{\"restricted\": true}'")))
+            all_cut = (func.coalesce(func.jsonb_array_length(Vod.chapters), 0) > 0) & ~kept
+            stmt = stmt.where(all_cut if fully_cut else ~all_cut)
         if key := decode_cursor(cursor, size=2):
             try:
                 at = dt.datetime.fromisoformat(key[0])

@@ -278,6 +278,23 @@ async def test_vods_list_filters_on_upload_and_active_jobs(admin):
     assert (await ids("uploaded=true"), await ids("uploaded=false")) == ([VOD], [])
 
 
+async def test_vods_list_filters_on_fully_cut(admin):
+    async def ids(query):
+        return [v["id"] for v in (await admin.get(f"/api/v2/vods?q={VOD}&{query}", headers=KEY)).json()["items"]]
+
+    async def chapters(*restricted):
+        async with get_sessionmaker()() as s:
+            (await s.get(Vod, VOD)).chapters = [{"name": "x", "restricted": r} for r in restricted]
+            await s.commit()
+
+    await chapters()
+    assert (await ids("fully_cut=true"), await ids("fully_cut=false")) == ([], [VOD])
+    await chapters(True, False)
+    assert (await ids("fully_cut=true"), await ids("fully_cut=false")) == ([], [VOD])
+    await chapters(True, True)
+    assert (await ids("fully_cut=true"), await ids("fully_cut=false")) == ([VOD], [])
+
+
 async def test_vods_list_get_and_update_with_their_audit(admin):
     page = (await admin.get(f"/api/v2/vods?q={VOD}", headers=KEY)).json()
     assert ([v["id"] for v in page["items"]], page["next_cursor"]) == ([VOD], None)
