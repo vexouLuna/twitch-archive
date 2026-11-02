@@ -8,7 +8,7 @@ import datetime as dt
 from typing import Any
 
 from archive_common.db import get_sessionmaker
-from archive_common.models import BotLog, Emote, Log, Vod
+from archive_common.models import Emote, Log, Vod
 from archive_common.serialize import vod_json
 from archive_common.timeutil import format_hhmmss, hhmmss_to_seconds, parse_helix_duration
 from fastapi import Body, FastAPI
@@ -78,11 +78,11 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                 409, f"{vod_id} is played by {', '.join(x['id'] for x in used)}; delete or edit those first"
             )
         async with get_sessionmaker()() as s:
-            for model in (Log, BotLog, Emote):
+            for model in (Log, Emote):
                 await s.execute(delete(model).where(model.vod_id == vod_id))
             await s.execute(delete(Vod).where(Vod.id == vod_id))
             await s.commit()
-        return _ok(f"Deleted {vod_id} (vod, logs, bot logs, emotes)")
+        return _ok(f"Deleted {vod_id} (vod, logs, emotes)")
 
     @app.post("/admin/duration", dependencies=auth)
     async def save_duration(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
