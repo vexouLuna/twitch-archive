@@ -5,6 +5,7 @@ has a 300 s gap. A plays Just Chatting then the test game for an hour; B plays t
 """
 
 import datetime as dt
+import json
 from typing import Any
 from urllib.parse import quote
 
@@ -18,9 +19,10 @@ from archive_common.db import get_engine, get_sessionmaker
 from archive_common.models import Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
+from archive_worker.job_rows import RUNS
 from archive_worker.vods import splice_reason
 from pydantic import SecretStr
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 
 A, B = "test-syn-a", "test-syn-b"
 AB, P = f"{A}+{B}", "test-syn-p"
@@ -48,6 +50,7 @@ async def _clean():
         synthetic_ids = select(Vod.id).where(mine, Vod.synthetic.is_not(None))
         await s.execute(delete(AUDIT_LOG).where(AUDIT_LOG.c.target.like("vod:test-syn-%")))
         await s.execute(delete(Job).where(Job.vod_id.like("test-syn-%")))
+        await s.execute(delete(RUNS).where(RUNS.c.subject.like("vod:test-syn-%")))
         await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_(synthetic_ids)))
         await s.execute(delete(Vod).where(mine, Vod.synthetic.is_not(None)))
         await s.execute(delete(Vod).where(mine))
@@ -649,7 +652,13 @@ async def test_compile_sources(admin, make_ctx):
 
     async def add_job(vod_id, kind, payload):
         async with get_sessionmaker()() as s:
-            s.add(Job(kind=kind, vod_id=vod_id, state="done", payload=payload))
+            await s.execute(
+                text(
+                    "insert into jobs.job_runs (kind, subject, state, payload, actor_kind, via)"
+                    " values (:kind, :subject, 'succeeded', cast(:payload as jsonb), 'system', 'test')"
+                ),
+                {"kind": kind, "subject": f"vod:{vod_id}", "payload": json.dumps(payload)},
+            )
             await s.commit()
 
     async def dmca():
@@ -674,7 +683,7 @@ async def test_compile_sources(admin, make_ctx):
     await comp.compile_sources(ctx)
     assert len(ctx.payload["clips"]) == 2
     async with get_sessionmaker()() as s:
-        await s.execute(delete(Job).where(Job.vod_id.in_((A, B))))
+        await s.execute(delete(RUNS).where(RUNS.c.subject.in_((f"vod:{A}", f"vod:{B}"))))
         await s.commit()
 
     # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
@@ -734,3 +743,32 @@ async def test_own_thumbnail(admin):
     assert "thumbnailUrl" not in r.json()["synthetic"]
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [a, b]})
     assert await thumb() == "https://t/a"
+
+
+async def test_delete_vod_refuses_a_segment_source_and_removes_bot_chat(admin):
+    assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
+    r = await admin.request("DELETE", "/admin/delete", headers=KEY, json={"vodId": A})
+    assert r.status_code == 409, r.text
+    assert A in await _sources()
+
+    c = "test-syn-c"
+    async with get_sessionmaker()() as s:
+        s.add(Vod(id=c, title="c", created_at=START, duration="00:10:00", tags=["vods"]))
+        await s.flush()
+        await s.execute(
+            text(
+                "insert into bot_logs (id, vod_id, kind, at, content_offset_seconds, message, user_badges,"
+                " user_color, data) values ('test-syn-c-1', :v, 'message', now(), 1, '[]', '[]', '', '{}')"
+            ),
+            {"v": c},
+        )
+        await s.commit()
+    try:
+        r = await admin.request("DELETE", "/admin/delete", headers=KEY, json={"vodId": c})
+        assert r.status_code == 200, r.text
+        async with get_sessionmaker()() as s:
+            assert (await s.execute(text("select count(*) from bot_logs where vod_id = :v"), {"v": c})).scalar() == 0
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(text("delete from bot_logs where id = 'test-syn-c-1'"))
+            await s.commit()

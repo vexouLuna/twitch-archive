@@ -174,7 +174,9 @@ def _tags_filter(value: Any) -> ColumnElement[bool]:
     """``tags=a`` VODs tagged ``a``; ``tags[]=a&tags[]=b`` (or ``tags[$all]``) both; ``tags[$in]`` either."""
     if isinstance(value, dict) and set(value) == {"$in"}:
         return or_(false(), *(tagged(str(t)) for t in fq._as_list(value["$in"])))
-    values = fq._as_list(value["$all"]) if isinstance(value, dict) and set(value) == {"$all"} else fq._as_list(value)
+    if isinstance(value, dict) and set(value) != {"$all"}:
+        raise FeathersError(400, "Invalid value for 'tags'")
+    values = fq._as_list(value["$all"] if isinstance(value, dict) else value)
     if not values or not all(isinstance(t, str) for t in values):
         raise FeathersError(400, "Invalid value for 'tags'")
     return VODS.table.c.tags.contains(values)

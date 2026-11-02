@@ -79,6 +79,7 @@ from .admin_shared import (
     AdminError,
     Unauthenticated,
     _actor,
+    _int,
     _ok,
     log,
     login_of,
@@ -537,7 +538,7 @@ def create_admin_app(
         return payload
 
     def single_part(payload: dict[str, Any], body: dict[str, Any]) -> int:
-        part = int(body["part"])
+        part = _int(body, "part")
         payload.update(start_part=part, end_part=part)
         return part
 
