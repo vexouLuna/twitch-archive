@@ -103,5 +103,7 @@ See [Troubleshooting](operations.md) for how to find new values.
 | `ARCHIVE_ADMIN_SITE_ORIGINS` | `[]` | Site origins (JSON list, e.g. `["https://vods.example.net"]`) whose pages may call `/admin/session` with cookies. CORS answers only them, and `POST /admin/session {code}` refuses any other `Origin`. The origin of `ARCHIVE_ADMIN_AUTH_REDIRECT_URL` (the site this worker serves through its proxy) is always included |
 | `ARCHIVE_API_INTERNAL_URL` | `http://127.0.0.1:<api port>`; `http://api:<api port>` in `compose.yaml` | Where `/admin/health` checks archive-api |
 | `ARCHIVE_MERGE_CANDIDATE_MINUTES` | `30` | `merge-candidates` lists VODs that started up to this long after a VOD ended; see [Merging and splitting VODs](admin-api.md#merging-and-splitting-vods) |
+| `ARCHIVE_AUTO_MERGE` † | `false` | Merge a new VOD with the VOD before it when it started at most `ARCHIVE_AUTO_MERGE_GAP_MINUTES` after that one ended (a dropped stream). Done once, when the monitor first sees the VOD, before any of it is uploaded; a merge that already ends with that VOD grows instead, unless it was edited by hand |
+| `ARCHIVE_AUTO_MERGE_GAP_MINUTES` † | `15` | The longest break between two VODs that `ARCHIVE_AUTO_MERGE` merges |
 | `ARCHIVE_GOOGLE_CLIENT_ID` / `ARCHIVE_GOOGLE_CLIENT_SECRET` | – | Google OAuth client for YouTube |
 | `ARCHIVE_GOOGLE_REDIRECT_URL` | `http://localhost:3031/admin/refreshtoken` | Must match a redirect URI on the Google client |
