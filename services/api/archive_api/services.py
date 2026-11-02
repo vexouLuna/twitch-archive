@@ -22,7 +22,8 @@ from archive_common.serialize import (
     reachable,
     tagged,
 )
-from sqlalchemy import ColumnElement, and_, false, func, or_, select, true
+from sqlalchemy import ColumnElement, Text, and_, cast, false, func, literal, not_, or_, select, true
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -124,7 +125,8 @@ class VodsService(Service):
 
         * VODs merged into another one (``$merged=true``; they have ``merged_into``);
         * tagged VODs: only those with no tag but ``vods`` are listed (older sites' /vods), unless
-          ``$tag=<tag>`` (that tag's, e.g. ``vods``), ``$tag=*`` (all) or a ``tags`` filter.
+          ``$tag=<tag>`` (that tag's, e.g. ``vods``), ``$tag=*`` (all) or a ``tags`` filter;
+        * with ``$cut=false``, VODs cut in full (every chapter restricted: nothing left to play).
 
         Hidden VODs are never listed. (``$superseded`` is accepted and does nothing: ADR 0005.)"""
         clauses = [self.listed]
@@ -135,6 +137,8 @@ class VodsService(Service):
             clauses.append(plain())
         elif isinstance(tag, str) and tag != "*":
             clauses.append(tagged(tag))
+        if query.get("$cut") == "false":
+            clauses.append(_not_cut())
         return and_(true(), *clauses)
 
 
@@ -168,6 +172,14 @@ def _live_filter(field: str, end: int, spans: dict[str, tuple[dt.datetime, dt.da
         return or_(real, VODS.table.c.id.in_(ids))
 
     return build
+
+
+def _not_cut() -> ColumnElement[bool]:
+    """Not cut in full: no chapters, or one that isn't ``restricted`` (the sites' "Cut in full" page is the rest)."""
+    chapters = func.coalesce(VODS.table.c.chapters, literal([], JSONB))
+    any_chapter = chapters.op("@?", is_comparison=True)(cast(literal("$[*]", Text), JSONPATH))
+    playable = chapters.op("@?", is_comparison=True)(cast(literal("$[*] ? (!(@.restricted == true))", Text), JSONPATH))
+    return or_(not_(any_chapter), playable)
 
 
 def _tags_filter(value: Any) -> ColumnElement[bool]:
