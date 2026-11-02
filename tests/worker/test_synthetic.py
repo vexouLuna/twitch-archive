@@ -5,6 +5,7 @@ has a 300 s gap. A plays Just Chatting then the test game for an hour; B plays t
 """
 
 import datetime as dt
+import json
 from typing import Any
 from urllib.parse import quote
 
@@ -18,9 +19,10 @@ from archive_common.db import get_engine, get_sessionmaker
 from archive_common.models import Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
+from archive_worker.job_rows import RUNS
 from archive_worker.vods import splice_reason
 from pydantic import SecretStr
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, text, update
 
 A, B = "test-syn-a", "test-syn-b"
 AB, P = f"{A}+{B}", "test-syn-p"
@@ -48,6 +50,7 @@ async def _clean():
         synthetic_ids = select(Vod.id).where(mine, Vod.synthetic.is_not(None))
         await s.execute(delete(AUDIT_LOG).where(AUDIT_LOG.c.target.like("vod:test-syn-%")))
         await s.execute(delete(Job).where(Job.vod_id.like("test-syn-%")))
+        await s.execute(delete(RUNS).where(RUNS.c.subject.like("vod:test-syn-%")))
         await s.execute(delete(VodSegment).where(VodSegment.vod_id.in_(synthetic_ids)))
         await s.execute(delete(Vod).where(mine, Vod.synthetic.is_not(None)))
         await s.execute(delete(Vod).where(mine))
@@ -649,7 +652,13 @@ async def test_compile_sources(admin, make_ctx):
 
     async def add_job(vod_id, kind, payload):
         async with get_sessionmaker()() as s:
-            s.add(Job(kind=kind, vod_id=vod_id, state="done", payload=payload))
+            await s.execute(
+                text(
+                    "insert into jobs.job_runs (kind, subject, state, payload, actor_kind, via)"
+                    " values (:kind, :subject, 'succeeded', cast(:payload as jsonb), 'system', 'test')"
+                ),
+                {"kind": kind, "subject": f"vod:{vod_id}", "payload": json.dumps(payload)},
+            )
             await s.commit()
 
     async def dmca():
@@ -674,7 +683,7 @@ async def test_compile_sources(admin, make_ctx):
     await comp.compile_sources(ctx)
     assert len(ctx.payload["clips"]) == 2
     async with get_sessionmaker()() as s:
-        await s.execute(delete(Job).where(Job.vod_id.in_((A, B))))
+        await s.execute(delete(RUNS).where(RUNS.c.subject.in_((f"vod:{A}", f"vod:{B}"))))
         await s.commit()
 
     # The merge has a gap: its windows still compile, back to back, each with where it plays (the gap
