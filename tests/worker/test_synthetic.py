@@ -743,3 +743,32 @@ async def test_own_thumbnail(admin):
     assert "thumbnailUrl" not in r.json()["synthetic"]
     r = await admin.put(f"/api/v2/synthetic/{P}", headers=KEY, json={"segments": [a, b]})
     assert await thumb() == "https://t/a"
+
+
+async def test_delete_vod_refuses_a_segment_source_and_removes_bot_chat(admin):
+    assert (await admin.post(f"/api/v2/vods/{A}/merge", headers=KEY, json={"source": B})).status_code == 201
+    r = await admin.request("DELETE", "/admin/delete", headers=KEY, json={"vodId": A})
+    assert r.status_code == 409, r.text
+    assert A in await _sources()
+
+    c = "test-syn-c"
+    async with get_sessionmaker()() as s:
+        s.add(Vod(id=c, title="c", created_at=START, duration="00:10:00", tags=["vods"]))
+        await s.flush()
+        await s.execute(
+            text(
+                "insert into bot_logs (id, vod_id, kind, at, content_offset_seconds, message, user_badges,"
+                " user_color, data) values ('test-syn-c-1', :v, 'message', now(), 1, '[]', '[]', '', '{}')"
+            ),
+            {"v": c},
+        )
+        await s.commit()
+    try:
+        r = await admin.request("DELETE", "/admin/delete", headers=KEY, json={"vodId": c})
+        assert r.status_code == 200, r.text
+        async with get_sessionmaker()() as s:
+            assert (await s.execute(text("select count(*) from bot_logs where vod_id = :v"), {"v": c})).scalar() == 0
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(text("delete from bot_logs where id = 'test-syn-c-1'"))
+            await s.commit()
