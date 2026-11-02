@@ -150,6 +150,18 @@ async def test_a_refresh_google_auth_makes_itself_is_saved_too(yt, monkeypatch):
     assert [e.detail["reason"] for e in yt.audited] == ["expired"]
 
 
+async def test_a_check_during_a_refresh_does_not_leave_the_caller_without_credentials(yt, monkeypatch):
+    yt.stored["token"] = {"refresh_token": "r1", "token": None, "scopes": None}  # no access token: needs a refresh
+
+    def refresh(self, request):
+        self.token = "fresh"
+        yt._creds = None  # what a concurrent check() does while this runs in its thread
+
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+    creds = await yt._credentials()
+    assert creds is not None and creds.token == "fresh"
+
+
 async def test_a_change_of_scopes_is_audited(yt, monkeypatch):
     yt.stored["token"] = {"refresh_token": "r1", "token": "stale", "scopes": None, "grantedScopes": ["a"]}
 
