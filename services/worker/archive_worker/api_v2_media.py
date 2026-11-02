@@ -186,10 +186,14 @@ def media_router(auth: Auth, settings: Settings) -> APIRouter:
         items = []
         for name in MediaName:
             path = await asyncio.to_thread(media_path, settings.vod_dir, vod_id, name)
-            if path is not None:
+            if path is None:
+                continue
+            try:
                 st = await asyncio.to_thread(path.stat)
-                at = dt.datetime.fromtimestamp(st.st_mtime, dt.UTC)
-                items.append(MediaFile(name=name, label=LABELS[name], size=st.st_size, modified_at=at))
+            except OSError:  # the cleanup job removed it since media_path looked
+                continue
+            at = dt.datetime.fromtimestamp(st.st_mtime, dt.UTC)
+            items.append(MediaFile(name=name, label=LABELS[name], size=st.st_size, modified_at=at))
         held = await media_lease.current()
         return MediaList(
             items=items,

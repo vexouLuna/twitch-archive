@@ -167,3 +167,12 @@ async def test_a_stale_lease_is_free_and_files_are_named_not_pathed(media):
     assert r.status_code == 404 and r.json()["code"] == "media_not_found"
     r = await media.post("/api/v2/media/lease", json={"lease_id": "short"}, headers=KEY)
     assert r.status_code == 422
+
+
+async def test_a_file_gone_since_the_check_is_skipped_in_the_list(media, monkeypatch, tmp_path):
+    from archive_worker import api_v2_media
+
+    monkeypatch.setattr(api_v2_media, "media_path", lambda *_: tmp_path / "removed.mp4")  # is_file said yes; then gone
+    r = await media.get(f"/api/v2/vods/{VOD}/media", headers=KEY)
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []

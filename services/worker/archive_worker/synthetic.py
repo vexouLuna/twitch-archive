@@ -39,7 +39,7 @@ from typing import Any
 
 from archive_common import audit, site_tags
 from archive_common.db import VOD_CHANGED, get_engine, get_sessionmaker
-from archive_common.models import Job, Vod, VodSegment
+from archive_common.models import Vod, VodSegment
 from archive_common.segments import EPS, MAX_DEPTH, Segment
 from archive_common.serialize import (
     flat_segments,
@@ -58,6 +58,7 @@ from vex_platform.audit import AuditEntry
 
 from . import compose, planning
 from .compose import ComposeError, Source
+from .job_rows import ALL_JOBS
 from .site_tags import vod_tags
 from .vod_edits import tags as check_tags
 
@@ -380,9 +381,13 @@ async def dmca_claims(vod_id: str) -> dict[str, list[dict[str, Any]]]:
         windows.setdefault(x.source_id, []).append((x.start, x.start + x.length))
     async with get_sessionmaker()() as s:
         rows = await s.execute(
-            select(Job.vod_id, Job.kind, Job.payload)
-            .where(Job.kind.in_(("dmca", "part_dmca")), Job.state == "done", Job.vod_id.in_(sorted(windows)))
-            .order_by(Job.created_at)
+            select(ALL_JOBS.c.vod_id, ALL_JOBS.c.kind, ALL_JOBS.c.payload)
+            .where(
+                ALL_JOBS.c.kind.in_(("dmca", "part_dmca")),
+                ALL_JOBS.c.state == "done",
+                ALL_JOBS.c.vod_id.in_(sorted(windows)),
+            )
+            .order_by(ALL_JOBS.c.created_at)
         )
     out: dict[str, list[dict[str, Any]]] = {"overlapping": [], "other": []}
     for source, kind, payload in rows:

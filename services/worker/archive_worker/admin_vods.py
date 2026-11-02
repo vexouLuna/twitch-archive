@@ -50,7 +50,10 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         _require(body, "vodId", "title", "createdAt", "duration")
         if await vod_exists(body["vodId"]):
             raise AdminError(400, f"{body['vodId']} already exists!")
-        created = dt.datetime.fromisoformat(str(body["createdAt"]))
+        try:
+            created = dt.datetime.fromisoformat(str(body["createdAt"]))
+        except ValueError:
+            raise AdminError(400, "Parameter createdAt must be an ISO date and time") from None
         async with get_sessionmaker()() as s:
             s.add(
                 Vod(
@@ -70,6 +73,10 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         _require(body, "vodId")
         vod_id = str(body["vodId"])
         await refuse_spliced(vod_id, "deleting it (with the chat rows it holds)")
+        if used := await synthetic.containing(vod_id):
+            raise AdminError(
+                409, f"{vod_id} is played by {', '.join(x['id'] for x in used)}; delete or edit those first"
+            )
         async with get_sessionmaker()() as s:
             for model in (Log, Emote):
                 await s.execute(delete(model).where(model.vod_id == vod_id))
