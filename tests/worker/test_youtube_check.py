@@ -45,10 +45,10 @@ def test_removed_rejected_and_failed_are_bad():
 
 def test_warnings():
     assert kinds(yc.video_issues(entry("a"), video(upload="uploaded"))) == ["processing"]
-    blocked = video(details={"regionRestriction": {"blocked": ["DE", "FR"]}})
-    assert [i["detail"] for i in yc.video_issues(entry("a"), blocked)] == ["Blocked in 2 countries"]
+    blocked = video(details={"regionRestriction": {"blocked": ["FR", "DE"]}})
+    assert [i["detail"] for i in yc.video_issues(entry("a"), blocked)] == ["Blocked in 2 countries: DE, FR"]
     only = video(details={"regionRestriction": {"allowed": ["US"]}})
-    assert [i["detail"] for i in yc.video_issues(entry("a"), only)] == ["Only viewable in 1 country"]
+    assert [i["detail"] for i in yc.video_issues(entry("a"), only)] == ["Only viewable in 1 country: US"]
     aged = video(details={"contentRating": {"ytRating": "ytAgeRestricted"}})
     assert kinds(yc.video_issues(entry("a"), aged)) == ["ageRestricted"]
     [cut] = yc.video_issues(entry("a"), video("PT1H30M"))
