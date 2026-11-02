@@ -195,6 +195,23 @@ ENTRIES = (
         "now",
         "Steps a job pauses before until resumed, per job kind (a job's own list wins)",
     ),
+    Entry(
+        "auto_merge",
+        "bool",
+        "Pipeline",
+        "now",
+        "Merge a new VOD with the one before when it started soon after that one ended (a dropped stream)",
+    ),
+    Entry(
+        "auto_merge_gap_minutes",
+        "int",
+        "Pipeline",
+        "now",
+        "Longest break, in minutes, between two VODs that are merged",
+        0,
+        720,
+        requires="auto_merge",
+    ),
     Entry("runner_concurrency", "int", "Runner", "now", "Jobs run at once", 1, 16),
     Entry("max_attempts", "int", "Runner", "now", "Tries of a failing step before its job fails", 1, 10),
 )

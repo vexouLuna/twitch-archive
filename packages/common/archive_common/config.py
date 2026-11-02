@@ -181,6 +181,9 @@ class PipelineSettings(_Base):
     keep_hls: bool = False
     keep_mp4: bool = False
     keep_files_days: float = 0  # days a pipeline's files stay before a scheduled cleanup job removes them
+    # A new VOD that started at most auto_merge_gap_minutes after the one before ended is merged with it.
+    auto_merge: bool = False
+    auto_merge_gap_minutes: int = 15
     dry_run: bool = False
     runner_concurrency: int = 3  # jobs run at once
     max_attempts: int = 3  # tries of a failing step before its job fails
