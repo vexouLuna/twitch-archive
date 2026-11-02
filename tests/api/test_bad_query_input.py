@@ -37,7 +37,7 @@ def test_the_tag_forms_still_parse(qs: str) -> None:
 class _Column:
     """Stands in for a column: any comparison is fine, any attribute is another column."""
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         return True
 
     def __ge__(self, other: object) -> bool:
