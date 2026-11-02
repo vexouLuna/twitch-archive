@@ -267,7 +267,7 @@ class Comments:
             if cursor.get("content_offset_seconds") is not None:
                 where.append(t.c.content_offset_seconds >= math.floor(float(cursor["content_offset_seconds"])))
             rows = await self._rows(conn, src, *where)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if not rows:
             return None

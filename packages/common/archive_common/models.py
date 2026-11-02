@@ -146,7 +146,9 @@ class BotLog(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)  # the bot's id; moderation: "mod:<n>"
     # Paging order within a VOD, like logs._id; the bot_chat step keeps it rising with the offset.
     seq: Mapped[int] = mapped_column(BigInteger, server_default=FetchedValue(), nullable=False)
-    vod_id: Mapped[str] = mapped_column(Text, nullable=False)
+    vod_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("vods.id", onupdate="CASCADE", ondelete="CASCADE"), nullable=False
+    )  # Alembic 0026
     kind: Mapped[str] = mapped_column(Text, nullable=False)  # message | notice | moderation
     at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     content_offset_seconds: Mapped[int] = mapped_column(Integer, nullable=False)

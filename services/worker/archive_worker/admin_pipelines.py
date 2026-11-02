@@ -13,7 +13,7 @@ from sqlalchemy import select
 from . import (
     jobs,
 )
-from .admin_shared import AdminContext, AdminError, _actor, _ok, _require
+from .admin_shared import AdminContext, AdminError, _actor, _int, _ok, _require
 from .vods import upsert_vod
 
 
@@ -40,7 +40,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         payload = source_payload(vod, body)
         for src, dst in (("startPart", "start_part"), ("endPart", "end_part")):
             if body.get(src) not in (None, ""):
-                payload[dst] = int(body[src])
+                payload[dst] = _int(body, src)
         job = await enqueue("download", vod.id, payload)
         await enqueue("emotes", vod.id)
         return _ok("Starting the download…", job)

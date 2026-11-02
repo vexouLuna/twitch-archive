@@ -95,6 +95,13 @@ async def _job_counts(s) -> dict[str, int]:  # type: ignore[no-untyped-def]
     return {st: counts.get(st, 0) for st in jobs.STATES}
 
 
+def _int(body: dict[str, Any], key: str) -> int:
+    try:
+        return int(body[key])
+    except (TypeError, ValueError):
+        raise AdminError(400, f"Parameter {key} must be a whole number") from None
+
+
 def _require(body: dict[str, Any], *keys: str) -> None:
     for key in keys:
         if body.get(key) in (None, ""):

@@ -289,9 +289,10 @@ class YouTube:
             )
             creds.on_refresh = self._on_refresh
             self._creds = creds
-        if not self._creds.valid:
-            await asyncio.to_thread(self._creds.refresh, GoogleRequest())
-        return self._creds
+        current = self._creds  # a concurrent _check() may reset self._creds while the refresh below awaits
+        if not current.valid:
+            await asyncio.to_thread(current.refresh, GoogleRequest())
+        return current
 
     def _on_refresh(self, state: Refreshed | None, reason: str, error: BaseException | None) -> None:
         """Called on the thread that refreshed; the saving and auditing happen on the event loop."""
