@@ -579,6 +579,72 @@ async def merge_candidates(vod_id: str, minutes: int, hours: int | None = None) 
         return a, list(rows.scalars())
 
 
+async def auto_merge(vod_id: str, gap_minutes: float) -> str | None:
+    """At ingest (``auto_merge``): merge a new VOD with the real VOD before it when it started at most
+    ``gap_minutes`` after that one ended. The merge that already ends with that one grows by it when it is
+    still the plain ``merge_all`` of its VODs; else a new merge of the two. Audited by the system. Returns
+    the merge's id, or None when nothing was merged (a VOD hidden by hand, or a merge edited by hand, is
+    left alone)."""
+    async with get_sessionmaker()() as s:
+        new = await s.get(Vod, vod_id)
+        if new is None or new.synthetic is not None or new.hidden:
+            return None
+        if (await s.execute(select(VodSegment.vod_id).where(VodSegment.source_id == vod_id).limit(1))).first():
+            return None  # in a merge or playthrough already
+        prev = (
+            await s.execute(
+                select(Vod)
+                .where(Vod.synthetic.is_(None), Vod.id != vod_id, Vod.created_at < new.created_at)
+                .order_by(Vod.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if prev is None:
+            return None
+        gap = (new.created_at - prev.created_at).total_seconds() - hhmmss_to_seconds(prev.duration)
+        if gap > gap_minutes * 60:
+            return None
+        merges = [m for m in await containing(prev.id) if site_tags.VODS in m["tags"]]
+        if not merges:
+            if prev.hidden:
+                return None
+            segments = _composed(compose.merge_all, [source_of(prev), source_of(new)], [None])  # type: ignore[no-untyped-call]
+            view = await create(compose.merge_all_id(prev.id), segments, supersedes=True)
+            await audit.write(
+                AuditEntry(
+                    "synthetic.create",
+                    SYSTEM,
+                    f"vod:{view['id']}",
+                    after=view,
+                    detail={"merge": [prev.id, new.id], "auto": True},
+                )
+            )
+            return str(view["id"])
+        if len(merges) > 1 or merges[0]["segments"][-1]["vodId"] != prev.id:
+            return None
+        merge_id = merges[0]["id"]
+        old = await _segments(s, merge_id)
+        ids = [x.source_id for x in old]
+        vods = {v.id: v for v in (await s.execute(select(Vod).where(Vod.id.in_(ids)))).scalars()}
+        sources = [source_of(vods[i]) for i in ids]
+        plain = _composed(compose.merge_all, sources, [None] * (len(sources) - 1))  # type: ignore[no-untyped-call]
+        if [x.json() for x in plain] != [x.json() for x in old]:
+            return None
+        segments = _composed(compose.merge_all, [*sources, source_of(new)], [None] * len(sources))  # type: ignore[no-untyped-call]
+    before, after = await change(merge_id, segments=segments, supersedes=True)
+    await audit.write(
+        AuditEntry(
+            "synthetic.update",
+            SYSTEM,
+            f"vod:{merge_id}",
+            before=before,
+            after=after,
+            detail={"merge": [*ids, new.id], "auto": True},
+        )
+    )
+    return str(merge_id)
+
+
 def normal_title(title: str | None) -> str:
     return " ".join((title or "").split()).casefold()
 

@@ -6,6 +6,8 @@ Every ``monitor_interval_seconds``: look up the channel's live stream, keep the
 is not uploaded, so no archive job is queued: the live job saves the chapters, chat and emotes.
 When a stream ends, enqueue one ``bot_chat`` job (doomtp_url) for its VOD: the bot records the
 chat live, so it is read once, at the end.
+With ``auto_merge`` a new VOD is merged with the one before when the break between them is short
+(``synthetic.auto_merge``), when it is first seen: before any of it is uploaded.
 Each round also recomposes the synthetic VODs whose sources changed (``synthetic.recompose_stale``),
 with or without Twitch credentials.
 """
@@ -83,6 +85,12 @@ class Monitor:
             log.info("stream %s has no VOD yet", stream_id)
             return
         await upsert_vod(video)
+        if s.auto_merge:
+            try:
+                if merged := await synthetic.auto_merge(str(video["id"]), s.auto_merge_gap_minutes):
+                    log.info("vod %s merged into %s", video["id"], merged)
+            except Exception:
+                log.exception("auto merge of vod %s failed", video["id"])
         if live_only:
             log.info("stream %s -> vod %s; the live job archives it", stream_id, video["id"])
             return

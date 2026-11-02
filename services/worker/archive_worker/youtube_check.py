@@ -95,11 +95,9 @@ def video_issues(entry: dict[str, Any], video: dict[str, Any] | None) -> list[di
         out.append(_issue("processing", WARN, "Still processing on YouTube"))
     region = details.get("regionRestriction") or {}
     if region.get("blocked"):
-        n = len(region["blocked"])
-        out.append(_issue("blocked", WARN, f"Blocked in {n} {'country' if n == 1 else 'countries'}"))
+        out.append(_issue("blocked", WARN, f"Blocked in {_countries(region['blocked'])}"))
     if "allowed" in region:
-        n = len(region.get("allowed") or [])
-        out.append(_issue("blocked", WARN, f"Only viewable in {n} {'country' if n == 1 else 'countries'}"))
+        out.append(_issue("blocked", WARN, f"Only viewable in {_countries(region.get('allowed') or [])}"))
     if (details.get("contentRating") or {}).get("ytRating") == "ytAgeRestricted":
         out.append(_issue("ageRestricted", WARN, "Age-restricted"))
     there, ours = iso_seconds(details.get("duration")), _num(entry.get("duration"))
@@ -108,6 +106,13 @@ def video_issues(entry: dict[str, Any], video: dict[str, Any] | None) -> list[di
             _issue("shorter", WARN, f"{format_hhmmss(there)} on YouTube of {format_hhmmss(ours)} uploaded: cut there")
         )
     return out
+
+
+def _countries(codes: list[str]) -> str:
+    """``3 countries: DE, FR, US`` from regionRestriction's two-letter region codes."""
+    n = len(codes)
+    word = "country" if n == 1 else "countries"
+    return f"{n} {word}: {', '.join(sorted(codes))}" if n else f"0 {word}"
 
 
 def _num(value: Any) -> float | None:
