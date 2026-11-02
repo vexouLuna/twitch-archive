@@ -129,3 +129,35 @@ def test_file_chapters_follow_a_live_recording(make_ctx):
     assert file_chapters(make_ctx("live", "100", {"type": "live"}), vod) == chapters  # recorded before timelines
     moved = file_chapters(make_ctx("live", "100", {"type": "live", "timeline": timeline}), vod)
     assert moved is not None and [(c["start"], c["end"]) for c in moved] == [(0, 540)]
+
+
+async def test_a_recording_past_a_fully_restricted_vod_uploads_nothing(make_ctx, settings, monkeypatch):
+    """A live recording keeps a few seconds past the VOD's whole-second length; on a VOD that is one
+    restricted chapter they used to become a 2 s part and upload."""
+    import datetime as dt
+
+    from archive_common.models import Vod
+    from archive_worker import planning
+    from archive_worker.steps import media
+    from archive_worker.steps.metadata import file_chapters
+    from vex_platform.jobs import SkipTo
+
+    settings.restricted_games = [planning.NO_CATEGORY]
+    start = dt.datetime(2026, 11, 2, 1, 35, 1, tzinfo=dt.UTC)
+    chapters = [planning.chapter(None, None, None, 0, 21204, True)]
+    vod = Vod(id="100", title="t", created_at=start, duration="05:53:24", chapters=chapters)
+    payload = {"type": "live", "duration": 21206.567, "timeline": [[0.0, start.timestamp(), 21206.567]]}
+    ctx = make_ctx("live", "100", payload)
+    moved = file_chapters(ctx, vod)
+    assert moved is not None and [(c["start"], c["end"], c["restricted"]) for c in moved] == [
+        (0, 21204, True),
+        (21204, 2.567, True),
+    ]
+    assert planning.plan_parts(21206.567, moved, settings.restricted_games, 10_800) == []
+
+    async def get_vod(*_: Any) -> Vod:
+        return vod
+
+    monkeypatch.setattr(ctx, "get_vod", get_vod)
+    with pytest.raises(SkipTo, match="nothing to upload"):
+        await media.split(ctx)
