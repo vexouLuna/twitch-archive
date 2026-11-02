@@ -194,7 +194,10 @@ def parse(
 
     select = None
     if "$select" in query:
-        keys = {resource.aliases.get(k, k) for k in _as_list(query["$select"])}
+        names = _as_list(query["$select"])
+        if not all(isinstance(k, str) for k in names):
+            raise FeathersError(400, "Invalid $select")
+        keys = {resource.aliases.get(k, k) for k in names}
         unknown = keys - set(resource.by_key)
         if unknown:
             raise FeathersError(400, f"Invalid $select attribute(s): {', '.join(sorted(unknown))}")
