@@ -47,11 +47,14 @@ def _timeline_start(ctx: JobContext, vod: Vod) -> float | None:
 
 def file_chapters(ctx: JobContext, vod: Vod) -> list[dict[str, Any]] | None:
     """The VOD's chapters on the timeline of the job's file. A live recording's or a compiled file's
-    differs (see planning.recording_timeline); one recorded before timelines were saved keeps the VOD's."""
+    differs (see planning.recording_timeline); one recorded before timelines were saved keeps the VOD's.
+    What the file has outside the VOD's chapters (a recording's seconds past the VOD's whole-second
+    length) is a "No category" chapter, so ``restricted_games`` cuts it as it does on the VOD's own."""
     start = _timeline_start(ctx, vod)
     if start is None:
         return vod.chapters
-    return planning.chapters_on_recording(vod.chapters, start, ctx.payload["timeline"])
+    moved = planning.chapters_on_recording(vod.chapters, start, ctx.payload["timeline"])
+    return planning.fill_gaps(moved, float(ctx.payload.get("duration") or 0), ctx.settings.restricted_games)
 
 
 def part_gaps(ctx: JobContext, vod: Vod, parts: list[planning.Part]) -> dict[int, list[list[float]]]:
