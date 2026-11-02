@@ -714,3 +714,14 @@ async def test_youtube_check_reports_removed_uploads_and_keeps_the_last(vod, app
 
 
 # ── Censor ranges, deleting uploads, re-archiving ─────────────────────────
+
+
+async def test_v1_bad_numbers_and_dates_are_400s(vod, app):
+    async with client(app) as c:
+        for path, body in (
+            ("/admin/reupload", {"vodId": vod, "part": "x"}),
+            ("/admin/download", {"vodId": vod, "startPart": "x"}),
+            ("/admin/create", {"vodId": "test-bad-date", "title": "t", "createdAt": "nope", "duration": "00:01:00"}),
+        ):
+            r = await c.post(path, headers=KEY, json=body)
+            assert r.status_code == 400, (path, r.text)

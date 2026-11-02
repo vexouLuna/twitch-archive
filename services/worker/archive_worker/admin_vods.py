@@ -50,7 +50,10 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         _require(body, "vodId", "title", "createdAt", "duration")
         if await vod_exists(body["vodId"]):
             raise AdminError(400, f"{body['vodId']} already exists!")
-        created = dt.datetime.fromisoformat(str(body["createdAt"]))
+        try:
+            created = dt.datetime.fromisoformat(str(body["createdAt"]))
+        except ValueError:
+            raise AdminError(400, "Parameter createdAt must be an ISO date and time") from None
         async with get_sessionmaker()() as s:
             s.add(
                 Vod(
