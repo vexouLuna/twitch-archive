@@ -100,7 +100,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=7.2.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6" },
     { name = "tenacity", specifier = ">=8.5" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.9.0.tar.gz" },
