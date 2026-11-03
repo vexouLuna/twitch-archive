@@ -87,6 +87,27 @@ async def test_chat_crawl_is_idempotent(db, make_ctx, monkeypatch):
     await _reset()
 
 
+@respx.mock
+async def test_chat_resume_past_vod_end_recrawls_from_start(db, make_ctx, monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", _nosleep)
+    await _vod()
+    # a live-captured row past the end of Twitch's VOD
+    await metadata.insert_comments([metadata.comment_row(VOD, _node("00000000-0000-0000-0000-000000000099", 700))])
+
+    def gql(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["variables"].get("contentOffsetSeconds") == 700:
+            return httpx.Response(200, json={"errors": [{"message": "service error"}]})
+        return _gql(request)
+
+    route = respx.post(GQL_URL).mock(side_effect=gql)
+    await metadata.chat(make_ctx("chat", VOD))
+    async with get_sessionmaker()() as s:
+        offsets = (await s.execute(select(Log.content_offset_seconds).where(Log.vod_id == VOD))).scalars().all()
+    assert sorted(offsets) == [1, 5, 9, 700]
+    assert json.loads(route.calls[1].request.content)["variables"]["contentOffsetSeconds"] == 0
+    await _reset()
+
+
 async def test_upsert_vod_sets_helix_fields_only_on_insert(db):
     from archive_worker.vods import upsert_vod
 
