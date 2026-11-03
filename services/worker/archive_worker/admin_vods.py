@@ -81,6 +81,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             for model in (Log, Emote):
                 await s.execute(delete(model).where(model.vod_id == vod_id))
             await s.execute(delete(Vod).where(Vod.id == vod_id))
+            await notify_rows_moved(s, vod_id)  # the vods trigger doesn't cover its chat pages and emotes
             await s.commit()
         return _ok(f"Deleted {vod_id} (vod, logs, emotes)")
 

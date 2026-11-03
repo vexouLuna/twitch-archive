@@ -13,6 +13,7 @@ import json
 import logging
 import random
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -389,7 +390,11 @@ class YouTube:
         finally:
             _refresh_reason.reset(reason)
             await self._settle()
-        token = await load_token() or {}
+        try:
+            token = await load_token() or {}
+        except Exception as exc:  # a database error must not end keepalive(), which takes the worker down
+            log.warning("YouTube token details unreadable: %s", exc)
+            token = {}
         expiry = creds.expiry.replace(tzinfo=dt.UTC).isoformat() if creds.expiry else None
         result: dict[str, Any] = {
             "authorized": True,
@@ -474,11 +479,22 @@ class YouTube:
         }
         media = MediaFileUpload(str(path), chunksize=CHUNK, resumable=True, mimetype="video/mp4")
         request = service.videos().insert(part="id,snippet,status", body=body, media_body=media, notifySubscribers=True)
-        result: dict[str, Any] = await _counted("videos.insert", lambda: self._resumable(request, path, on_progress))
+        stop = threading.Event()  # asyncio.to_thread can't be cancelled; the loop checks this between chunks
+        try:
+            result: dict[str, Any] = await _counted(
+                "videos.insert", lambda: self._resumable(request, path, on_progress, stop)
+            )
+        except asyncio.CancelledError:
+            stop.set()
+            raise
         return result
 
     def _resumable(  # type: ignore[no-untyped-def]
-        self, request, path: Path, on_progress: Callable[[int, int], None] | None = None
+        self,
+        request,
+        path: Path,
+        on_progress: Callable[[int, int], None] | None = None,
+        stop: threading.Event | None = None,
     ) -> dict[str, Any]:
         response = None
         retries = 0
@@ -487,6 +503,8 @@ class YouTube:
         if on_progress is not None:
             on_progress(0, size)
         while response is None:
+            if stop is not None and stop.is_set():
+                raise asyncio.CancelledError("upload cancelled")
             try:
                 status, response = request.next_chunk()
                 if status is not None:

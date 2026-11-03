@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from . import planning
 from .events import iso_utc
+from .timeline import upload_gaps
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ def _num(value: Any) -> float | None:
 
 
 def _gap_seconds(entry: dict[str, Any]) -> float:
-    return sum(max(0.0, float(g[1]) - float(g[0])) for g in entry.get("gaps") or [] if len(g) >= 2)
+    return sum(max(0.0, length) for _at, length in upload_gaps(entry))  # gaps are [at, length]
 
 
 def vod_report(
@@ -249,15 +250,17 @@ class Checker:
             if not hours:
                 await asyncio.sleep(3600)
                 continue
-            prev = await last()
-            since = None
-            if prev and prev.get("checkedAt"):
-                since = dt.datetime.now(dt.UTC) - dt.datetime.fromisoformat(prev["checkedAt"].replace("Z", "+00:00"))
-            if since is None or since >= dt.timedelta(hours=hours):
-                try:
+            try:  # nothing here may end the task: main.serve stops the whole worker when one does
+                prev = await last()
+                since = None
+                if prev and prev.get("checkedAt"):
+                    since = dt.datetime.now(dt.UTC) - dt.datetime.fromisoformat(
+                        prev["checkedAt"].replace("Z", "+00:00")
+                    )
+                if since is None or since >= dt.timedelta(hours=hours):
                     if await authorized():
                         result = await self.run()
                         log.info("YouTube check: %d videos, %d VODs with problems", result["videos"], result["bad"])
-                except Exception:
-                    log.exception("YouTube check failed")
+            except Exception:
+                log.exception("YouTube check failed")
             await asyncio.sleep(min(3600, hours * 3600))

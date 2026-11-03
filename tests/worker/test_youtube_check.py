@@ -1,5 +1,6 @@
 """Whether the uploads are still on YouTube and whole (youtube_check.py)."""
 
+import asyncio
 import datetime as dt
 from typing import Any
 
@@ -66,7 +67,7 @@ def test_report_counts_the_best_copy_and_skips_bad_parts():
     r = yc.vod_report("100", "t", 7200, 7200, entries, videos)
     vod, live = r["copies"]
     assert (vod["type"], vod["parts"], vod["seconds"]) == ("vod", 2, 3600)
-    assert (live["type"], live["seconds"], live["gaps"]) == ("live", 7000, 200)
+    assert (live["type"], live["seconds"], live["gaps"]) == ("live", 7000, 300)
     assert r["share"] == live["share"] == 7000 / 7200
     assert kinds(r["issues"]) == ["removed"]  # live plus its ad breaks covers the plan
     assert r["issues"][0] | {"type": "vod", "part": 2, "video": "v2"} == r["issues"][0]
@@ -93,3 +94,35 @@ def test_report_flags_missing_parts_and_incomplete_copies():
     # Planned less than the VOD (a restricted game left out): a copy that holds the plan is whole.
     whole = yc.vod_report("100", None, 10800, 3600, [entry("v1", 1, 3600)], {"v1": video("PT1H")})
     assert whole["issues"] == [] and whole["share"] == 1 / 3
+
+
+def test_live_upload_gaps_are_counted_by_length_not_end_minus_start():
+    gap = entry("v1", 1, 3600, gaps=[[3000, 120]])  # [seconds into the upload, length]
+    assert yc._gap_seconds(gap) == 120
+    r = yc.vod_report("100", None, 3720, 3720, [gap], {"v1": video("PT1H")})
+    assert "incomplete" not in kinds(r["issues"])
+
+
+async def test_run_forever_survives_a_database_error_reading_the_last_check(monkeypatch):
+
+    from archive_common.config import Settings
+
+    calls = []
+
+    async def broken():
+        calls.append(1)
+        raise OSError("db down")
+
+    async def stop(_s):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(yc, "last", broken)
+    monkeypatch.setattr(asyncio, "sleep", stop)
+    checker = yc.Checker({}, Settings(youtube_check_hours=1))  # type: ignore[arg-type]
+
+    async def authorized():
+        return True
+
+    with __import__("pytest").raises(asyncio.CancelledError):  # reached the sleep: the OSError was logged
+        await checker.run_forever(authorized)
+    assert calls == [1]
