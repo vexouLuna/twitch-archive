@@ -14,6 +14,7 @@ from archive_common import http
 from archive_common.db import get_sessionmaker
 from archive_common.models import Emote, Log, Vod
 from archive_common.timeutil import format_hhmmss, hhmmss_to_seconds, parse_ts
+from archive_common.twitch.gql import GqlError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -157,7 +158,16 @@ async def chat(ctx: JobContext) -> None:
             await s.execute(select(func.max(Log.content_offset_seconds)).where(Log.vod_id == vod_id))
         ).scalar() or 0
 
-    video = await gql.comments(vod_id, offset=offset)
+    try:
+        video = await gql.comments(vod_id, offset=offset)
+    except GqlError as exc:
+        if not offset:
+            raise
+        # Live chat capture can store rows past the end of Twitch's VOD, and Twitch errors on an
+        # offset past the end. Re-crawl from the start; stored rows are skipped as duplicates.
+        ctx.log.warning("chat at offset %s failed (%s); crawling from 0", offset, exc)
+        offset = 0
+        video = await gql.comments(vod_id, offset=0)
     rows: list[dict[str, Any]] = []
     total = 0
     while True:
