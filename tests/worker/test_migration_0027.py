@@ -39,7 +39,9 @@ def _check(conn: sa.Connection) -> None:
     with Operations.context(MigrationContext.configure(conn)):
         m0027.downgrade()
         m0027.upgrade()
-        rows = dict(conn.execute(sa.text("SELECT id, chapters FROM vods WHERE id LIKE 'test-0027-%'")).all())
+        rows: dict[str, list[dict[str, object]]] = dict(
+            conn.execute(sa.text("SELECT id, chapters FROM vods WHERE id LIKE 'test-0027-%'")).all()
+        )
         assert [c.get("kind") for c in rows["test-0027-old"]] == [None, "gap", "gap"]
         assert rows["test-0027-own"] == NAMED_ONLY and rows["test-0027-none"] == []
 
