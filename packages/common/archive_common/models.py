@@ -97,6 +97,7 @@ class VodSegment(Base):
     end_s: Mapped[Decimal | None] = mapped_column(Numeric)
     at_s: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     label: Mapped[str | None] = mapped_column(Text)
+    gap_label: Mapped[str | None] = mapped_column(Text)  # Alembic 0027: names the gap chapter before this segment
 
 
 class Emote(Base):

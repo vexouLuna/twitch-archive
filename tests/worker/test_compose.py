@@ -264,3 +264,14 @@ def test_derive_names_the_gap_by_its_label():
     assert (gap["name"], gap["kind"]) == ("Back in five", "gap")
     default = compose.derive(compose.merge_segments(A, B), SOURCES)["chapters"][2]
     assert (default["name"], default["kind"]) == ("Technical difficulties", "gap")
+
+
+def test_merge_all_gap_labels_and_parse():
+    segs = compose.merge_all([A, B], [None], ["Back in five"])
+    assert [s.gap_label for s in segs] == [None, "Back in five"]
+    assert compose.derive(segs, SOURCES)["chapters"][2]["name"] == "Back in five"
+    assert compose.merge_all([A, B], [None], ["  "])[1].gap_label is None
+    with pytest.raises(ComposeError):
+        compose.merge_all([A, B], [None], ["x", "y"])
+    parsed = compose.parse([{"vodId": "a"}, {"vodId": "b", "at": 7500, "gapLabel": " Intermission "}])
+    assert parsed[1].gap_label == "Intermission" and parsed[1].json()["gapLabel"] == "Intermission"

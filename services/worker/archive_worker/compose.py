@@ -93,7 +93,7 @@ def parse(items: Any) -> list[Segment]:
         where = f"segments[{i}]"
         if not isinstance(item, dict):
             raise ComposeError(f"{where} must be an object")
-        unknown = sorted(item.keys() - {"vodId", "start", "end", "at", "label"})
+        unknown = sorted(item.keys() - {"vodId", "start", "end", "at", "label", "gapLabel"})
         if unknown:
             raise ComposeError(f"{where} has unknown field(s) {', '.join(unknown)}")
         if not isinstance(item.get("vodId"), str) or not item["vodId"]:
@@ -113,7 +113,19 @@ def parse(items: Any) -> list[Segment]:
         label = item.get("label")
         if label is not None and (not isinstance(label, str) or len(label) > LABEL_MAX):
             raise ComposeError(f"{where}.label must be a string of at most {LABEL_MAX} characters, or null")
-        out.append(Segment(item["vodId"], start, end, at, (label or "").strip() or None))
+        gap_label = item.get("gapLabel")
+        if gap_label is not None and (not isinstance(gap_label, str) or len(gap_label) > LABEL_MAX):
+            raise ComposeError(f"{where}.gapLabel must be a string of at most {LABEL_MAX} characters, or null")
+        out.append(
+            Segment(
+                item["vodId"],
+                start,
+                end,
+                at,
+                (label or "").strip() or None,
+                gap_label=(gap_label or "").strip() or None,
+            )
+        )
     return out
 
 
@@ -205,15 +217,21 @@ def merge_segments(a: Source, b: Source, gap: Any = None) -> list[Segment]:
     return merge_all([a, b], [gap])
 
 
-def merge_all(sources: list[Source], gaps: list[Any]) -> list[Segment]:
+def merge_all(sources: list[Source], gaps: list[Any], gap_labels: list[Any] | None = None) -> list[Segment]:
     """``sources`` one after another (sorted by when they started), each placed where it started against
     the one before, or ``gaps[i - 1]`` seconds after that one ends (None: where it started). Where two
-    overlap, the earlier stops where the later starts."""
+    overlap, the earlier stops where the later starts. ``gap_labels[i - 1]`` names the gap chapter before
+    ``sources[i]`` (None: the default)."""
     sources = sorted(sources, key=lambda x: (x.created_at, x.id))
     if len(sources) < 2 or len({x.id for x in sources}) < len(sources):
         raise ComposeError("A merge needs two or more different VODs")
     if len(gaps) != len(sources) - 1:
         raise ComposeError(f"gaps must have one entry per join ({len(sources) - 1}), each a number or null")
+    labels = gap_labels if gap_labels is not None else [None] * len(gaps)
+    if len(labels) != len(gaps) or any(
+        x is not None and (not isinstance(x, str) or len(x) > LABEL_MAX) for x in labels
+    ):
+        raise ComposeError(f"gap labels must be one string of at most {LABEL_MAX} characters (or null) per join")
     at = [0.0]
     for prev, b, gap in zip(sources, sources[1:], gaps, strict=False):  # gaps checked above
         if gap is None:
@@ -227,7 +245,11 @@ def merge_all(sources: list[Source], gaps: list[Any]) -> list[Segment]:
         at.append(at[-1] + offset)
     return [
         Segment(
-            x.id, 0.0, None if i + 1 == len(sources) or at[i + 1] - at[i] >= x.duration else at[i + 1] - at[i], at[i]
+            x.id,
+            0.0,
+            None if i + 1 == len(sources) or at[i + 1] - at[i] >= x.duration else at[i + 1] - at[i],
+            at[i],
+            gap_label=((labels[i - 1] or "").strip() or None) if i else None,
         )
         for i, x in enumerate(sources)
     ]

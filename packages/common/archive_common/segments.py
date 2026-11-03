@@ -36,7 +36,7 @@ class Segment:
     label: str | None = None
     # Which stream of the synthetic VOD it plays, from 0 (``flatten`` sets it; stored segments have none).
     stream: int | None = None
-    # The name of the gap chapter before this segment (None: the default). Not stored yet.
+    # The name of the gap chapter before this segment (None: the default, see timeline.GAP_NAME).
     gap_label: str | None = None
 
     @classmethod
@@ -48,6 +48,7 @@ class Segment:
             None if row.end_s is None else float(row.end_s),
             float(row.at_s),
             row.label,
+            gap_label=row.gap_label,
         )
 
     @property
@@ -62,6 +63,7 @@ class Segment:
             "end_s": None if self.end is None else Decimal(str(seconds(self.end))),
             "at_s": Decimal(str(seconds(self.at))),
             "label": self.label,
+            "gap_label": self.gap_label,
         }
 
     def json(self) -> dict[str, Any]:
@@ -72,6 +74,8 @@ class Segment:
             "at": seconds(self.at),
             "label": self.label,
         }
+        if self.gap_label is not None:
+            out["gapLabel"] = self.gap_label
         if self.stream is not None:
             out["stream"] = self.stream
         return out
