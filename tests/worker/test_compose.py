@@ -256,3 +256,11 @@ def test_playthrough_windows_back_to_back():
         (0, 3600, "Minecraft"),
         (3600, 3600, "Minecraft"),
     ]
+
+
+def test_derive_names_the_gap_by_its_label():
+    segs = [Segment("a", 0, None, 0), Segment("b", 0, None, 7500, gap_label="Back in five")]
+    gap = compose.derive(segs, SOURCES)["chapters"][2]
+    assert (gap["name"], gap["kind"]) == ("Back in five", "gap")
+    default = compose.derive(compose.merge_segments(A, B), SOURCES)["chapters"][2]
+    assert (default["name"], default["kind"]) == ("Technical difficulties", "gap")

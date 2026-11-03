@@ -177,7 +177,7 @@ def derive(segments: list[Segment], sources: Mapping[str, Source]) -> dict[str, 
     end = 0.0
     for seg in resolved:
         if seg.at - end > EPS:
-            chapters.append(timeline.gap_chapter(end, seg.at - end))
+            chapters.append(timeline.gap_chapter(end, seg.at - end, seg.gap_label))
         if seg.length > EPS:
             chapters += timeline.shift(
                 timeline.clip(sources[seg.source_id].chapters, seg.start, seg.end),  # type: ignore[arg-type]

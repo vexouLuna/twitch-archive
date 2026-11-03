@@ -36,6 +36,8 @@ class Segment:
     label: str | None = None
     # Which stream of the synthetic VOD it plays, from 0 (``flatten`` sets it; stored segments have none).
     stream: int | None = None
+    # The name of the gap chapter before this segment (None: the default). Not stored yet.
+    gap_label: str | None = None
 
     @classmethod
     def of_row(cls, row: Any) -> Segment:
