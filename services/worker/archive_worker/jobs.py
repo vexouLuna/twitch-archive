@@ -175,10 +175,20 @@ class JobService:
         step: str | None = None,
         pause_before: list[str] | None = None,
         paused: bool = False,
+        active_key: str | None = None,
     ) -> Row:  # type: ignore[type-arg]
-        """Queue a job at ``step`` (default: its first). ``paused`` holds it until resumed."""
+        """Queue a job at ``step`` (default: its first). ``paused`` holds it until resumed. With an
+        ``active_key``, a queued, running or paused run holding it makes this a JobConflict (atomically)."""
         enqueued = await self.runtime.enqueue(
-            kind, subject_of(vod_id), payload, actor=actor, step=step, pause_before=pause_before, paused=paused
+            kind,
+            subject_of(vod_id),
+            payload,
+            actor=actor,
+            step=step,
+            pause_before=pause_before,
+            paused=paused,
+            active_key=active_key,
+            on_duplicate="raise",
         )
         return await get(enqueued.run.id)
 

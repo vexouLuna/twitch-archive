@@ -1,6 +1,7 @@
 """A live recording's gaps (ad breaks) on its uploads: computed at upload, kept on re-upload, backfilled."""
 
 import datetime as dt
+import json
 from typing import Any
 
 import httpx
@@ -12,7 +13,7 @@ from archive_worker.admin import create_admin_app
 from archive_worker.job_rows import RUNS
 from archive_worker.steps import publish
 from pydantic import SecretStr
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 VOD = "test-live-gaps-vod"
 START = dt.datetime(2026, 10, 1, 0, 20, 9, tzinfo=dt.UTC)
@@ -65,6 +66,7 @@ def test_recorded_gaps_need_every_part_and_map_by_upload_id():
 async def _reset() -> None:
     async with get_sessionmaker()() as s:
         await s.execute(delete(Job).where(Job.vod_id == VOD))
+        await s.execute(delete(RUNS).where(RUNS.c.subject == f"vod:{VOD}"))
         await s.execute(delete(Vod).where(Vod.id == VOD))
         await s.commit()
 
@@ -97,7 +99,8 @@ async def _youtube() -> list[dict[str, Any]]:
         return (await s.execute(select(Vod.youtube).where(Vod.id == VOD))).scalar_one()  # type: ignore[no-any-return]
 
 
-async def test_backfill_sets_gaps_once(vod, make_ctx):
+@pytest.mark.parametrize("table", ["jobs", "job_runs"])  # live jobs ran in each, either side of 30 Sep
+async def test_backfill_sets_gaps_once(vod, make_ctx, table):
     payload = {
         "timeline": TIMELINE,
         "parts": [{"number": p.number, "start": p.start, "end": p.end, "path": "x"} for p in PARTS],
@@ -105,7 +108,16 @@ async def test_backfill_sets_gaps_once(vod, make_ctx):
         "uploaded": {"1": {"id": "yt1"}, "2": {"id": "yt2"}},
     }
     async with get_sessionmaker()() as s:
-        s.add(Job(kind="live", vod_id=VOD, step=None, state="done", payload=payload))
+        if table == "jobs":
+            s.add(Job(kind="live", vod_id=VOD, step=None, state="done", payload=payload))
+        else:
+            await s.execute(
+                text(
+                    "insert into jobs.job_runs (kind, subject, state, payload, via, actor_kind, actor_id)"
+                    " values ('live', :subject, 'succeeded', cast(:payload as jsonb), 'test', 'system', 'test')"
+                ),
+                {"subject": f"vod:{VOD}", "payload": json.dumps(payload)},
+            )
         await s.commit()
 
     await publish.live_gaps_backfill(make_ctx("live_gaps_backfill", None, {"vod_ids": [VOD]}))
