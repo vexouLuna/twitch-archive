@@ -86,7 +86,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                         (
                             await s.execute(
                                 select(ALL_JOBS)
-                                .where(ALL_JOBS.c.state == "failed")
+                                .where(ALL_JOBS.c.state == "failed", ALL_JOBS.c.dismissed_at.is_(None))
                                 .order_by(ALL_JOBS.c.updated_at.desc(), ALL_JOBS.c.id.desc())
                                 .limit(5)
                             )
