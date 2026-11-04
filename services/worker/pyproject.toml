@@ -6,7 +6,7 @@ dependencies = [
   "archive-common",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "google-api-python-client>=2.140",
+  "google-api-python-client>=2.201.0",
   "google-auth>=2.34",
   "google-auth-oauthlib>=1.2",
   "yt-dlp[default]>=2025.11.12",  # seek-bar previews backfill (steps/previews.py)
