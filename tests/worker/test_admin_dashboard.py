@@ -477,6 +477,38 @@ async def test_twitch_import_queues_paused_archive_jobs(vod, app, monkeypatch):
             await s.commit()
 
 
+async def test_twitch_import_reports_a_refused_vod_instead_of_aborting(vod, app, monkeypatch):
+    deps = app[1].deps
+    deps.settings.twitch_client_id, deps.settings.twitch_client_secret = "cid", SecretStr("secret")
+
+    async def all_videos(user_id, video_type="archive"):
+        return [_video(vod, user_id), _video(NEW_VOD, user_id)]
+
+    async def spliced(vod_id):
+        return "merged away" if vod_id == NEW_VOD else None
+
+    monkeypatch.setattr(deps.helix, "all_videos", all_videos)
+    monkeypatch.setattr("archive_worker.admin.splice_reason", spliced)
+    try:
+        async with client(app) as c:
+            r = await c.post("/admin/twitch/import", headers=KEY, json={"vodIds": [vod, NEW_VOD]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [a["vodId"] for a in body["added"]] == [vod]  # queued before the refused one, and reported
+        assert [x["vodId"] for x in body["skipped"]] == [NEW_VOD]
+    finally:
+        async with get_sessionmaker()() as s:
+            await s.execute(delete(RUNS).where(RUNS.c.subject == subject_of(NEW_VOD)))
+            await s.execute(delete(Vod).where(Vod.id == NEW_VOD))
+            await s.commit()
+
+
+async def test_concurrent_hls_downloads_queue_one_archive_job(vod, app):
+    async with client(app) as c:
+        rs = await asyncio.gather(*(c.post("/admin/hls/download", headers=KEY, json={"vodId": vod}) for _ in range(2)))
+    assert sorted(r.status_code for r in rs) == [200, 409], [r.text for r in rs]
+
+
 @respx.mock
 async def test_v2_twitch_videos_and_import(vod, app, respx_mock):
     settings = app[1].deps.settings

@@ -55,7 +55,12 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             vod = await require_vod(body["vodId"])
         if await jobs.find_active("archive", vod_id=vod.id):
             raise AdminError(409, f"An archive job for {vod.id} is already running")
-        job = await enqueue("archive", vod.id, {"type": "vod", "stream_id": vod.stream_id, "manual": True})
+        job = await enqueue(
+            "archive",
+            vod.id,
+            {"type": "vod", "stream_id": vod.stream_id, "manual": True},
+            active_key=f"archive:{vod.id}",
+        )
         return _ok(f"Downloading {vod.id} via HLS…", job)
 
     @app.post("/admin/reupload", dependencies=auth)
@@ -131,7 +136,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             raise AdminError(400, "vodIds must be a non-empty list")
         if await jobs.find_active(kind):
             raise AdminError(409, f"A {what} backfill is already running")
-        job = await enqueue(kind, None, {"vod_ids": [str(v) for v in vod_ids]} if vod_ids else None)
+        job = await enqueue(kind, None, {"vod_ids": [str(v) for v in vod_ids]} if vod_ids else None, active_key=kind)
         return _ok(f"Backfilling {what}…", job)
 
     @app.post("/admin/emotes/backfill", dependencies=auth)
@@ -153,7 +158,7 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
         vod = await require_vod(body["vodId"])
         if await jobs.find_active("bot_chat", vod_id=vod.id):
             raise AdminError(409, f"A bot chat job for {vod.id} is already running")
-        job = await enqueue("bot_chat", vod.id)
+        job = await enqueue("bot_chat", vod.id, active_key=f"bot_chat:{vod.id}")
         return _ok(f"Reading bot chat for {vod.id}…", job)
 
     @app.post("/admin/bot-chat/backfill", dependencies=auth)
@@ -174,7 +179,9 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
             raise AdminError(400, "youtubeIds must be a non-empty list of video ids")
         if await jobs.find_active("previews_fetch", vod_id=vod.id):
             raise AdminError(409, f"A previews job for {vod.id} is already running")
-        job = await enqueue("previews_fetch", vod.id, {"youtube_ids": ids} if ids else None)
+        job = await enqueue(
+            "previews_fetch", vod.id, {"youtube_ids": ids} if ids else None, active_key=f"previews_fetch:{vod.id}"
+        )
         return _ok(f"Making previews for {vod.id}…", job)
 
     @app.post("/admin/previews/backfill", dependencies=auth)

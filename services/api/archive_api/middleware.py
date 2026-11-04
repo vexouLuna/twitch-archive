@@ -52,6 +52,7 @@ class ResponseCache:
         self.enabled = ttl > 0
         self._cache: TTLCache[str, Any] = TTLCache(maxsize=maxsize, ttl=max(ttl, 1))
         self._rendering: dict[str, asyncio.Task[JsonBody]] = {}
+        self._epoch = 0  # bumped by every invalidation: a render that started before one must not cache
 
     def get(self, key: str) -> Any:
         return self._cache.get(key) if self.enabled else None
@@ -62,11 +63,16 @@ class ResponseCache:
 
     def invalidate(self, stale: Callable[[str], bool]) -> None:
         """Drop every entry whose key ``stale`` accepts."""
+        self._epoch += 1
         for key in [k for k in self._cache if stale(k)]:
             self._cache.pop(key, None)
+        for key in [k for k in self._rendering if stale(k)]:
+            del self._rendering[key]  # the next miss renders afresh instead of joining the stale render
 
     def clear(self) -> None:
+        self._epoch += 1
         self._cache.clear()
+        self._rendering.clear()
 
     async def get_or_render(self, key: str, factory: Callable[[], Awaitable[Any]]) -> JsonBody:
         """Cached body for ``key``, else ``await factory()`` rendered (not cached if it raises).
@@ -83,12 +89,15 @@ class ResponseCache:
         return await asyncio.shield(task)
 
     async def _render(self, key: str, factory: Callable[[], Awaitable[Any]]) -> JsonBody:
+        epoch = self._epoch
         body = JsonBody(await factory())
-        self.set(key, body)
+        if epoch == self._epoch:
+            self.set(key, body)
         return body
 
     def _render_done(self, key: str, task: asyncio.Task[JsonBody]) -> None:
-        self._rendering.pop(key, None)
+        if self._rendering.get(key) is task:
+            del self._rendering[key]
         if not task.cancelled():
             task.exception()  # retrieved: the requests awaiting it re-raise it
 

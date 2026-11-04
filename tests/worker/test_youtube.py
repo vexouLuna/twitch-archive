@@ -403,3 +403,21 @@ def test_upload_progress_is_bytes_after_every_chunk(yt, tmp_path):
     seen: list[tuple[int, int]] = []
     assert yt._resumable(request, path, lambda sent, size: seen.append((sent, size))) == {"id": "v1"}
     assert seen == [(0, 300), (100, 300), (200, 300), (300, 300)]
+
+
+def test_upload_stops_between_chunks_once_cancelled(yt, tmp_path):
+    import threading
+
+    path = tmp_path / "p1.mp4"
+    path.write_bytes(b"x" * 300)
+    stop = threading.Event()
+    sent: list[int] = []
+
+    def next_chunk():
+        sent.append(1)
+        stop.set()  # cancelled while the first chunk is going out
+        return SimpleNamespace(resumable_progress=100, total_size=300, progress=lambda: 1 / 3), None
+
+    with pytest.raises(asyncio.CancelledError):
+        yt._resumable(SimpleNamespace(next_chunk=next_chunk), path, None, stop)
+    assert sent == [1]

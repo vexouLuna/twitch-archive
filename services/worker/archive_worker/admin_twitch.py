@@ -115,7 +115,11 @@ def register(app: FastAPI, ctx: AdminContext) -> None:
                 await upsert_vod(video)
             vod = await require_vod(vod_id)
             payload = {"type": "vod", "stream_id": vod.stream_id, "manual": True}
-            job = await enqueue("archive", vod.id, payload, paused=paused)
+            try:
+                job = await enqueue("archive", vod.id, payload, paused=paused, active_key=f"archive:{vod.id}")
+            except (AdminError, jobs.JobConflict) as exc:  # a merged or split VOD, or a job queued meanwhile
+                skipped.append({"vodId": vod_id, "reason": exc.msg if isinstance(exc, AdminError) else str(exc)})
+                continue
             added.append({"vodId": vod_id, "jobId": job.id})
         return added, skipped
 
