@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from archive_common.db import get_sessionmaker
-from archive_common.models import Job, Vod
+from archive_common.models import Vod
 from archive_common.timeutil import hhmmss_to_seconds
 from googleapiclient.errors import HttpError
 from sqlalchemy import select
 
 from .. import ffmpeg, planning
 from ..context import JobContext, StepDeferred, StepRefused
+from ..job_rows import ALL_JOBS
 from ..vods import drop_youtube_entries, splice_reason
 from ..youtube import YouTubeLimitError, error_reason, upload_standing
 from .metadata import file_chapters, part_gaps, vod_duration
@@ -254,11 +255,15 @@ async def live_gaps_backfill(ctx: JobContext) -> None:
     job's payload. A VOD whose live uploads already have gaps is left alone, as is a merged,
     split or synthetic one (its length and chapters are no longer the recording's VOD's).
     ``payload.vod_ids`` limits it to those VODs. Running it again changes nothing."""
-    stmt = select(Job.vod_id, Job.payload).where(Job.kind == "live", Job.state == "done", Job.vod_id.is_not(None))
+    # ALL_JOBS: live jobs ran in the old jobs table until 30 Sep and in jobs.job_runs from then on.
+    jobs_ = ALL_JOBS.c
+    stmt = select(jobs_.vod_id, jobs_.payload).where(
+        jobs_.kind == "live", jobs_.state == "done", jobs_.vod_id.is_not(None)
+    )
     if ctx.payload.get("vod_ids"):
-        stmt = stmt.where(Job.vod_id.in_([str(v) for v in ctx.payload["vod_ids"]]))
+        stmt = stmt.where(jobs_.vod_id.in_([str(v) for v in ctx.payload["vod_ids"]]))
     async with get_sessionmaker()() as s:
-        found = (await s.execute(stmt.order_by(Job.id))).all()
+        found = (await s.execute(stmt.order_by(jobs_.id))).all()
     updated = 0
     for vod_id, payload in found:
         if not payload.get("timeline") or await splice_reason(vod_id):

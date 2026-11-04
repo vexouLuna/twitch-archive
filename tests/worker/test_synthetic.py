@@ -4,18 +4,21 @@ A (2 h) and B (1 h) are one broadcast that Twitch cut in two: B started 7500 s a
 has a 300 s gap. A plays Just Chatting then the test game for an hour; B plays the test game.
 """
 
+import asyncio
 import datetime as dt
 import json
 from typing import Any
 from urllib.parse import quote
 
+import asyncpg
 import httpx
 import pytest
 from archive_api.games_played import games_played
+from archive_api.invalidation import asyncpg_dsn
 from archive_api.main import create_app
 from archive_common.audit import AUDIT_LOG
 from archive_common.config import get_settings
-from archive_common.db import get_engine, get_sessionmaker
+from archive_common.db import ROWS_MOVED, VOD_CHANGED, get_engine, get_sessionmaker
 from archive_common.models import Job, Vod, VodSegment
 from archive_worker import synthetic
 from archive_worker.admin import create_admin_app
@@ -763,12 +766,18 @@ async def test_delete_vod_refuses_a_segment_source_and_removes_bot_chat(admin):
             {"v": c},
         )
         await s.commit()
+    notices: list[str] = []
+    listener = await asyncpg.connect(asyncpg_dsn(get_settings().database_url))
+    await listener.add_listener(VOD_CHANGED, lambda _c, _p, _ch, payload: notices.append(payload))
     try:
         r = await admin.request("DELETE", "/admin/delete", headers=KEY, json={"vodId": c})
         assert r.status_code == 200, r.text
+        await asyncio.sleep(0.2)
+        assert ROWS_MOVED + c in notices  # archive-api must drop the deleted VOD's chat pages and emotes
         async with get_sessionmaker()() as s:
             assert (await s.execute(text("select count(*) from bot_logs where vod_id = :v"), {"v": c})).scalar() == 0
     finally:
+        await listener.close()
         async with get_sessionmaker()() as s:
             await s.execute(text("delete from bot_logs where id = 'test-syn-c-1'"))
             await s.commit()

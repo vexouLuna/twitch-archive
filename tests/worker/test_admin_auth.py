@@ -1,5 +1,6 @@
 """Browser login for the admin API: password, sessions, CSRF, login rate limit (no database needed)."""
 
+import asyncio
 import hashlib
 import hmac
 import time
@@ -274,6 +275,12 @@ async def test_failed_logins_are_rate_limited_per_address(admin):
         assert 0 < int(limited.headers["Retry-After"]) <= 300
     async with admin("192.168.1.8") as c:  # someone else is not locked out conventions:allow-infra
         assert (await c.post("/admin/session", json={"password": "correct horse"})).status_code == 200
+
+
+async def test_concurrent_wrong_guesses_cannot_outrun_the_rate_limit(admin):
+    async with admin("192.168.1.9") as c:  # conventions:allow-infra
+        results = await asyncio.gather(*(c.post("/admin/session", json={"password": "nope"}) for _ in range(12)))
+    assert sorted(r.status_code for r in results).count(401) == 5
 
 
 async def test_password_login_off_without_a_password(deps):

@@ -350,8 +350,8 @@ def create_admin_app(
         password = (body or {}).get("password")
         if not isinstance(password, str) or not password:
             raise AdminError(400, "Missing parameter: password")
+        login_limiter.failed(address)  # counted before the await, so concurrent guesses can't all pass the check
         if not await asyncio.to_thread(passwords.check_password, password):  # scrypt: keep it off the loop
-            login_limiter.failed(address)
             log.warning("failed admin login from %s", address)
             raise AdminError(401, "Wrong password")
         login_limiter.reset(address)
