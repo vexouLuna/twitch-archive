@@ -49,8 +49,9 @@ def length_of(ch: dict[str, Any]) -> float:
     return float(ch.get("end") or 0)  # "end" is the length, not the end time
 
 
-def gap_chapter(start: float, length: float) -> dict[str, Any]:
-    return {**chapter(None, GAP_NAME, None, start, length, True), "kind": GAP_KIND}
+def gap_chapter(start: float, length: float, label: str | None = None) -> dict[str, Any]:
+    """A merge's gap, named ``label`` (an admin's) or ``GAP_NAME``. ``kind`` marks it, not the name."""
+    return {**chapter(None, label or GAP_NAME, None, start, length, True), "kind": GAP_KIND}
 
 
 def _chapters(chapters: Any) -> list[dict[str, Any]]:

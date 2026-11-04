@@ -743,7 +743,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
             new_id = compose.merge_id(*ids)
         else:
             gaps = body.gaps if body.gaps is not None else [None] * (len(found) - 1)
-            segments = await _synthetic(compose.merge_all, found, gaps)  # type: ignore[no-untyped-call]
+            segments = await _synthetic(compose.merge_all, found, gaps, body.gap_labels)  # type: ignore[no-untyped-call]
             new_id = body.id or compose.merge_all_id(segments[0].source_id)
         view = await _synthetic(synthetic.create, new_id, segments, supersedes=True)  # type: ignore[no-untyped-call]
         merged = [x.source_id for x in segments]
@@ -800,6 +800,7 @@ class SegmentIn(ApiModel):
     end: float | None = None  # default: the source's end
     at: float | None = None  # default: right after the segment before
     label: str | None = None
+    gap_label: str | None = None  # names the gap chapter before this segment; null: "Technical difficulties"
 
 
 class AutoIn(ApiModel):
@@ -864,6 +865,7 @@ class SyntheticDmca(ApiModel):
 class MergeBody(ApiModel):
     sources: list[str] | None = Field(default=None, min_length=1, max_length=20)  # merged with this one
     gaps: list[float | None] | None = None  # one per join, in start order; null: where it started
+    gap_labels: list[str | None] | None = None  # one per join: the gap chapter's name; null: "Technical difficulties"
     id: str | None = None  # default: the first VOD's id + "-m"
     source: str | None = None  # older dashboards: one VOD, id "{vod_id}+{source}"
     gap: float | None = None
@@ -889,7 +891,12 @@ _SYNTHETIC_CODES = {404: "vod_not_found", 409: "synthetic_conflict", 422: "inval
 
 def _segments(items: list[SegmentIn]) -> list[Segment]:
     raw = [
-        {"vodId": i.vod_id, **i.model_dump(include={"start", "end", "at", "label"}, exclude_none=True)} for i in items
+        {
+            "vodId": i.vod_id,
+            **i.model_dump(include={"start", "end", "at", "label"}, exclude_none=True),
+            **({"gapLabel": i.gap_label} if i.gap_label is not None else {}),
+        }
+        for i in items
     ]
     try:
         return compose.parse(raw)
