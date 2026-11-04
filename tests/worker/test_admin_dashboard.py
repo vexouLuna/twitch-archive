@@ -604,6 +604,16 @@ async def test_health(vod, app, monkeypatch, respx_mock):
     assert set(h["jobs"]["counts"]) == set(jobs.STATES) and h["jobs"]["counts"]["failed"] >= 1
     assert h["jobs"]["recentFailures"][0]["id"] == job.id and len(h["jobs"]["recentFailures"]) <= 5
 
+    # A dismissed failure leaves the counts and the recent failures
+    before = h["jobs"]["counts"]["failed"]
+    async with get_sessionmaker()() as s:
+        await s.execute(update(RUNS).where(RUNS.c.id == job.id).values(dismissed_at=func.now()))
+        await s.commit()
+    async with client(app) as c:
+        h = (await c.get("/admin/health", headers=KEY)).json()
+    assert h["jobs"]["counts"]["failed"] == before - 1
+    assert job.id not in [f["id"] for f in h["jobs"]["recentFailures"]]
+
     respx_mock.get("http://api.test/readyz").mock(side_effect=httpx.ConnectError("down"))
     async with client(app) as c:
         assert (await c.get("/admin/health", headers=KEY)).json()["api"] == {"ok": False}

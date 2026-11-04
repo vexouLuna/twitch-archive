@@ -91,7 +91,15 @@ def _step_names(value: Any, msg: str) -> list[str] | None:
 
 
 async def _job_counts(s) -> dict[str, int]:  # type: ignore[no-untyped-def]
-    counts = dict((await s.execute(select(ALL_JOBS.c.state, func.count()).group_by(ALL_JOBS.c.state))).all())
+    counts = dict(
+        (
+            await s.execute(
+                select(ALL_JOBS.c.state, func.count())
+                .where(ALL_JOBS.c.dismissed_at.is_(None))
+                .group_by(ALL_JOBS.c.state)
+            )
+        ).all()
+    )
     return {st: counts.get(st, 0) for st in jobs.STATES}
 
 

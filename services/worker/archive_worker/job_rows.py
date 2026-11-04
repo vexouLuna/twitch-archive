@@ -49,6 +49,7 @@ RUNS = Table(
     Column("created_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True)),
     Column("parent_id", BigInteger),
+    Column("dismissed_at", DateTime(timezone=True)),
 )
 
 
@@ -76,6 +77,7 @@ def _runs():  # type: ignore[no-untyped-def]
         r.pause_next,
         r.created_at,
         r.updated_at,
+        r.dismissed_at,
         literal(False).label("legacy"),
     )
 
@@ -96,6 +98,7 @@ def _legacy():  # type: ignore[no-untyped-def]
         j.pause_next,
         j.created_at,
         j.updated_at,
+        literal(None, DateTime(timezone=True)).label("dismissed_at"),
         literal(True).label("legacy"),
     )
 
