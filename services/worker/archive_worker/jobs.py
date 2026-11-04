@@ -40,6 +40,7 @@ from .steps import STEPS
 __all__ = [
     "ACTIVE",
     "KINDS",
+    "SCHEDULABLE",
     "STATES",
     "InvalidJob",
     "JobConflict",
@@ -111,6 +112,17 @@ def conninfo(database_url: str) -> str:
     return make_url(database_url).set(drivername="postgresql").render_as_string(hide_password=False)
 
 
+# What an admin may put on a schedule: the one-off housekeeping kinds that need no VOD. (``cleanup`` is
+# left out: it removes one VOD's files, so a run with no subject has nothing to do.)
+SCHEDULABLE = (
+    "global_emotes_backfill",
+    "seventv_flags_backfill",
+    "live_gaps_backfill",
+    "bot_chat_backfill",
+    "previews_backfill",
+)
+
+
 def create_runtime(deps: Deps, **options: Any) -> JobRuntime:
     """The runtime of every kind in ``KINDS``; ``options`` go to ``JobRuntime``."""
     settings = deps.settings
@@ -122,6 +134,7 @@ def create_runtime(deps: Deps, **options: Any) -> JobRuntime:
         concurrency=settings.runner_concurrency,
         max_attempts=settings.max_attempts,
         context_factory=lambda ctx: JobContext.of_run(ctx, deps),
+        schedulable=SCHEDULABLE,
         **{"audit_table": audit.TABLE, **options},
     )
 

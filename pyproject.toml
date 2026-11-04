@@ -39,7 +39,7 @@ files = ["packages/common", "services/api", "services/worker", "migrations", "te
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Header", "fastapi.Body", "fastapi.Cookie", "fastapi.File", "fastapi.Form", "fastapi.Security"]
 
 [[tool.mypy.overrides]]
-# No type information: vex-platform v0.9.1 ships no py.typed, and these have no stubs installed.
+# No type information: vex-platform v0.10.0 ships no py.typed, and these have no stubs installed.
 module = ["vex_platform.*", "asyncpg.*", "defusedxml.*", "googleapiclient.*"]
 ignore_missing_imports = true
 
