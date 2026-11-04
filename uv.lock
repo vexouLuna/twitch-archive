@@ -103,7 +103,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "tenacity", specifier = ">=8.5" },
     { name = "tzdata", specifier = ">=2024.1" },
-    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.9.1.tar.gz" },
+    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.0.tar.gz" },
 ]
 
 [[package]]
@@ -1873,16 +1873,17 @@ wheels = [
 
 [[package]]
 name = "vex-platform"
-version = "0.9.1"
-source = { url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.9.1.tar.gz" }
+version = "0.10.0"
+source = { url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.0.tar.gz" }
 dependencies = [
+    { name = "croniter" },
     { name = "fastapi" },
     { name = "procrastinate" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
     { name = "structlog" },
 ]
-sdist = { hash = "sha256:3d533baa3667c2abb63fc4db7f8abc18b9c1d4a6cdef6fa2428017343484bf72" }
+sdist = { hash = "sha256:68f5ed7139ef736e6555c0079d327468e295c5dda75a04b52874e601d9f823d1" }
 
 [package.optional-dependencies]
 sqlalchemy = [
@@ -1891,6 +1892,7 @@ sqlalchemy = [
 
 [package.metadata]
 requires-dist = [
+    { name = "croniter", specifier = ">=6.0.0" },
     { name = "fastapi", specifier = ">=0.143.3" },
     { name = "procrastinate", specifier = "==3.10.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.6" },
