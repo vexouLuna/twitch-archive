@@ -2,7 +2,7 @@
 name = "archive-api"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["archive-common", "fastapi>=0.115", "uvicorn[standard]>=0.30"]
+dependencies = ["archive-common", "fastapi>=0.162.1", "uvicorn[standard]>=0.30"]
 
 [project.scripts]
 archive-api = "archive_api.main:run"
