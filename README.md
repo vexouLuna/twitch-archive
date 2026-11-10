@@ -1,5 +1,17 @@
 # twitch-archive
 
+<!-- conventions:begin: synced from vexouLuna/conventions; edit it there, then run `conventions sync` -->
+[![CI](https://github.com/vexouLuna/twitch-archive/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/vexouLuna/twitch-archive/actions/workflows/ci.yml?query=branch%3Adev)
+[![version](https://img.shields.io/github/v/tag/vexouLuna/twitch-archive?sort=semver&label=version)](https://github.com/vexouLuna/twitch-archive/tags)
+[![conventions v4.0.0](https://img.shields.io/badge/conventions-v4.0.0-blue)](https://github.com/vexouLuna/conventions/tree/v4.0.0)
+[![api_vods-api](https://status.vexoul.net/api/v1/endpoints/api_vods-api/health/badge.svg)](https://status.vexoul.net)
+[![api_vods-api uptime 7d](https://status.vexoul.net/api/v1/endpoints/api_vods-api/uptimes/7d/badge.svg)](https://status.vexoul.net)
+[![api_keekivods-api](https://status.vexoul.net/api/v1/endpoints/api_keekivods-api/health/badge.svg)](https://status.vexoul.net)
+[![api_keekivods-api uptime 7d](https://status.vexoul.net/api/v1/endpoints/api_keekivods-api/uptimes/7d/badge.svg)](https://status.vexoul.net)
+[![vexoul VODs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fvods.vexoul.net%2Fbackend%2Fvods%3F%24limit%3D0&query=%24.total&label=vexoul%20VODs)](https://vods.vexoul.net)
+[![keeki_dechu VODs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fkeekivods.vexoul.net%2Fbackend%2Fvods%3F%24limit%3D0&query=%24.total&label=keeki_dechu%20VODs)](https://keekivods.vexoul.net)
+<!-- conventions:end -->
+
 A Python rewrite of the Feathers/Node archive backend (fork of
 [TimIsOverpowered/archive](https://github.com/TimIsOverpowered/archive)). It is
 split into two services that share one database and one codebase:
