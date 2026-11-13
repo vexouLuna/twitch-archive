@@ -103,7 +103,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "tenacity", specifier = ">=8.5" },
     { name = "tzdata", specifier = ">=2024.1" },
-    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.0.tar.gz" },
+    { name = "vex-platform", extras = ["sqlalchemy"], url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.1.tar.gz" },
 ]
 
 [[package]]
@@ -1873,8 +1873,8 @@ wheels = [
 
 [[package]]
 name = "vex-platform"
-version = "0.10.0"
-source = { url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.0.tar.gz" }
+version = "0.10.1"
+source = { url = "https://github.com/vexouLuna/vex-platform/archive/refs/tags/v0.10.1.tar.gz" }
 dependencies = [
     { name = "croniter" },
     { name = "fastapi" },
@@ -1883,7 +1883,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "structlog" },
 ]
-sdist = { hash = "sha256:68f5ed7139ef736e6555c0079d327468e295c5dda75a04b52874e601d9f823d1" }
+sdist = { hash = "sha256:e71370415919f16cd94710fb6fe292907dab97093a838fd6c67493289c5b224b" }
 
 [package.optional-dependencies]
 sqlalchemy = [
