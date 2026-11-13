@@ -38,7 +38,7 @@ def run(settings, monkeypatch):
     async def vod_id_for_stream(stream_id: str) -> str | None:
         return VOD if stream_id in rows else None
 
-    async def nothing(*_args: Any) -> Any:
+    async def nothing(*_args: Any, **_kw: Any) -> Any:
         return []
 
     monkeypatch.setattr(jobs, "exists_any", exists_any)
@@ -71,3 +71,63 @@ async def test_jobs_per_stream(run, live_record, multi_track, expected):
     queued, rows = await run(live_record, multi_track)
     assert queued == expected
     assert rows == {STREAM}  # the vods row exists while the stream is live either way
+
+
+@pytest.fixture
+def ended(settings, monkeypatch):
+    """A stream that was live and has now ended (get_stream -> None); the VOD is listed or not."""
+    state: dict[str, Any] = {"video": None, "queued": [], "set_live": []}
+
+    class FakeHelix:
+        async def get_stream(self, _user_id: str) -> None:
+            return None
+
+        async def video_for_stream(self, _user_id: str, sid: str) -> dict[str, Any] | None:
+            return state["video"]
+
+    class FakeService:
+        async def enqueue(self, kind: str, vod_id: str | None, _payload: dict[str, Any]) -> None:
+            state["queued"].append((kind, vod_id))
+
+    async def exists_any(kind: str, stream_id: str) -> bool:
+        return False
+
+    async def live_ids() -> list[str]:
+        return [STREAM]
+
+    async def set_live(stream_id: str | None, *_a: Any, keep: Any = ()) -> None:
+        state["set_live"].append(set(keep))
+
+    async def upsert_vod(_video: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(jobs, "exists_any", exists_any)
+    monkeypatch.setattr(monitor_mod, "live_stream_ids", live_ids)
+    monkeypatch.setattr(monitor_mod, "set_live_stream", set_live)
+    monkeypatch.setattr(monitor_mod, "upsert_vod", upsert_vod)
+    settings.doomtp_url = "http://bot"
+    state["monitor"] = Monitor(FakeHelix(), FakeService(), settings)  # type: ignore[arg-type]
+    return state
+
+
+async def test_ended_without_vod_stays_live_then_retries(ended):
+    m = ended["monitor"]
+    await m.tick()
+    assert ended["set_live"] == [{STREAM}]  # kept live: the next tick retries
+    assert ended["queued"] == []
+    ended["video"] = {"id": VOD, "stream_id": STREAM, "duration": ""}
+    await m.tick()
+    assert ended["queued"] == [("bot_chat", VOD)]
+    assert ended["set_live"][-1] == set()  # done: now marked offline
+
+
+async def test_ended_without_vod_gives_up(ended, monkeypatch):
+    m = ended["monitor"]
+    now = [1000.0]
+    monkeypatch.setattr(monitor_mod.time, "monotonic", lambda: now[0])
+    await m.tick()
+    assert ended["set_live"][-1] == {STREAM}
+    now[0] += monitor_mod.VOD_WAIT_SECONDS
+    await m.tick()
+    assert ended["set_live"][-1] == set()
+    assert ended["queued"] == []

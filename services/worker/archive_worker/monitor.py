@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from archive_common.config import Settings
@@ -27,12 +28,15 @@ from .vods import live_stream_ids, set_live_stream, upsert_vod, vod_id_for_strea
 
 log = logging.getLogger(__name__)
 
+VOD_WAIT_SECONDS = 3600  # how long an ended stream stays live while Twitch has not listed its VOD
+
 
 class Monitor:
     def __init__(self, helix: Helix, service: jobs.JobService, settings: Settings) -> None:
         self.helix = helix
         self.service = service
         self.settings = settings  # the worker's one Settings object, which dashboard overrides change
+        self._waiting_since: dict[str, float] = {}  # ended stream id -> when its VOD was first missing
 
     async def run_forever(self) -> None:
         watching = self.helix.configured
@@ -57,15 +61,26 @@ class Monitor:
     async def tick(self) -> None:
         s = self.settings
         stream = await self.helix.get_stream(s.twitch_id)
-        # Before they are marked offline, so a failed enqueue is retried on the next tick.
+        # Before they are marked offline, so a failed enqueue is retried on the next tick. A stream whose
+        # VOD is not listed yet stays live (and is retried) for up to VOD_WAIT_SECONDS.
+        waiting: set[str] = set()
         for ended in await live_stream_ids() if s.doomtp_url else ():
-            if not stream or ended != str(stream["id"]):
-                await self.stream_ended(ended)
+            if stream and ended == str(stream["id"]):
+                continue
+            if await self.stream_ended(ended):
+                self._waiting_since.pop(ended, None)
+                continue
+            first = self._waiting_since.setdefault(ended, time.monotonic())
+            if time.monotonic() - first < VOD_WAIT_SECONDS:
+                waiting.add(ended)
+            else:
+                log.warning("stream %s has no VOD after %ss; giving up on its bot chat", ended, VOD_WAIT_SECONDS)
+                self._waiting_since.pop(ended, None)
         if not stream:
-            await set_live_stream(None)
+            await set_live_stream(None, keep=waiting)
             return
         stream_id = str(stream["id"])
-        await set_live_stream(stream_id, parse_ts(stream.get("started_at")))
+        await set_live_stream(stream_id, parse_ts(stream.get("started_at")), keep=waiting)
 
         if s.live_record and not await jobs.exists_any("live", stream_id=stream_id):
             log.info("stream %s is live; starting live recording", stream_id)
@@ -97,17 +112,19 @@ class Monitor:
         log.info("stream %s -> vod %s; starting archive job", stream_id, video["id"])
         await self.service.enqueue("archive", video["id"], {"type": "vod", "stream_id": stream_id})
 
-    async def stream_ended(self, stream_id: str) -> None:
+    async def stream_ended(self, stream_id: str) -> bool:
+        """True when nothing is left to do for the ended stream; False when its VOD is not listed yet."""
         s = self.settings
         if await jobs.exists_any("bot_chat", stream_id=stream_id):
-            return
+            return True
         video = await self.helix.video_for_stream(s.twitch_id, stream_id)
         if video is None:
-            log.info("stream %s ended without a VOD; no bot chat", stream_id)
-            return
+            log.info("stream %s ended and has no VOD yet; will retry", stream_id)
+            return False
         await upsert_vod(video)
         payload: dict[str, Any] = {"stream_id": stream_id}
         if duration := parse_helix_duration(video.get("duration", "")):
             payload["duration"] = duration  # final now; the vods row may still hold the live one
         log.info("stream %s -> vod %s ended; starting bot chat job", stream_id, video["id"])
         await self.service.enqueue("bot_chat", video["id"], payload)
+        return True
