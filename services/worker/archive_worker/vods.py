@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Collection
 from typing import Any
 
 from archive_common import site_tags
@@ -57,10 +58,14 @@ async def live_stream_ids() -> list[str]:
         return [str(i) for i in (await s.execute(select(Stream.id).where(Stream.is_live.is_(True)))).scalars()]
 
 
-async def set_live_stream(stream_id: str | None, started_at: dt.datetime | None = None) -> None:
-    """Mark ``stream_id`` (upserted) as the only live stream, or none when None."""
+async def set_live_stream(
+    stream_id: str | None, started_at: dt.datetime | None = None, keep: Collection[str] = ()
+) -> None:
+    """Mark ``stream_id`` (upserted) as the only live stream, or none when None; ``keep`` stay live."""
     async with get_sessionmaker()() as s:
         offline = update(Stream).where(Stream.is_live.is_(True))
+        if keep:
+            offline = offline.where(Stream.id.notin_([int(i) for i in keep]))
         if stream_id:
             stmt = insert(Stream).values(id=int(stream_id), started_at=started_at, platform="twitch", is_live=True)
             await s.execute(stmt.on_conflict_do_update(index_elements=[Stream.id], set_={"is_live": True}))
