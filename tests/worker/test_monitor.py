@@ -1,5 +1,6 @@
 """Which jobs the monitor queues for a live stream (monitor.py; the DB calls are faked)."""
 
+import time
 from typing import Any
 
 import pytest
@@ -83,7 +84,8 @@ def ended(settings, monkeypatch):
             return None
 
         async def video_for_stream(self, _user_id: str, sid: str) -> dict[str, Any] | None:
-            return state["video"]
+            video: dict[str, Any] | None = state["video"]
+            return video
 
     class FakeService:
         async def enqueue(self, kind: str, vod_id: str | None, _payload: dict[str, Any]) -> None:
@@ -124,7 +126,7 @@ async def test_ended_without_vod_stays_live_then_retries(ended):
 async def test_ended_without_vod_gives_up(ended, monkeypatch):
     m = ended["monitor"]
     now = [1000.0]
-    monkeypatch.setattr(monitor_mod.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
     await m.tick()
     assert ended["set_live"][-1] == {STREAM}
     now[0] += monitor_mod.VOD_WAIT_SECONDS
