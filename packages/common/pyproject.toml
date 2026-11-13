@@ -5,7 +5,7 @@ requires-python = ">=3.13"
 dependencies = [
   "sqlalchemy[asyncio]>=2.0.30",
   "asyncpg>=0.29",
-  "alembic>=1.20.0",
+  "alembic>=1.20.1",
   "pydantic-settings>=2.16.0",
   "httpx>=0.28.1",
   "tenacity>=8.5",
