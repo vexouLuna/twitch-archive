@@ -2,8 +2,8 @@
 
 ``thumbnail`` runs after ``upload`` in every job that uploads, while ``youtube_thumbnail`` is on: a thumbnail per
 part this job uploaded, from the part file. A re-upload is a new job, so its new videos get theirs too. The
-``thumbnail`` kind (``POST /api/v2/vods/{id}/thumbnails``) makes them again for a VOD's existing uploads, from a
-few seconds of each downloaded with yt-dlp.
+``thumbnail`` kind (``POST /api/v2/vods/{id}/thumbnails``) makes them again for a VOD's existing uploads, from the
+VOD's file while it is still on disk, else from a few seconds of each upload downloaded with yt-dlp.
 
 YouTube takes custom thumbnails only from a verified channel, so the channel is checked first. In an upload job
 a thumbnail is an extra: a refusal or a failure is logged (and kept in ``payload.thumbnail_failed``), never failing
@@ -35,9 +35,10 @@ UNVERIFIED = (
 class Target:
     part: int
     youtube_id: str | None  # None: a dry run's, rendered only
-    src: Path | None  # the part file; None: downloaded from YouTube
+    src: Path | None  # the part file, or the VOD's whole one; None: downloaded from YouTube
     seconds: float  # the part's length
     games: list[str]
+    start: float = 0.0  # where the part begins in ``src``
 
 
 def _job_targets(ctx: JobContext, chapters: list[dict[str, Any]] | None) -> list[Target]:
@@ -55,9 +56,14 @@ def _job_targets(ctx: JobContext, chapters: list[dict[str, Any]] | None) -> list
 
 
 async def _existing_targets(ctx: JobContext, chapters: list[dict[str, Any]] | None) -> list[Target]:
-    """The VOD's uploads of the job's type (``payload.only_parts``: only those parts)."""
+    """The VOD's uploads of the job's type (``payload.only_parts``: only those parts), framed from the VOD's file
+    while it is still on disk, else from YouTube."""
     s = ctx.settings
     vod = await ctx.get_vod()
+    try:
+        local: Path | None = ctx.default_mp4 if ctx.default_mp4.is_file() else None
+    except (KeyError, StepError):  # a live type without its stream id
+        local = None
     only = {int(n) for n in ctx.payload.get("only_parts") or []}
     planned = planning.plan_parts(await vod_duration(ctx, vod), chapters, s.restricted_games, s.split_duration)
     windows = {p.number: p for p in planned}
@@ -69,7 +75,10 @@ async def _existing_targets(ctx: JobContext, chapters: list[dict[str, Any]] | No
         window = windows.get(number)
         games = planning.part_games(chapters, window, s.restricted_games) if window else []
         seconds = float(e.get("duration") or 0) or (window.duration if window else 0.0)
-        out.append(Target(number, str(e["id"]), None, seconds, games))
+        if local is not None and window is not None:
+            out.append(Target(number, str(e["id"]), local, window.duration, games, window.start))
+        else:
+            out.append(Target(number, str(e["id"]), None, seconds, games))
     return out
 
 
@@ -131,7 +140,9 @@ async def thumbnail(ctx: JobContext) -> None:
         out = work / f"{ctx.video_type}-{t.part}.jpg"
         values = {**base, "part": t.part, "games": thumbnails.games_text(t.games)}
         try:
-            src, at = t.src, template["at"] * t.seconds
+            src, at = t.src, t.start + template["at"] * t.seconds
+            if src is None and s.dry_run:
+                raise RuntimeError("the VOD's file is gone, and a dry run downloads nothing")
             if src is None and t.youtube_id:  # a few seconds from YouTube, from where the frame is taken
                 start = int(at)
                 src = await _download(ctx, t.youtube_id, work / "src", FRAME_FORMAT, f"*{start}-{start + 3}")

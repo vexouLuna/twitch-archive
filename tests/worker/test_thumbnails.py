@@ -225,6 +225,27 @@ async def test_again_downloads_a_few_seconds_of_each_upload(stepped, monkeypatch
         await step.thumbnail(ctx)
 
 
+async def test_again_frames_from_the_vods_file_while_it_is_there(stepped, monkeypatch, settings):
+    async def download(*args):
+        raise AssertionError("nothing to download")
+
+    monkeypatch.setattr(step, "_download", download)
+    youtube = [{"id": "yt2", "type": "vod", "part": 2, "duration": 600}]
+    settings.split_duration = 600
+    ctx = stepped("thumbnail", {"type": "vod"}, youtube=youtube)
+    ctx.default_mp4.parent.mkdir(parents=True)
+    ctx.default_mp4.write_bytes(b"v")
+    await step.thumbnail(ctx)
+    assert stepped.rendered[-1][:3] == (ctx.default_mp4, 750.0, 2)  # part 2 starts at 600: 600 + 25% of 600
+    assert ctx.deps.youtube.set == ["yt2"]
+
+    settings.dry_run = True  # the file gone, a dry run downloads nothing: logged, the job fails
+    ctx = stepped("thumbnail", {"type": "vod"}, youtube=youtube)
+    ctx.default_mp4.unlink()
+    with pytest.raises(StepError, match="dry run downloads nothing"):
+        await step.thumbnail(ctx)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────
 
 
