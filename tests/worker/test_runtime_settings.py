@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 import pytest
 from archive_common.audit import AUDIT_LOG
+from archive_common.config import Settings
 from archive_common.db import get_sessionmaker
 from archive_common.models import RuntimeSetting
 from archive_worker import jobs
@@ -25,6 +26,7 @@ def test_validate():
     assert validate("youtube_description", "") == ""
     assert validate("restricted_games", [" Artifact ", "Artifact", "Poker"]) == ["Artifact", "Poker"]
     assert validate("manual_steps", {"archive": ["upload", "upload"], "chat": []}) == {"archive": ["upload"]}
+    assert validate("short_chapter_merge", "previous") == "previous"
 
 
 @pytest.mark.parametrize(
@@ -42,6 +44,9 @@ def test_validate():
         ("youtube_description", "x" * 501, "at most 500"),
         ("restricted_games", "Artifact", "list of non-empty names"),
         ("restricted_games", ["ok", " "], "list of non-empty names"),
+        ("short_chapter_merge", "next", "one of: following, previous"),
+        ("short_chapter_merge", True, "one of: following, previous"),
+        ("short_chapter_minutes", 121, "between 0 and 120"),
         ("manual_steps", ["upload"], "map job kinds"),
         ("manual_steps", {"archive": ["uplaod"]}, "no step"),
         ("manual_steps", {"nope": ["upload"]}, "unknown job kind"),
@@ -247,3 +252,8 @@ async def test_the_worker_reloads_settings_the_admin_apart_wrote(monkeypatch, ca
     assert calls[:5] == ["load", "load", "apply", "load", "apply"]
     changed = [r.getMessage() for r in caplog.records if r.getMessage().startswith("runtime settings changed")]
     assert changed == ["runtime settings changed: runner_concurrency"]  # once: the third read changed nothing
+
+
+def test_a_choice_setting_is_described_with_its_options():
+    row = {r["key"]: r for r in RuntimeSettings(Settings()).describe()}["short_chapter_merge"]
+    assert row["type"] == "choice" and row["options"] == ["following", "previous"] and row["value"] == "following"

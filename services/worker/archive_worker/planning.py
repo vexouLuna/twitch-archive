@@ -71,6 +71,44 @@ def fill_gaps(chapters: list[dict[str, Any]], vod_duration: float, restricted_ga
     return out
 
 
+def merge_short_chapters(
+    chapters: list[dict[str, Any]], min_seconds: float, into_next: bool, restricted_games: list[str]
+) -> list[dict[str, Any]]:
+    """Chapters shorter than ``min_seconds`` (a mistaken category change) absorbed by a neighbour: the following
+    chapter, or the previous one when ``into_next`` is off; the first or last falls back to its only neighbour,
+    and a VOD with one chapter is left alone. The absorbing chapter keeps its game and grows over the span; its
+    ``restricted`` is its own, so the absorbing game decides: a short chapter merged into a restricted game
+    is cut with it, and a short restricted one merged into an unrestricted game is uploaded. A "No category" gap
+    counts like any other chapter. 0 turns it off. Running it again changes nothing.
+    Remember ``end`` is a LENGTH: a chapter's end time is ``start + end``."""
+    if min_seconds <= 0 or len(chapters) < 2:
+        return chapters
+    out = [dict(c) for c in chapters]
+    changed = False
+    i = 0
+    while i < len(out) and len(out) > 1:
+        ch = out[i]
+        if float(ch.get("end") or 0) >= min_seconds:
+            i += 1
+            continue
+        order = (i + 1, i - 1) if into_next else (i - 1, i + 1)
+        j = next(j for j in order if 0 <= j < len(out))
+        a, b = out[min(i, j)], out[max(i, j)]
+        start = float(a.get("start") or 0)
+        stop = max(start + float(a.get("end") or 0), float(b.get("start") or 0) + float(b.get("end") or 0))
+        keeper = out[j]
+        merged = keeper | {
+            "duration": format_hhmmss(start),
+            "start": num_seconds(start),
+            "end": num_seconds(stop - start),
+            "restricted": is_restricted(keeper, restricted_games),
+        }
+        out[min(i, j) : max(i, j) + 1] = [merged]
+        changed = True
+        i = min(i, j)  # the merged span may still be short
+    return out if changed else chapters
+
+
 def single_chapter(
     game: dict[str, Any] | None, box_art: str | None, vod_duration: float, restricted_games: list[str]
 ) -> dict[str, Any]:

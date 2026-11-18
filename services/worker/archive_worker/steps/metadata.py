@@ -55,7 +55,17 @@ def file_chapters(ctx: JobContext, vod: Vod) -> list[dict[str, Any]] | None:
     if start is None:
         return vod.chapters
     moved = planning.chapters_on_recording(vod.chapters, start, ctx.payload["timeline"])
+    # Not merged: the VOD's own chapters already are, and part_gaps and live_gaps_backfill work out their cuts
+    # from them, so merging a recording's edge chapters here would cut a stretch their gaps do not know about.
     return planning.fill_gaps(moved, float(ctx.payload.get("duration") or 0), ctx.settings.restricted_games)
+
+
+def merge_short(ctx: JobContext, chapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``short_chapter_minutes`` setting applied to freshly built chapters (planning.merge_short_chapters)."""
+    s = ctx.settings
+    return planning.merge_short_chapters(
+        chapters, s.short_chapter_minutes * 60, s.short_chapter_merge == "following", s.restricted_games
+    )
 
 
 def part_gaps(ctx: JobContext, vod: Vod, parts: list[planning.Part]) -> dict[int, list[list[float]]]:
@@ -102,6 +112,7 @@ async def chapters(ctx: JobContext) -> None:
             data = await ctx.deps.helix.get_game(game["id"])
             box_art = (data or {}).get("box_art_url")
         result = [planning.single_chapter(game, box_art, duration, restricted)]
+    result = merge_short(ctx, result)
     await ctx.update_vod(chapters=result)
     names = list(dict.fromkeys(ch.get("name") or planning.NO_CATEGORY for ch in result))
     ctx.log.info(
