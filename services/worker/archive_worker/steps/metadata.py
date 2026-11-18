@@ -55,9 +55,9 @@ def file_chapters(ctx: JobContext, vod: Vod) -> list[dict[str, Any]] | None:
     if start is None:
         return vod.chapters
     moved = planning.chapters_on_recording(vod.chapters, start, ctx.payload["timeline"])
-    filled = planning.fill_gaps(moved, float(ctx.payload.get("duration") or 0), ctx.settings.restricted_games)
-    # A recording's edges can leave short chapters the VOD's own do not have (not for a compiled file or a hand edit).
-    return filled if ctx.video_type != "live" or vod.chapters_locked else merge_short(ctx, filled)
+    # Not merged: the VOD's own chapters already are, and part_gaps and live_gaps_backfill work out their cuts
+    # from them, so merging a recording's edge chapters here would cut a stretch their gaps do not know about.
+    return planning.fill_gaps(moved, float(ctx.payload.get("duration") or 0), ctx.settings.restricted_games)
 
 
 def merge_short(ctx: JobContext, chapters: list[dict[str, Any]]) -> list[dict[str, Any]]:

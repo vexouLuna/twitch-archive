@@ -175,19 +175,23 @@ async def test_the_step_stores_the_merged_chapters_and_off_restores_them(make_ct
     assert len(saved) == n
 
 
-def test_a_live_recording_merges_the_short_chapters_its_edges_leave(make_ctx):
+def test_a_live_recording_keeps_its_edge_chapters_so_gaps_stay_where_they_were(make_ctx):
+    """part_gaps works from the VOD's chapters, so the recording's chapters must cut the same stretches: a short
+    edge chapter next to a restricted one is not merged into it here (the review's example)."""
     start = dt.datetime(2026, 10, 8, 12, tzinfo=dt.UTC)
-    chapters = [planning.chapter("1", "A", None, 0, 100, False), planning.chapter("2", "B", None, 100, 3500, False)]
-    vod = Vod(id="100", title="t", created_at=start, duration="01:00:00", chapters=chapters)
-    timeline = [[0.0, start.timestamp() + 60, 3540.0]]  # the recording started a minute in: A has 40 s of it
-    live = make_ctx("live", "100", {"type": "live", "timeline": timeline, "duration": 3540.0})
-    moved = metadata.file_chapters(live, vod)
-    assert moved is not None and [(c["name"], c["start"], c["end"]) for c in moved] == [("B", 0, 3540)]
-    vod.chapters_locked = True
-    locked = metadata.file_chapters(live, vod)
-    assert locked is not None and [(c["name"], c["end"]) for c in locked] == [("A", 40), ("B", 3500)]
-    # a compiled file (a synthetic VOD's) is left alone
-    vod.chapters_locked = False
-    compiled = make_ctx("compiled", "100", {"type": "compiled", "timeline": [[0.0, 0.0, 3600.0]], "duration": 3600.0})
-    other = metadata.file_chapters(compiled, vod)
-    assert other is not None and len(other) == 2
+    chapters = [ch("A", 0, 3600), ch("Artifact", 3600, 3600, True), ch("C", 7200, 3600)]
+    vod = Vod(id="100", title="t", created_at=start, duration="03:00:00", chapters=chapters)
+    t0 = start.timestamp()
+    # recorded from VOD 3540, with a hole at VOD 9000-9060; the file is 7200 s
+    timeline = [[0.0, t0 + 3540, 5460.0], [5460.0, t0 + 9060, 1740.0]]
+    ctx = make_ctx("live", "100", {"type": "live", "timeline": timeline, "duration": 7200.0})
+    file = metadata.file_chapters(ctx, vod)
+    assert file is not None and [(c["name"], c["start"], c["end"]) for c in file] == [
+        ("A", 0, 60),
+        ("Artifact", 60, 3600),
+        ("C", 3660, 3540),
+    ]
+    parts = planning.plan_parts(7200.0, file, RESTRICTED, 10800)
+    assert [(p.start, p.end) for p in parts] == [(0, 60), (3660, 7200)]
+    gaps = metadata.part_gaps(ctx, vod, parts)
+    assert gaps == {2: [[1800, 60]]}  # 1800 s into the part that starts at C, not 1860

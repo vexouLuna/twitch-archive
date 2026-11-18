@@ -149,8 +149,10 @@ async def test_a_recording_past_a_fully_restricted_vod_uploads_nothing(make_ctx,
     payload = {"type": "live", "duration": 21206.567, "timeline": [[0.0, start.timestamp(), 21206.567]]}
     ctx = make_ctx("live", "100", payload)
     moved = file_chapters(ctx, vod)
-    # the 2.567 s tail is a short restricted chapter: the restricted chapter before it takes it (short_chapter_minutes)
-    assert moved is not None and [(c["start"], c["end"], c["restricted"]) for c in moved] == [(0, 21206.567, True)]
+    assert moved is not None and [(c["start"], c["end"], c["restricted"]) for c in moved] == [
+        (0, 21204, True),
+        (21204, 2.567, True),
+    ]
     assert planning.plan_parts(21206.567, moved, settings.restricted_games, 10_800) == []
 
     async def get_vod(*_: Any) -> Vod:
