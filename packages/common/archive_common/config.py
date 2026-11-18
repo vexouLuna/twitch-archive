@@ -169,6 +169,10 @@ class PipelineSettings(_Base):
     bot chat and the runner."""
 
     restricted_games: list[str] = []
+    # A chapter shorter than short_chapter_minutes (a mistaken category change) is merged into the following chapter
+    # (the previous one when short_chapter_merge is previous) when chapters are fetched; 0 = off.
+    short_chapter_minutes: float = 5
+    short_chapter_merge: Literal["following", "previous"] = "following"
     # censor_check: a game whose IGDB content descriptors or themes contain one of these pauses the
     # job for a censor review (empty: no check); games in censor_allow_games are never looked up.
     censor_descriptors: list[str] = ["Sexual Content", "Nudity"]
