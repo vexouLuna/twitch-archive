@@ -98,6 +98,12 @@ async def _save_entry(vod_id: str, entry: dict[str, Any]) -> None:
 
 async def upload(ctx: JobContext) -> None:
     reason = _publishing_disabled(ctx)
+    if reason and ctx.kind == "custom_upload" and not ctx.settings.dry_run:
+        # Skipping would let cleanup delete the only copy: a custom upload has no Twitch VOD to fetch again.
+        raise StepRefused(
+            f"not uploading: {reason}, and a custom upload's files are its only copy, so the job stops here "
+            "rather than cleaning them up. Turn youtube_upload on, then retry the job."
+        )
     if reason:
         ctx.log.info("skipping upload: %s", reason)
         return
