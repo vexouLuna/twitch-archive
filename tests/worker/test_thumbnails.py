@@ -192,6 +192,22 @@ async def test_an_unverified_channel_skips_with_a_warning_and_the_setting_turns_
     assert stepped.rendered == []
 
 
+async def test_a_failed_channel_check_never_fails_the_upload_job(stepped):
+    class Broken(FakeYouTube):
+        async def own_channel(self):
+            raise RuntimeError("quotaExceeded")
+
+    yt = Broken()
+    ctx = stepped("archive", {"parts": PARTS, "uploaded": UPLOADED}, yt=yt)
+    await step.thumbnail(ctx)  # logged and kept, the job goes on to describe, previews, cleanup
+    assert (
+        yt.set == [] and "channel check failed: RuntimeError: quotaExceeded" in ctx.payload["thumbnail_failed"]["all"]
+    )
+    again = stepped("thumbnail", {"type": "vod"}, youtube=[{"id": "yt1", "type": "vod", "part": 1}], yt=yt)
+    with pytest.raises(RuntimeError, match="quotaExceeded"):  # its own job: retried, then failed, saying why
+        await step.thumbnail(again)
+
+
 async def test_a_dry_run_only_draws_them(stepped, settings):
     settings.dry_run = True
     yt = FakeYouTube()
@@ -276,6 +292,27 @@ async def test_thumbnails_again_needs_uploads_of_that_type(admin, vod):  # noqa:
     assert r.status_code == 409 and r.json()["code"] == "no_uploads"
     r = await admin.post("/api/v2/vods/nope/thumbnails", json={}, headers=KEY)
     assert r.status_code == 404
+
+
+async def test_thumbnails_again_queues_only_the_parts_asked_for(admin, vod):  # noqa: F811
+    from archive_worker import jobs
+
+    async with get_sessionmaker()() as s:
+        row = await s.get(Vod, VOD)
+        row.youtube = [{"id": f"v{n}", "type": "vod", "part": n} for n in (1, 2, 3)] + [
+            {"id": "c1", "type": "compiled", "part": 1}
+        ]
+        await s.commit()
+    r = await admin.post(f"/api/v2/vods/{VOD}/thumbnails", json={"type": "vod", "parts": [2]}, headers=KEY)
+    assert r.status_code == 202, r.text
+    payload = (await jobs.get(r.json()["job_id"])).payload
+    assert payload["type"] == "vod" and payload["only_parts"] == [2]  # reaches the job: one part, 50 units
+    r = await admin.post(f"/api/v2/vods/{VOD}/thumbnails", json={"type": "compiled"}, headers=KEY)
+    assert r.status_code == 202, r.text  # a compiled upload needs no stream id
+    job = await jobs.get(r.json()["job_id"])
+    assert job.kind == "thumbnail" and job.payload["type"] == "compiled" and "only_parts" not in job.payload
+    r = await admin.post(f"/api/v2/vods/{VOD}/thumbnails", json={"type": "vod", "parts": [4]}, headers=KEY)
+    assert r.status_code == 422 and r.json()["code"] == "not_uploads"
 
 
 @NEEDS_FFMPEG
