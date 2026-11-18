@@ -244,6 +244,14 @@ ENTRIES = (
         1,
         720,
     ),
+    Entry(
+        "youtube_thumbnail",
+        "bool",
+        "YouTube",
+        "next job",
+        "Set the thumbnail template's picture on each upload (needs a verified channel)",
+        requires="youtube_upload",
+    ),
     Entry("runner_concurrency", "int", "Runner", "now", "Jobs run at once", 1, 16),
     Entry("max_attempts", "int", "Runner", "now", "Tries of a failing step before its job fails", 1, 10),
 )

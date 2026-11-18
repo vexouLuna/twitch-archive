@@ -206,10 +206,12 @@ class PipelineSettings(_Base):
 
 
 class MediaToolSettings(_Base):
-    """Manage's media tools: custom uploads (a video sent from the dashboard, archive_worker/custom_upload.py)."""
+    """Manage's media tools: custom uploads (a video sent from the dashboard, archive_worker/custom_upload.py) and
+    YouTube thumbnails from the template (archive_worker/thumbnails.py)."""
 
     custom_upload_max_gb: float = 64.0  # the largest file a custom upload takes
     custom_upload_abandon_hours: float = 24.0  # an upload nothing was sent to for this long is deleted
+    youtube_thumbnail: bool = False  # set the template's thumbnail on each upload (needs a verified channel)
 
 
 class AdminSettings(_Base):

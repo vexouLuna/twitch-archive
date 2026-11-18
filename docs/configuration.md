@@ -76,6 +76,7 @@ See [Troubleshooting](operations.md) for how to find new values.
 | `ARCHIVE_SPLIT_DURATION` † | `10800` | Maximum YouTube part length in seconds |
 | `ARCHIVE_CUSTOM_UPLOAD_MAX_GB` † | `64` | The largest file a custom upload takes; see [Custom uploads](admin-api.md#custom-uploads) |
 | `ARCHIVE_CUSTOM_UPLOAD_ABANDON_HOURS` † | `24` | An unfinished custom upload nothing was sent to for this long is deleted |
+| `ARCHIVE_YOUTUBE_THUMBNAIL` † | `false` | Set the thumbnail template's picture on each upload (a verified channel only); see [Thumbnails](admin-api.md#thumbnails) |
 | `ARCHIVE_KEEP_HLS` / `ARCHIVE_KEEP_MP4` † | `false` | Keep files after upload |
 | `ARCHIVE_KEEP_FILES_DAYS` † | `0` | Days to keep a job's files after upload: its cleanup step queues a `cleanup` job for then (0: clean up at once) |
 | `ARCHIVE_PREVIEWS` † | `true` | Make seek-bar previews of each uploaded part; see [Seek-bar previews](admin-api.md#seek-bar-previews) |

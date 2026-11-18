@@ -57,6 +57,7 @@ module = [
     "archive_worker.api_v2_routes",
     "archive_worker.api_v2_media",
     "archive_worker.api_v2_songs",
+    "archive_worker.api_v2_thumbnails",
     "archive_worker.api_v2_uploads",
     "archive_worker.admin_twitch",
 ]

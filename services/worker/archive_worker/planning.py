@@ -402,6 +402,18 @@ def chapter_lines(chapters: list[dict[str, Any]] | None, part: Part, restricted_
     return lines
 
 
+def part_games(chapters: list[dict[str, Any]] | None, part: Part, restricted_games: list[str]) -> list[str]:
+    """The games played in ``part``, in order, each once (what ``chapter_lines`` lists, without the times)."""
+    names: list[str] = []
+    for ch in chapters or []:
+        s = float(ch.get("start") or 0)
+        e = s + float(ch.get("end") or 0)
+        name = str(ch.get("name") or "").strip()
+        if name and name not in names and s < part.end and e > part.start and not is_restricted(ch, restricted_games):
+            names.append(name)
+    return names
+
+
 def full_description(
     base: str,
     this_part: int,
