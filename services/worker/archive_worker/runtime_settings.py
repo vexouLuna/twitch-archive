@@ -152,6 +152,26 @@ ENTRIES = (
         'Chapters of these games are left out of uploads ("No category": chapters without one)',
     ),
     Entry(
+        "short_chapter_minutes",
+        "float",
+        "Pipeline",
+        "next job",
+        "A chapter shorter than this many minutes (a mistaken category change) is merged into a neighbour when chapters"
+        " are fetched, and the game of the chapter that absorbs it counts: merged into a restricted game, it is cut"
+        " from the upload. A short restricted chapter is never merged into an unrestricted one; hand-edited chapters"
+        " are never touched. 0 = off; turn it off and run the chapters job again to restore Twitch's chapters",
+        0,
+        120,
+    ),
+    Entry(
+        "short_chapter_into_next",
+        "bool",
+        "Pipeline",
+        "next job",
+        "Merge a short chapter into the following one (off: the previous one); the first or last chapter goes the"
+        " other way",
+    ),
+    Entry(
         "censor_descriptors",
         "list",
         "Pipeline",
