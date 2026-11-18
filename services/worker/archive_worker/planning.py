@@ -473,34 +473,65 @@ _SEE_THROUGH = ("blur", "pixelate")
 @dataclass(frozen=True)
 class Cover:
     """One way a clip is covered: ``video`` over the whole frame, or only ``region`` (x, y, w, h fractions
-    of the frame from its top-left corner); ``color`` (#rrggbb) for a ``color`` fill."""
+    of the frame from its top-left corner); ``color`` (#rrggbb) for a ``color`` fill; ``text`` drawn over it."""
 
     video: str
     color: str | None = None
     region: tuple[float, float, float, float] | None = None
+    text: str | None = None
 
     def __str__(self) -> str:
         what = self.color if self.video == "color" and self.color else self.video
-        return f"{what} box" if self.region else what
+        return (f"{what} box" if self.region else what) + (" + text" if self.text else "")
 
 
 Covers = tuple[Cover, ...]
 
 
 @dataclass(frozen=True)
+class Sound:
+    """What a stretch of audio gets: ``mute`` (silence), ``muffle`` (a low-pass), or ``song`` (the
+    library song ``song`` looped over it at ``volume``, 0 to 1, the stream's own audio silenced)."""
+
+    audio: str
+    song: str | None = None
+    volume: float = 1.0
+
+    def __str__(self) -> str:
+        return f"song {self.song} at {self.volume:g}" if self.audio == "song" else self.audio
+
+
+# Where audio treatments overlap the strongest wins: silence, then a song, then muffling.
+SOUND_RANK = {"muffle": 1, "song": 2, "mute": 3}
+
+
+@dataclass(frozen=True)
 class CensorPlan:
     cover: list[tuple[float, float, Covers]]  # (start, end, how), sorted, not overlapping
-    mute: list[tuple[float, float]]
+    audio: list[tuple[float, float, Sound]]  # (start, end, what), sorted, not overlapping
 
     @property
     def empty(self) -> bool:
-        return not self.cover and not self.mute
+        return not self.cover and not self.audio
+
+    @property
+    def songs(self) -> list[str]:
+        """The library songs the plan plays, each once."""
+        return list(dict.fromkeys(s.song for _, _, s in self.audio if s.song))
 
 
 def _cover_of(r: dict[str, Any]) -> Cover:
     region = r.get("region")
     box = (float(region["x"]), float(region["y"]), float(region["w"]), float(region["h"])) if region else None
-    return Cover(r["video"], r.get("color") if r["video"] == "color" else None, box)
+    return Cover(r["video"], r.get("color") if r["video"] == "color" else None, box, r.get("text") or None)
+
+
+def _sound_of(r: dict[str, Any]) -> Sound:
+    """A muting range's sound: ``audio`` absent is silence (what ``mute`` always meant)."""
+    audio = r.get("audio") or "mute"
+    if audio == "song":
+        return Sound("song", str(r["song"]), float(r.get("volume", 1.0)))
+    return Sound(audio)
 
 
 def _covers_for(found: list[Cover]) -> Covers:
@@ -513,32 +544,40 @@ def _covers_for(found: list[Cover]) -> Covers:
     return tuple(sorted(boxes, key=lambda c: c.video not in _SEE_THROUGH))
 
 
+def _stretches[T](spans: list[tuple[float, float, T]], pick: Any) -> list[tuple[float, float, Any]]:
+    """Overlapping ``spans`` cut into stretches that don't overlap, each given ``pick(what is over it)``,
+    with neighbours that got the same joined."""
+    points = sorted({p for a, b, _ in spans for p in (a, b)})
+    out: list[tuple[float, float, Any]] = []
+    for a, b in zip(points, points[1:], strict=False):
+        found = [w for s, e, w in spans if s <= a and b <= e]
+        if not found:
+            continue
+        how = pick(found)
+        if out and out[-1][1] == a and out[-1][2] == how:
+            out[-1] = (out[-1][0], b, how)
+        else:
+            out.append((a, b, how))
+    return out
+
+
 def plan_censor(ranges: list[dict[str, Any]] | None) -> CensorPlan:
-    """``vods.censor`` ranges (on the file's timeline) -> what to cover and what to mute."""
-    marks: set[float] = set()
+    """``vods.censor`` ranges (on the file's timeline) -> what to cover and what to do to the audio.
+    Overlapping sounds: the strongest wins (``SOUND_RANK``), between two songs the earlier range's."""
     covers: list[tuple[float, float, Cover]] = []
-    mute: list[tuple[float, float]] = []
+    sounds: list[tuple[float, float, Sound]] = []
     for r in ranges or []:
         a, b = float(r["start"]), float(r["end"])
         if b <= a:
             continue
         if r.get("video") in COVER_RANK:
             covers.append((a, b, _cover_of(r)))
-            marks |= {a, b}
         if r.get("mute"):
-            mute.append((a, b))
-    cover: list[tuple[float, float, Covers]] = []
-    points = sorted(marks)
-    for a, b in zip(points, points[1:], strict=False):
-        found = [c[2] for c in covers if c[0] <= a and b <= c[1]]
-        if not found:
-            continue
-        how = _covers_for(found)
-        if cover and cover[-1][1] == a and cover[-1][2] == how:
-            cover[-1] = (cover[-1][0], b, how)
-        else:
-            cover.append((a, b, how))
-    return CensorPlan(cover, _merge(mute))
+            sounds.append((a, b, _sound_of(r)))
+    return CensorPlan(
+        _stretches(covers, _covers_for),
+        _stretches(sounds, lambda found: max(found, key=lambda s: SOUND_RANK[s.audio])),
+    )
 
 
 def censor_on_recording(

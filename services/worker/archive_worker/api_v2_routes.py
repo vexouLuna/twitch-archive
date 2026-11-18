@@ -54,7 +54,7 @@ from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, decode_curso
 from vex_platform.audit import AuditEntry
 from vex_platform.audit.sqlalchemy import record
 
-from . import compose, jobs, site_tags, synthetic, vod_edits, youtube
+from . import compose, jobs, site_tags, songs, synthetic, vod_edits, youtube
 from .admin_shared import AdminContext, AdminError, log
 from .job_rows import ACTIVE, ALL_JOBS
 from .runtime_settings import RuntimeSettings
@@ -629,7 +629,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
             request,
             vod_id,
             "censor",
-            lambda vod: vod_edits.censor(body.censor, hhmmss_to_seconds(vod.duration)),
+            lambda vod: vod_edits.censor(body.censor, hhmmss_to_seconds(vod.duration), songs.ids(settings.data_dir)),
             uploads=True,
         )
 
