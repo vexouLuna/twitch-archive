@@ -1,6 +1,6 @@
 """/api/v2/songs: the censor song library (songs.py).
 
-    GET    /api/v2/songs               {items}: every song, newest first
+    GET    /api/v2/songs               {items, next_cursor}: the songs, newest first (?cursor=&limit=, 50, at most 500)
     POST   /api/v2/songs?name=         the raw audio file as the body (at most songs.MAX_BYTES): 201, the song
     GET    /api/v2/songs/{song_id}/audio  the stored file (audio/mp4), to listen to it
     DELETE /api/v2/songs/{song_id}     refused (409 file_in_use) while a VOD's censor range plays it
@@ -21,7 +21,7 @@ from archive_common.models import Vod
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from vex_platform.api import ApiError, ApiModel, Page, UtcDatetime, request_id
+from vex_platform.api import ApiError, ApiModel, LimitQuery, Page, UtcDatetime, decode_cursor, page_of, request_id
 from vex_platform.audit import AuditEntry
 
 from . import songs
@@ -77,8 +77,13 @@ def songs_router(auth: Auth, settings: Settings) -> APIRouter:
     data_dir = settings.data_dir
 
     @router.get("/songs")
-    async def list_songs() -> Page[Song]:
-        return Page[Song](items=[Song(**m) for m in songs.listing(data_dir)])
+    async def list_songs(cursor: str | None = None, limit: LimitQuery = 50) -> Page[Song]:
+        rows = songs.listing(data_dir)
+        if key := decode_cursor(cursor, size=2):
+            after = (str(key[0]), str(key[1]))
+            rows = [m for m in rows if (str(m.get("created_at")), str(m["id"])) < after]
+        page = page_of(rows[: limit + 1], limit, lambda m: [str(m.get("created_at")), str(m["id"])])
+        return Page[Song](items=[Song(**m) for m in page.items], next_cursor=page.next_cursor)
 
     @router.post("/songs", status_code=201)
     async def add_song(request: Request, name: str) -> Song:

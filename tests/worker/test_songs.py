@@ -1,5 +1,6 @@
 """The censor song library: the routes (dev DB + ffmpeg), and a range whose song is gone failing its step."""
 
+import json
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,28 @@ def test_song_ids():
     assert not songs.is_id("song-0123456789AB")
     assert not songs.is_id("song-../../etc/x")
     assert not songs.is_id("0123456789ab")
+
+
+async def test_the_list_pages_newest_first(admin, settings):  # noqa: F811
+    folder = songs.song_dir(settings.data_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    made = [f"song-00000000000{i}" for i in range(3)]
+    for i, sid in enumerate(made):
+        meta = {"id": sid, "name": f"s{i}", "duration_seconds": 1.0, "size_bytes": 1, "created_by": None}
+        meta["created_at"] = "2026-11-01T00:00:00+00:00" if i < 2 else "2026-11-02T00:00:00+00:00"
+        (folder / f"{sid}.json").write_text(json.dumps(meta), encoding="utf-8")
+        (folder / f"{sid}.m4a").write_bytes(b"")
+    try:
+        r = (await admin.get("/api/v2/songs", params={"limit": 2}, headers=KEY)).json()
+        assert [s["id"] for s in r["items"]] == [made[2], made[1]] and r["next_cursor"]
+        r = (await admin.get("/api/v2/songs", params={"limit": 2, "cursor": r["next_cursor"]}, headers=KEY)).json()
+        assert [s["id"] for s in r["items"]] == [made[0]] and r["next_cursor"] is None
+        r = await admin.get("/api/v2/songs", params={"cursor": "nonsense"}, headers=KEY)
+        assert r.status_code == 400 and r.json()["code"] == "bad_cursor"
+        assert (await admin.get("/api/v2/songs", params={"limit": 501}, headers=KEY)).status_code == 422
+    finally:
+        for sid in made:
+            songs.delete(settings.data_dir, sid)
 
 
 def test_a_range_whose_song_is_gone_fails_its_step(make_ctx, settings):

@@ -58,12 +58,13 @@ def _meta(file: Path) -> dict[str, Any] | None:
 
 
 def listing(data_dir: Path) -> list[dict[str, Any]]:
-    """Every song, newest first: ``{id, name, duration_seconds, size_bytes, created_at, created_by}``."""
+    """Every song, newest first (then by id, so a cursor can page it): ``{id, name, duration_seconds, size_bytes,
+    created_at, created_by}``."""
     folder = song_dir(data_dir)
     if not folder.is_dir():
         return []
     songs = [m for f in folder.glob(f"{ID}*.json") if is_id(f.stem) and (m := _meta(f))]
-    return sorted(songs, key=lambda m: str(m.get("created_at")), reverse=True)
+    return sorted(songs, key=lambda m: (str(m.get("created_at")), str(m["id"])), reverse=True)
 
 
 def ids(data_dir: Path) -> set[str]:
