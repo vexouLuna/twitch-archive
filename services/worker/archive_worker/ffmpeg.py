@@ -272,30 +272,28 @@ def sound_args(
     spans: list[tuple[float, float, Sound]], songs: dict[str, Path], from_input: int = 1
 ) -> tuple[list[str], str]:
     """The extra inputs and the ``-filter_complex`` graph (``[0:a]`` in, ``[aout]`` out) for ``spans`` as
-    ``planning.plan_censor`` returns them: silence and muffling are filters on the stream's audio enabled over
-    their span; each song is its file looped (``-stream_loop -1``) for the span's length, at its volume,
-    delayed to the span's start and mixed over the stream's audio, which is silenced there."""
+    ``planning.plan_censor`` returns them: in list order, each over what the ones before it made. Silence and
+    muffling are filters enabled over their span; a song silences its span, then its file, looped
+    (``-stream_loop -1``) for the span's length, at its volume and delayed to the span's start, is mixed in,
+    so a later range treats the song too."""
     inputs: list[str] = []
-    chain: list[str] = []
-    mixed: list[str] = []
-    for a, b, sound in spans:
+    steps: list[str] = []
+    chain: list[str] = []  # filters on ``cur`` not yet written out
+    cur, n = "0:a", from_input
+    for i, (a, b, sound) in enumerate(spans):
         on = f"between(t,{a:g},{b:g})"
         if sound.audio == "muffle":
             chain.append(MUFFLE.format(on=on))
             continue
         chain.append(f"volume=0:enable='{on}'")
         if sound.audio == "song":
-            n = from_input + len(mixed)
             inputs += ["-stream_loop", "-1", "-t", f"{b - a:.3f}", "-i", str(songs[str(sound.song)])]
-            label = f"s{len(mixed)}"
-            mixed.append(f"[{n}:a]volume={sound.volume:g},adelay=delays={round(a * 1000)}:all=1[{label}]")
-    graph = f"[0:a]{','.join(chain) or 'anull'}[main]"
-    if mixed:
-        labels = "".join(f"[s{i}]" for i in range(len(mixed)))
-        graph += ";" + ";".join(mixed) + f";[main]{labels}amix=inputs={len(mixed) + 1}:duration=first:normalize=0[aout]"
-    else:
-        graph = graph.removesuffix("[main]") + "[aout]"
-    return inputs, graph
+            steps.append(f"[{cur}]{','.join(chain)}[m{i}]")
+            steps.append(f"[{n}:a]volume={sound.volume:g},adelay=delays={round(a * 1000)}:all=1[s{i}]")
+            steps.append(f"[m{i}][s{i}]amix=inputs=2:duration=first:normalize=0[x{i}]")
+            cur, chain, n = f"x{i}", [], n + 1
+    steps.append(f"[{cur}]{','.join(chain) or 'anull'}[aout]")
+    return inputs, ";".join(steps)
 
 
 @_one_at_a_time("mute")

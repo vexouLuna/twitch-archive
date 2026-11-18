@@ -189,8 +189,8 @@ def censor(items: Any, duration: float, songs: Collection[str] | None = None) ->
     treating the audio (``mute``: silenced, or as ``audio`` says: ``muffle``d, or replaced by the library
     ``song`` looped at ``volume``) or both, and inside ``duration`` (unchecked when that is 0/unknown).
     ``songs``: the library's song ids, which a ``song`` must be one of (unchecked when None).
-    Ranges may overlap: the step merges them. The optional keys are stored only when set, so a range
-    saved before they existed reads the same."""
+    Ranges may overlap: the step applies them in this order (ties keep the order given). The optional keys
+    are stored only when set, so a range saved before they existed reads the same."""
     out: list[dict[str, Any]] = []
     for i, item in enumerate(_list(items, "censor")):
         where = f"censor[{i}]"
