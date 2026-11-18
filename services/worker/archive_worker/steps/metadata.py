@@ -64,7 +64,7 @@ def merge_short(ctx: JobContext, chapters: list[dict[str, Any]]) -> list[dict[st
     """The ``short_chapter_minutes`` setting applied to freshly built chapters (planning.merge_short_chapters)."""
     s = ctx.settings
     return planning.merge_short_chapters(
-        chapters, s.short_chapter_minutes * 60, s.short_chapter_into_next, s.restricted_games
+        chapters, s.short_chapter_minutes * 60, s.short_chapter_merge == "following", s.restricted_games
     )
 
 

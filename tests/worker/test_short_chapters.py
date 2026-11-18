@@ -70,28 +70,25 @@ def test_restricted_is_the_absorbing_games():
     # short into a restricted game: cut with it
     out = merge([ch("A", 0, 3600), ch("B", 3600, 60), ch("Artifact", 3660, 3000, True)])
     assert spans(out) == [("A", 0, 3600, False), ("Artifact", 3600, 3060, True)]
-    # a short restricted chapter is never uploaded by being absorbed into an unrestricted one: it stays
-    stay = [ch("A", 0, 3600), ch("Artifact", 3600, 60, True), ch("C", 3660, 3000)]
-    assert merge(stay) == stay
-    # ...but another restricted neighbour may take it, on either side
-    both = [ch("A", 0, 3600), ch("Artifact", 3600, 60, True), ch("Artifact", 3660, 3000, True)]
-    assert spans(merge(both)) == [("A", 0, 3600, False), ("Artifact", 3600, 3060, True)]
-    back = [ch("Artifact", 0, 3600, True), ch("Artifact", 3600, 60, True), ch("C", 3660, 3000)]
-    assert spans(merge(back)) == [("Artifact", 0, 3660, True), ("C", 3660, 3000, False)]
+    # a short restricted chapter merged into an unrestricted game is uploaded with it
+    out = merge([ch("A", 0, 3600), ch("Artifact", 3600, 60, True), ch("C", 3660, 3000)])
+    assert spans(out) == [("A", 0, 3600, False), ("C", 3600, 3060, False)]
+    out = merge([ch("Artifact", 0, 3600, True), ch("B", 3600, 60), ch("C", 3660, 3000)], into_next=False)
+    assert spans(out) == [("Artifact", 0, 3660, True), ("C", 3660, 3000, False)]
 
 
 def test_the_restricted_list_counts_not_only_the_stored_flag():
-    # chapters stored before a game was added to restricted_games: the list decides
-    stay = [ch("A", 0, 3600), ch("Artifact", 3600, 60, False), ch("C", 3660, 3000)]
-    assert merge(stay) == stay
+    # chapters stored before a game was added to restricted_games: the list decides for the merged span
+    out = merge([ch("A", 0, 3600), ch("B", 3600, 60), ch("Artifact", 3660, 3000, False)])
+    assert [c["restricted"] for c in out] == [False, True]
 
 
 def test_a_short_no_category_gap_is_a_chapter_like_any_other():
     gap = [ch("A", 0, 3600), ch(None, 3600, 30), ch("C", 3630, 3000)]
     assert spans(merge(gap)) == [("A", 0, 3600, False), ("C", 3600, 3030, False)]
-    # listed in restricted_games the gap is cut footage: it stays, as any short restricted chapter
+    # listed in restricted_games, a gap absorbed by an unrestricted game is uploaded with it
     cut = [ch("A", 0, 3600), ch(None, 3600, 30, True), ch("C", 3630, 3000)]
-    assert merge(cut, restricted=[planning.NO_CATEGORY]) == cut
+    assert spans(merge(cut, restricted=[planning.NO_CATEGORY])) == [("A", 0, 3600, False), ("C", 3600, 3030, False)]
 
 
 def test_running_it_twice_changes_nothing_and_never_drops_time():
@@ -161,14 +158,14 @@ async def test_the_step_stores_the_merged_chapters_and_off_restores_them(make_ct
     def last():
         return [(c["name"], c["start"], c["end"]) for c in saved[-1]]
 
-    assert ctx.settings.short_chapter_minutes == 5 and ctx.settings.short_chapter_into_next is True
+    assert ctx.settings.short_chapter_minutes == 5 and ctx.settings.short_chapter_merge == "following"
     await metadata.chapters(ctx)
     assert last() == [("A", 0, 3600), ("C", 3600, 3360)]
     ctx.settings.short_chapter_minutes = 0  # off, and the job run again: Twitch's chapters are back
     await metadata.chapters(ctx)
     assert last() == [("A", 0, 3600), ("B", 3600, 120), ("C", 3720, 3240)]
     ctx.settings.short_chapter_minutes = 5
-    ctx.settings.short_chapter_into_next = False
+    ctx.settings.short_chapter_merge = "previous"
     await metadata.chapters(ctx)
     assert last() == [("A", 0, 3720), ("C", 3720, 3240)]
 

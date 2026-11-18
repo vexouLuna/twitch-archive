@@ -77,9 +77,9 @@ def merge_short_chapters(
     """Chapters shorter than ``min_seconds`` (a mistaken category change) absorbed by a neighbour: the following
     chapter, or the previous one when ``into_next`` is off; the first or last falls back to its only neighbour,
     and a VOD with one chapter is left alone. The absorbing chapter keeps its game and grows over the span; its
-    ``restricted`` is its own, so a short chapter merged into a restricted game is cut with it. A short
-    restricted chapter is never absorbed by an unrestricted one (that would upload footage that was cut), and one
-    "No category" gap counts like any other chapter. 0 turns it off. Running it again changes nothing.
+    ``restricted`` is its own, so the absorbing game decides: a short chapter merged into a restricted game
+    is cut with it, and a short restricted one merged into an unrestricted game is uploaded. A "No category" gap
+    counts like any other chapter. 0 turns it off. Running it again changes nothing.
     Remember ``end`` is a LENGTH: a chapter's end time is ``start + end``."""
     if min_seconds <= 0 or len(chapters) < 2:
         return chapters
@@ -92,14 +92,7 @@ def merge_short_chapters(
             i += 1
             continue
         order = (i + 1, i - 1) if into_next else (i - 1, i + 1)
-        short_cut = is_restricted(ch, restricted_games)
-        j = next(
-            (j for j in order if 0 <= j < len(out) and (is_restricted(out[j], restricted_games) or not short_cut)),
-            None,
-        )
-        if j is None:
-            i += 1  # nobody may take it: it stays
-            continue
+        j = next(j for j in order if 0 <= j < len(out))
         a, b = out[min(i, j)], out[max(i, j)]
         start = float(a.get("start") or 0)
         stop = max(start + float(a.get("end") or 0), float(b.get("start") or 0) + float(b.get("end") or 0))
@@ -112,7 +105,7 @@ def merge_short_chapters(
         }
         out[min(i, j) : max(i, j) + 1] = [merged]
         changed = True
-        i = 0  # start over: the merged span may still be short, and a chapter left alone may now have a taker
+        i = min(i, j)  # the merged span may still be short
     return out if changed else chapters
 
 

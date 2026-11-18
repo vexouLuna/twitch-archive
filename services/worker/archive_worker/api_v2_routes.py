@@ -135,6 +135,7 @@ class Setting(ApiModel):
     updated_at: UtcDatetime | None = None
     updated_by: str | None = None
     choices: dict[str, list[str]] | None = None  # the job kinds' steps, for a "steps" setting
+    options: list[str] | None = None  # the values of a "choice" setting
     requires: str | None = None  # a bool setting this one does nothing without (disable it while that is off)
 
 
