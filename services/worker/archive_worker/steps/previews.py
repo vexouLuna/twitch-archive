@@ -85,8 +85,11 @@ async def previews(ctx: JobContext) -> None:
     ctx.progress(len(todo), len(todo), "parts", "previews done")
 
 
-async def _download(ctx: JobContext, youtube_id: str, into: Path) -> Path:
-    """The upload's smallest useful video-only stream (240p or less), downloaded into ``into``."""
+async def _download(
+    ctx: JobContext, youtube_id: str, into: Path, fmt: str = "bv[height<=240]/wv/w", section: str | None = None
+) -> Path:
+    """The upload's smallest useful video-only stream (240p or less; ``fmt``: another yt-dlp format), downloaded
+    into ``into``; with ``section`` (yt-dlp's ``*start-end``, in seconds) only that stretch of it."""
     into.mkdir(parents=True, exist_ok=True)
     args = [
         sys.executable,
@@ -97,7 +100,8 @@ async def _download(ctx: JobContext, youtube_id: str, into: Path) -> Path:
         "--no-progress",
         "--no-playlist",
         "-f",
-        "bv[height<=240]/wv/w",
+        fmt,
+        *(["--download-sections", section] if section else []),
         "-o",
         str(into / f"{youtube_id}.%(ext)s"),
         "--print",

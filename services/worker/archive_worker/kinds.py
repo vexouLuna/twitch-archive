@@ -17,6 +17,7 @@ KINDS: dict[str, list[str]] = {
         "censor",
         "split",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
@@ -31,6 +32,7 @@ KINDS: dict[str, list[str]] = {
         "censor",
         "split",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
@@ -43,6 +45,7 @@ KINDS: dict[str, list[str]] = {
         "censor",
         "split",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
@@ -60,12 +63,26 @@ KINDS: dict[str, list[str]] = {
         "censor",
         "split",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
     ],
     # /v2/live callback from an external recorder.
-    "live_file": ["ensure_source", "chapters", "censor_check", "censor", "split", "upload", "describe", "previews"],
+    "live_file": [
+        "ensure_source",
+        "chapters",
+        "censor_check",
+        "censor",
+        "split",
+        "upload",
+        "thumbnail",
+        "describe",
+        "previews",
+    ],
+    # A video sent from Manage (custom_upload.py): no Twitch VOD behind it. It pauses after upload_review for the
+    # censor editor and preview, then uploads with the form's title, description and privacy.
+    "custom_upload": ["upload_source", "upload_review", "censor", "split", "upload", "thumbnail", "cleanup"],
     "dmca": [
         "ensure_source",
         "fetch_vod",
@@ -75,6 +92,7 @@ KINDS: dict[str, list[str]] = {
         "censor",
         "split",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
@@ -88,12 +106,13 @@ KINDS: dict[str, list[str]] = {
         "split",
         "dmca_edit",
         "upload",
+        "thumbnail",
         "describe",
         "previews",
         "cleanup",
     ],
     # A synthetic VOD as one file, uploaded as type "compiled" with compile_youtube_upload on (steps/compile.py).
-    "compile": ["compile_sources", "compile", "split", "upload", "compiled", "describe", "cleanup"],
+    "compile": ["compile_sources", "compile", "split", "upload", "thumbnail", "compiled", "describe", "cleanup"],
     "chat": ["chat"],
     "logs_manual": ["logs_manual"],
     "chapters": ["chapters"],
@@ -105,6 +124,8 @@ KINDS: dict[str, list[str]] = {
     # One-off: the ad breaks (gaps) of live uploads made before they were saved, from their live jobs.
     "live_gaps_backfill": ["live_gaps_backfill"],
     "describe": ["describe"],
+    # The template's thumbnails again for a VOD's existing uploads of one type (steps/thumbnail.py).
+    "thumbnail": ["thumbnail"],
     # A pipeline's cleanup, queued by its own cleanup step to run keep_files_days later.
     "cleanup": ["cleanup"],
     # Chat from doomtp-bot into bot_logs, beside the archive job of the same VOD.

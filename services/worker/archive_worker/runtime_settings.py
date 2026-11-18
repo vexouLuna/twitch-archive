@@ -44,13 +44,14 @@ Audit = Callable[[dict[str, Any], dict[str, Any]], AuditEntry]
 @dataclass(frozen=True)
 class Entry:
     key: str
-    type: str  # bool | int | float | text | list | steps (per job kind)
+    type: str  # bool | int | float | text | list | choice | steps (per job kind)
     group: str  # Capture | YouTube | Pipeline | Runner
     applies: str  # now | next job
     help: str
     min: float | None = None
     max: float | None = None
     requires: str | None = None  # a bool setting this one does nothing without
+    options: tuple[str, ...] = ()  # the values of a choice setting
 
 
 ENTRIES = (
@@ -152,6 +153,26 @@ ENTRIES = (
         'Chapters of these games are left out of uploads ("No category": chapters without one)',
     ),
     Entry(
+        "short_chapter_minutes",
+        "float",
+        "Pipeline",
+        "next job",
+        "A chapter shorter than this many minutes (a mistaken category change) is merged into a neighbour when chapters"
+        " are fetched, and the game of the chapter that absorbs it counts: merged into a restricted game, it is cut"
+        " from the upload, and a restricted one merged into another game is uploaded. Hand-edited chapters are never"
+        " touched. 0 = off; turn it off and run the chapters job again to restore Twitch's chapters",
+        0,
+        120,
+    ),
+    Entry(
+        "short_chapter_merge",
+        "choice",
+        "Pipeline",
+        "next job",
+        "Which neighbour takes a short chapter; the first or last chapter goes the other way",
+        options=("following", "previous"),
+    ),
+    Entry(
         "censor_descriptors",
         "list",
         "Pipeline",
@@ -212,6 +233,25 @@ ENTRIES = (
         720,
         requires="auto_merge",
     ),
+    # Manage's media tools (config.MediaToolSettings).
+    Entry("custom_upload_max_gb", "float", "Pipeline", "now", "Largest video a custom upload takes, in GB", 0.1, 1000),
+    Entry(
+        "custom_upload_abandon_hours",
+        "float",
+        "Pipeline",
+        "now",
+        "Hours after its last chunk an unfinished custom upload is deleted",
+        1,
+        720,
+    ),
+    Entry(
+        "youtube_thumbnail",
+        "bool",
+        "YouTube",
+        "next job",
+        "Set the thumbnail template's picture on each upload (needs a verified channel)",
+        requires="youtube_upload",
+    ),
     Entry("runner_concurrency", "int", "Runner", "now", "Jobs run at once", 1, 16),
     Entry("max_attempts", "int", "Runner", "now", "Tries of a failing step before its job fails", 1, 10),
 )
@@ -245,6 +285,10 @@ def validate(key: str, value: Any) -> Any:
                 planning.check_title(value)
             except ValueError as exc:
                 raise ValueError(f"{key}: {exc}") from None
+        return value
+    if t == "choice":
+        if value not in entry.options:
+            raise ValueError(f"{key} must be one of: {', '.join(entry.options)}")
         return value
     if t == "list":
         if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
@@ -311,6 +355,8 @@ class RuntimeSettings:
             }
             if e.type == "steps":
                 item["choices"] = jobs.KINDS
+            if e.type == "choice":
+                item["options"] = list(e.options)
             if e.requires:
                 item["requires"] = e.requires
             out.append(item)

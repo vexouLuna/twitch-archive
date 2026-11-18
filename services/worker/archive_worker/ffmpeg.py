@@ -17,19 +17,21 @@ import math
 import os
 import shutil
 import weakref
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from archive_common import previews as pv
 
-from .planning import Cover, Covers
+from .planning import Cover, Covers, Sound
 
 log = logging.getLogger(__name__)
 
 FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_BIN", "ffprobe")
+# The font censor text is drawn in: the worker image's DejaVu Sans Bold (fonts-dejavu-core).
+CENSOR_FONT = os.environ.get("CENSOR_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
 
 class FfmpegError(RuntimeError):
@@ -90,6 +92,22 @@ async def probe_duration(path: Path) -> float:
     return float(json.loads(out)["format"]["duration"])
 
 
+async def run_probe(args: list[str]) -> str:
+    """ffprobe with ``args`` (errors only), its stdout."""
+    return await _run([FFPROBE, "-v", "error", *args])
+
+
+@_one_at_a_time("audio")
+async def encode_audio(src: Path, out: Path, max_seconds: float) -> Path:
+    """The first audio stream of ``src`` as stereo 48 kHz AAC in an MP4 (``.m4a``), at most ``max_seconds``
+    long, without its tags or cover art."""
+    return await _ffmpeg_to(
+        out,
+        ["-i", str(src), "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1", "-t", f"{max_seconds:g}"]
+        + ["-ac", "2", "-ar", "48000", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"],
+    )
+
+
 async def probe_video(path: Path) -> tuple[int, int, str]:
     """The first video stream's width, height and frame rate (ffprobe's fraction, e.g. ``30000/1001``)."""
     fields = "stream=width,height,avg_frame_rate,r_frame_rate"
@@ -120,6 +138,16 @@ async def hls_to_mp4(playlist: Path, out: Path, *, fmp4: bool = False) -> Path:
             "+faststart",
             *extra,
         ],
+    )
+
+
+@_one_at_a_time("remux")
+async def remux(src: Path, out: Path) -> Path:
+    """The first video stream and the first audio stream (if any) of ``src`` into an MP4, stream-copied,
+    index in front (a custom upload's file, whatever container it came in)."""
+    return await _ffmpeg_to(
+        out,
+        ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-sn", "-dn", "-movflags", "+faststart"],
     )
 
 
@@ -236,6 +264,69 @@ async def mute(src: Path, out: Path, ranges: list[tuple[float, float]]) -> Path:
     )
 
 
+# Muffling: the audio as through a wall, a steep low-pass (two passes) a little louder to make up for it.
+MUFFLE = "lowpass=f=400:enable='{on}',lowpass=f=400:enable='{on}',volume=1.5:enable='{on}'"
+
+
+def sound_args(
+    spans: list[tuple[float, float, Sound]], songs: dict[str, Path], from_input: int = 1
+) -> tuple[list[str], str]:
+    """The extra inputs and the ``-filter_complex`` graph (``[0:a]`` in, ``[aout]`` out) for ``spans`` as
+    ``planning.plan_censor`` returns them: silence and muffling are filters on the stream's audio enabled over
+    their span; each song is its file looped (``-stream_loop -1``) for the span's length, at its volume,
+    delayed to the span's start and mixed over the stream's audio, which is silenced there."""
+    inputs: list[str] = []
+    chain: list[str] = []
+    mixed: list[str] = []
+    for a, b, sound in spans:
+        on = f"between(t,{a:g},{b:g})"
+        if sound.audio == "muffle":
+            chain.append(MUFFLE.format(on=on))
+            continue
+        chain.append(f"volume=0:enable='{on}'")
+        if sound.audio == "song":
+            n = from_input + len(mixed)
+            inputs += ["-stream_loop", "-1", "-t", f"{b - a:.3f}", "-i", str(songs[str(sound.song)])]
+            label = f"s{len(mixed)}"
+            mixed.append(f"[{n}:a]volume={sound.volume:g},adelay=delays={round(a * 1000)}:all=1[{label}]")
+    graph = f"[0:a]{','.join(chain) or 'anull'}[main]"
+    if mixed:
+        labels = "".join(f"[s{i}]" for i in range(len(mixed)))
+        graph += ";" + ";".join(mixed) + f";[main]{labels}amix=inputs={len(mixed) + 1}:duration=first:normalize=0[aout]"
+    else:
+        graph = graph.removesuffix("[main]") + "[aout]"
+    return inputs, graph
+
+
+@_one_at_a_time("mute")
+async def censor_audio(src: Path, out: Path, spans: list[tuple[float, float, Sound]], songs: dict[str, Path]) -> Path:
+    """Silence, muffle or put a song over the audio in ``spans`` (``sound_args``); video is stream-copied.
+    ``songs``: each song id the spans play -> its file."""
+    inputs, graph = sound_args(spans, songs)
+    return await _ffmpeg_to(
+        out,
+        [
+            "-i",
+            str(src),
+            *inputs,
+            "-filter_complex",
+            graph,
+            "-map",
+            "0:v?",
+            "-map",
+            "[aout]",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+        ],
+    )
+
+
 # Video filters for a range covering the whole frame: black (as DMCA blackouts always were), or a box blur a
 # twentieth of the frame wide, run three times, too strong to make anything out (the comma is escaped for the
 # filter graph). The other covers, and every box, are built by ``cover_filter``.
@@ -258,11 +349,34 @@ def _box(region: tuple[float, float, float, float] | None, width: int, height: i
     return max(px, 0), max(py, 0), pw, ph
 
 
-def cover_filter(covers: Covers, width: int, height: int) -> str:
+def _quoted(path: Path) -> str:
+    """A file path as a filter option value: quoted for the option, the quotes escaped for the graph."""
+    text = path.as_posix()
+    if any(c in text for c in "'\\\n\r"):
+        raise ValueError(f"a filter can't name a path with a quote, backslash or line break: {text!r}")
+    return f"\\'{text}\\'"
+
+
+def text_filter(text_file: Path, box: tuple[int, int, int, int], chars: int) -> str:
+    """``drawtext`` of ``text_file`` (one line of ``chars`` characters) centred in ``box`` (x, y, w, h px):
+    white with a black outline, as large as fits (about half the box's height at most). The text is read
+    from the file with expansion off, so nothing in it is ffmpeg syntax."""
+    x, y, w, h = box
+    size = max(10, min(h // 2, int(w * 1.6 / max(chars, 1))))
+    return (
+        f"drawtext=fontfile={_quoted(Path(CENSOR_FONT))}:textfile={_quoted(text_file)}:expansion=none"
+        f":fontsize={size}:fontcolor=white:borderw={max(1, size // 12)}:bordercolor=black"
+        f":x={x}+({w}-text_w)/2:y={y}+({h}-text_h)/2"
+    )
+
+
+def cover_filter(covers: Covers, width: int, height: int, text_files: Sequence[Path | None] = ()) -> str:
     """The ``-vf`` graph for one covered clip of a ``width`` x ``height`` video: each cover drawn in turn.
     A fill is ``drawbox``; a blur or pixelation is the box cropped out, changed and laid back over the frame
-    (the blur's radius and the pixel blocks scale with the box, so a small box is as unreadable as a big one)."""
-    if len(covers) == 1 and covers[0].region is None and covers[0].video in COVER_FILTERS:
+    (the blur's radius and the pixel blocks scale with the box, so a small box is as unreadable as a big one).
+    A cover with ``text`` then gets it written over its box from ``text_files[i]`` (``text_filter``)."""
+    texts = [text_files[i] if c.text and i < len(text_files) else None for i, c in enumerate(covers)]
+    if len(covers) == 1 and covers[0].region is None and covers[0].video in COVER_FILTERS and not any(texts):
         return COVER_FILTERS[covers[0].video]
     steps: list[str] = []
     cur = "0"
@@ -287,10 +401,21 @@ def cover_filter(covers: Covers, width: int, height: int) -> str:
             )
         else:
             raise ValueError(f"unknown cover {c.video!r}")
+        text_file = texts[i]
+        if c.text and text_file is not None:
+            steps.append(f"[{out}]{text_filter(text_file, (x, y, w, h), len(c.text))}[{out}t]")
+            out = f"{out}t"
         cur = out
     # A simple (-vf) graph: its input and output pads are the unlabelled ends, so drop the first and last label.
     graph = ";".join(steps)
     return graph.removeprefix("[0]").removesuffix(f"[{cur}]")
+
+
+def _text_file(path: Path, text: str | None) -> Path | None:
+    if not text:
+        return None
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 async def blackout(src: Path, out: Path, ranges: list[tuple[float, float]], work: Path) -> Path:
@@ -309,15 +434,20 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, Covers]],
     """
     work.mkdir(parents=True, exist_ok=True)
     total = await probe_duration(src)
-    simple = all(len(c) == 1 and c[0].region is None and c[0].video in COVER_FILTERS for _, _, c in ranges)
+    simple = all(
+        len(c) == 1 and c[0].region is None and c[0].video in COVER_FILTERS and not c[0].text for _, _, c in ranges
+    )
     width, height = (0, 0) if simple else (await probe_video(src))[:2]
     pieces: list[Path] = []
+    scratch: list[Path] = []  # the text files, removed with the pieces
     pos = 0.0
     try:
         for i, (start, end, covers) in enumerate(ranges):
             if start > pos:
                 pieces.append(await cut(src, work / f"bo-{i}-copy.mp4", pos, start - pos, faststart=False))
             boxed = any(c.region is not None for c in covers)
+            text_files = [_text_file(work / f"bo-{i}-text-{j}.txt", c.text) for j, c in enumerate(covers)]
+            scratch += [p for p in text_files if p]
             pieces.append(
                 await _ffmpeg_to(
                     work / f"bo-{i}-black.mp4",
@@ -331,7 +461,7 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, Covers]],
                         "-map",
                         "0",
                         "-vf",
-                        cover_filter(covers, width, height),
+                        cover_filter(covers, width, height, text_files),
                         "-c:v",
                         "libx264",
                         "-preset",
@@ -353,7 +483,7 @@ async def cover(src: Path, out: Path, ranges: list[tuple[float, float, Covers]],
             out, ["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart"]
         )
     finally:
-        for p in pieces:
+        for p in pieces + scratch:
             p.unlink(missing_ok=True)
 
 
@@ -398,6 +528,26 @@ async def encode(
             "160k",
         ],
     )
+
+
+@_one_at_a_time("still")
+async def still(src: Path | None, at: float, out: Path, vf: str, quality: int = 3) -> Path:
+    """One frame of ``src`` at ``at`` seconds through the filter graph ``vf``, as the JPEG ``out`` (``quality``:
+    ffmpeg's -q:v, 2 best to 31). No ``src``: a plain dark 1280x720 frame, for a template's preview."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".part")
+    tmp.unlink(missing_ok=True)
+    source = (
+        ["-f", "lavfi", "-i", "color=c=0x1b2130:s=1280x720:d=1"]
+        if src is None
+        else ["-ss", f"{max(0.0, at):.3f}", "-i", str(src)]
+    )
+    await _run(
+        [FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *source, "-frames:v", "1", "-vf", vf]
+        + ["-q:v", str(quality), "-c:v", "mjpeg", "-f", "image2", str(tmp)]
+    )
+    os.replace(tmp, out)
+    return out
 
 
 def concat_listing(paths: list[Path]) -> str:

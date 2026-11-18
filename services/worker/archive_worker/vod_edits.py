@@ -159,7 +159,10 @@ def drive(items: Any) -> list[dict[str, str]]:
 
 
 CENSOR_VIDEO = ("blur", "black", "pixelate", "color")
+CENSOR_AUDIO = ("mute", "muffle", "song")  # how a muting range treats the audio; absent = "mute" (silence)
 NOTE_MAX = 200
+TEXT_MAX = 60  # censor[].text: drawn over the cover in one line
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 REGION_MIN = 0.01  # a box's smallest width or height, as a fraction of the frame
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -179,15 +182,24 @@ def _region(value: Any, where: str) -> dict[str, float]:
     return {"x": x, "y": y, "w": w, "h": h}
 
 
-def censor(items: Any, duration: float) -> list[dict[str, Any]]:
-    """Admin censor ranges -> ``vods.censor``: ``{start, end, video, color, region, mute, note}`` in VOD
-    seconds, sorted by start, each covering the video (``video``: blurred, blacked out, pixelated or filled
-    with ``color``, the whole frame or only a ``region`` box), muting the audio (``mute``) or both, and
-    inside ``duration`` (unchecked when that is 0/unknown). Ranges may overlap: the step merges them."""
+def censor(items: Any, duration: float, songs: Collection[str] | None = None) -> list[dict[str, Any]]:
+    """Admin censor ranges -> ``vods.censor``: ``{start, end, video, color, region, text, mute, audio, song,
+    volume, note}`` in VOD seconds, sorted by start, each covering the video (``video``: blurred, blacked out,
+    pixelated or filled with ``color``, the whole frame or only a ``region`` box, with ``text`` written over it),
+    treating the audio (``mute``: silenced, or as ``audio`` says: ``muffle``d, or replaced by the library
+    ``song`` looped at ``volume``) or both, and inside ``duration`` (unchecked when that is 0/unknown).
+    ``songs``: the library's song ids, which a ``song`` must be one of (unchecked when None).
+    Ranges may overlap: the step merges them. The optional keys are stored only when set, so a range
+    saved before they existed reads the same."""
     out: list[dict[str, Any]] = []
     for i, item in enumerate(_list(items, "censor")):
         where = f"censor[{i}]"
-        r = _object(item, where, {"start", "end"}, {"video", "color", "region", "mute", "note"})
+        r = _object(
+            item,
+            where,
+            {"start", "end"},
+            {"video", "color", "region", "text", "mute", "audio", "song", "volume", "note"},
+        )
         start, end = r["start"], r["end"]
         if not is_number(start) or start < 0:
             raise ValueError(f"{where}.start must be a number of seconds >= 0")
@@ -213,6 +225,10 @@ def censor(items: Any, duration: float) -> list[dict[str, Any]]:
             raise ValueError(f"{where}.mute must be true or false")
         if video is None and not mute:
             raise ValueError(f"{where} neither covers the video nor mutes the audio")
+        text = _censor_text(r, where)
+        if text is not None and video is None:
+            raise ValueError(f"{where}.text needs a video cover")
+        sound = _censor_sound(r, where, mute, songs)
         note = (_optional_str(r, "note", where) or "").strip() or None
         if note is not None and len(note) > NOTE_MAX:
             raise ValueError(f"{where}.note is longer than {NOTE_MAX} characters")
@@ -220,10 +236,47 @@ def censor(items: Any, duration: float) -> list[dict[str, Any]]:
             {"start": planning.num_seconds(start), "end": planning.num_seconds(end), "video": video}
             | ({"color": color} if color else {})
             | ({"region": region} if region else {})
+            | ({"text": text} if text else {})
             | {"mute": mute}
+            | sound
             | ({"note": note} if note else {})
         )
     return sorted(out, key=lambda r: (r["start"], r["end"]))
+
+
+def _censor_text(r: dict[str, Any], where: str) -> str | None:
+    text = _optional_str(r, "text", where)
+    text = " ".join(text.split()) if text else None
+    if not text:
+        return None
+    if len(text) > TEXT_MAX:
+        raise ValueError(f"{where}.text is longer than {TEXT_MAX} characters")
+    if _CONTROL.search(text):
+        raise ValueError(f"{where}.text has a control character")
+    return text
+
+
+def _censor_sound(r: dict[str, Any], where: str, mute: bool, songs: Collection[str] | None) -> dict[str, Any]:
+    """``audio``, ``song`` and ``volume`` as stored: nothing for plain silence, so old ranges read the same."""
+    audio = r.get("audio")
+    if audio is not None and audio not in CENSOR_AUDIO:
+        raise ValueError(f"{where}.audio must be {', '.join(map(repr, CENSOR_AUDIO))} or absent")
+    if audio not in (None, "mute") and not mute:
+        raise ValueError(f"{where}.audio needs mute: true")
+    if audio != "song":
+        for key in ("song", "volume"):
+            if r.get(key) is not None:
+                raise ValueError(f"{where}.{key} is only for audio 'song'")
+        return {"audio": audio} if audio == "muffle" else {}
+    song = r.get("song")
+    if not isinstance(song, str) or not song:
+        raise ValueError(f"{where}.song must be the id of a song in the library")
+    if songs is not None and song not in songs:
+        raise ValueError(f"{where}.song {song} is not in the song library")
+    volume = r.get("volume", 1.0)
+    if not is_number(volume) or not 0 <= volume <= 1:
+        raise ValueError(f"{where}.volume must be a number from 0 to 1")
+    return {"audio": "song", "song": song, "volume": round(float(volume), 2)}
 
 
 # ── VOD fields (PATCH /admin/vods/{id}) ──────────────────────────────────

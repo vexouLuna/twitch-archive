@@ -47,6 +47,10 @@ from . import (
     api_v2,
     api_v2_media,
     api_v2_routes,
+    api_v2_songs,
+    api_v2_thumbnails,
+    api_v2_uploads,
+    custom_upload,
     jobs,
     vod_edits,
 )
@@ -124,6 +128,11 @@ def create_admin_app(
             log.info("storage: removing %d folder(s) an earlier run deleted", left)
 
     app.router.on_startup.append(empty_trash)
+
+    async def sweep_uploads() -> None:
+        await asyncio.to_thread(custom_upload.sweep, settings.data_dir, settings.custom_upload_abandon_hours)
+
+    app.router.on_startup.append(sweep_uploads)
 
     @app.exception_handler(AdminError)
     async def _admin_error(_req: Request, exc: AdminError) -> JSONResponse:
@@ -593,6 +602,9 @@ def create_admin_app(
             api_v2_routes.vods_router(verify_v2, settings),
             api_v2_routes.actions_router(ctx, verify_v2),
             api_v2_media.media_router(verify_v2, settings),
+            api_v2_songs.songs_router(verify_v2, settings),
+            api_v2_uploads.uploads_router(ctx, verify_v2),
+            api_v2_thumbnails.thumbnails_router(ctx, verify_v2),
             ctx.v2,  # what the /admin modules added: the site, Twitch and YouTube routes
         ],
     )

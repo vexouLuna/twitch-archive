@@ -169,6 +169,10 @@ class PipelineSettings(_Base):
     bot chat and the runner."""
 
     restricted_games: list[str] = []
+    # A chapter shorter than short_chapter_minutes (a mistaken category change) is merged into the following chapter
+    # (the previous one when short_chapter_merge is previous) when chapters are fetched; 0 = off.
+    short_chapter_minutes: float = 5
+    short_chapter_merge: Literal["following", "previous"] = "following"
     # censor_check: a game whose IGDB content descriptors or themes contain one of these pauses the
     # job for a censor review (empty: no check); games in censor_allow_games are never looked up.
     censor_descriptors: list[str] = ["Sexual Content", "Nudity"]
@@ -199,6 +203,15 @@ class PipelineSettings(_Base):
     doomtp_login: str = ""  # channel login on the bot; empty = twitch_username
     # A read-scope key: adds moderation entries and removed messages. Empty = the public log.
     doomtp_api_key: SecretStr = SecretStr("")
+
+
+class MediaToolSettings(_Base):
+    """Manage's media tools: custom uploads (a video sent from the dashboard, archive_worker/custom_upload.py) and
+    YouTube thumbnails from the template (archive_worker/thumbnails.py)."""
+
+    custom_upload_max_gb: float = 64.0  # the largest file a custom upload takes
+    custom_upload_abandon_hours: float = 24.0  # an upload nothing was sent to for this long is deleted
+    youtube_thumbnail: bool = False  # set the template's thumbnail on each upload (needs a verified channel)
 
 
 class AdminSettings(_Base):
@@ -253,7 +266,7 @@ class ApiSettings(CoreSettings, TwitchSettings, PublicApiSettings, DataSettings)
     """What archive-api uses. Typing it against this, not ``Settings``, keeps the worker's settings out of it."""
 
 
-class Settings(ApiSettings, CaptureSettings, YouTubeSettings, PipelineSettings, AdminSettings):
+class Settings(ApiSettings, CaptureSettings, YouTubeSettings, PipelineSettings, MediaToolSettings, AdminSettings):
     """Every setting: the worker's, and the shared ones. The dashboard can override the ones listed in
     archive_worker/runtime_settings.py's ``ENTRIES``, and only those."""
 

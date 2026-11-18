@@ -24,7 +24,14 @@ log = logging.getLogger(__name__)
 
 STATE_KEY = "youtube_quota"
 # Units per call, from Google's quota cost table (developers.google.com/youtube/v3/determine_quota_cost).
-COST = {"videos.insert": 1600, "videos.update": 50, "videos.delete": 50, "videos.list": 1, "channels.list": 1}
+COST = {
+    "videos.insert": 1600,
+    "videos.update": 50,
+    "videos.delete": 50,
+    "videos.list": 1,
+    "channels.list": 1,
+    "thumbnails.set": 50,
+}
 PACIFIC = ZoneInfo("America/Los_Angeles")  # Google's daily quota resets at midnight Pacific
 
 

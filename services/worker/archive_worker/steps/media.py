@@ -12,8 +12,8 @@ from archive_common.timeutil import format_hhmmss, parse_helix_duration
 from vex_platform.actor import Actor
 from vex_platform.jobs import JobRun, SkipTo
 
-from .. import ffmpeg, job_rows, planning
-from ..context import JobContext, StepError
+from .. import ffmpeg, job_rows, planning, songs
+from ..context import JobContext, StepError, StepRefused
 from ..job_rows import ACTIVE, vod_of
 from ..kinds import KINDS
 from ..vods import upsert_vod, vod_id_for_stream
@@ -180,7 +180,8 @@ async def dmca_edit(ctx: JobContext) -> None:
 
 
 async def censor(ctx: JobContext) -> None:
-    """Blur or black out the video and mute the audio of the VOD's censor ranges (``vods.censor``, set
+    """Cover the video (blur, black, pixelate or fill, text over it) and silence, muffle or put a library song
+    over the audio of the VOD's censor ranges (``vods.censor``, set
     from the dashboard) in the full source, before ``split`` cuts it. A live recording's ranges are
     moved onto its own timeline. Nothing to do without ranges.
 
@@ -194,6 +195,7 @@ async def censor(ctx: JobContext) -> None:
     if plan.empty:
         ctx.log.info("no censor ranges for %s", ctx.vod_id)
         return
+    song_files = _song_files(ctx, plan)  # before any work: a missing song fails the job at once
     src = Path(ctx.payload.setdefault("censor_from", str(ctx.source_mp4)))
     await ctx.save()
     work = ctx.work_dir / "censor"
@@ -206,15 +208,30 @@ async def censor(ctx: JobContext) -> None:
         ctx.log.info("covering %s: %s", src.name, spans)
         await ffmpeg.cover(cur, nxt, plan.cover, work)
         cur = nxt
-    if plan.mute:
+    if plan.audio:
         nxt = work / f"{src.stem}-censored.mp4"
-        ctx.log.info("muting %d range(s) in %s", len(plan.mute), src.name)
-        await ffmpeg.mute(cur, nxt, plan.mute)
+        spans = ", ".join(f"{how} {format_hhmmss(a)}-{format_hhmmss(b)}" for a, b, how in plan.audio)
+        ctx.log.info("audio of %s: %s", src.name, spans)
+        await ffmpeg.censor_audio(cur, nxt, plan.audio, song_files)
         if cur != src:
             cur.unlink(missing_ok=True)
         cur = nxt
     ctx.payload["mp4"] = str(cur)
     ctx.payload.pop("parts", None)  # cut from the uncensored file
+
+
+def _song_files(ctx: JobContext, plan: planning.CensorPlan) -> dict[str, Path]:
+    """Each song the plan plays -> its file; StepError naming the ranges whose song is gone (it is never
+    left out: that would upload the muted audio without anyone choosing it)."""
+    files = {sid: songs.path(ctx.settings.data_dir, sid) for sid in plan.songs}
+    gone = sorted(sid for sid, f in files.items() if f is None)
+    if gone:
+        where = ", ".join(f"{format_hhmmss(a)}-{format_hhmmss(b)}" for a, b, how in plan.audio if how.song in gone)
+        raise StepRefused(
+            f"censor range(s) {where} play song(s) {', '.join(gone)}, no longer in the song library: "
+            "pick another song or another audio option for them, then retry"
+        )
+    return {sid: f for sid, f in files.items() if f is not None}
 
 
 def _work_dir_of(ctx: JobContext, run: JobRun) -> Path | None:

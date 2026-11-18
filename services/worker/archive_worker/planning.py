@@ -71,6 +71,44 @@ def fill_gaps(chapters: list[dict[str, Any]], vod_duration: float, restricted_ga
     return out
 
 
+def merge_short_chapters(
+    chapters: list[dict[str, Any]], min_seconds: float, into_next: bool, restricted_games: list[str]
+) -> list[dict[str, Any]]:
+    """Chapters shorter than ``min_seconds`` (a mistaken category change) absorbed by a neighbour: the following
+    chapter, or the previous one when ``into_next`` is off; the first or last falls back to its only neighbour,
+    and a VOD with one chapter is left alone. The absorbing chapter keeps its game and grows over the span; its
+    ``restricted`` is its own, so the absorbing game decides: a short chapter merged into a restricted game
+    is cut with it, and a short restricted one merged into an unrestricted game is uploaded. A "No category" gap
+    counts like any other chapter. 0 turns it off. Running it again changes nothing.
+    Remember ``end`` is a LENGTH: a chapter's end time is ``start + end``."""
+    if min_seconds <= 0 or len(chapters) < 2:
+        return chapters
+    out = [dict(c) for c in chapters]
+    changed = False
+    i = 0
+    while i < len(out) and len(out) > 1:
+        ch = out[i]
+        if float(ch.get("end") or 0) >= min_seconds:
+            i += 1
+            continue
+        order = (i + 1, i - 1) if into_next else (i - 1, i + 1)
+        j = next(j for j in order if 0 <= j < len(out))
+        a, b = out[min(i, j)], out[max(i, j)]
+        start = float(a.get("start") or 0)
+        stop = max(start + float(a.get("end") or 0), float(b.get("start") or 0) + float(b.get("end") or 0))
+        keeper = out[j]
+        merged = keeper | {
+            "duration": format_hhmmss(start),
+            "start": num_seconds(start),
+            "end": num_seconds(stop - start),
+            "restricted": is_restricted(keeper, restricted_games),
+        }
+        out[min(i, j) : max(i, j) + 1] = [merged]
+        changed = True
+        i = min(i, j)  # the merged span may still be short
+    return out if changed else chapters
+
+
 def single_chapter(
     game: dict[str, Any] | None, box_art: str | None, vod_duration: float, restricted_games: list[str]
 ) -> dict[str, Any]:
@@ -341,6 +379,12 @@ def video_title(
     return title[:100]
 
 
+def custom_title(title: str | None, part: int, total_parts: int) -> str:
+    """A custom upload's title as typed, with " (part n/N)" when it is cut in several, within YouTube's 100."""
+    suffix = f" (part {part}/{total_parts})" if total_parts > 1 else ""
+    return (title or "Video").strip()[: 100 - len(suffix)].rstrip() + suffix
+
+
 def base_description(domain: str, vod_id: str, stream_title: str | None, extra: str) -> str:
     clean = (stream_title or "").replace("<", "").replace(">", "")
     return f"Chat Replay: https://{domain}/youtube/{vod_id}\nStream Title: {clean}\n{extra}"
@@ -356,6 +400,18 @@ def chapter_lines(chapters: list[dict[str, Any]] | None, part: Part, restricted_
         if s < part.end and e > part.start:
             lines.append(f"{format_hhmmss(max(0.0, s - part.start))} {ch.get('name') or 'Unknown'}")
     return lines
+
+
+def part_games(chapters: list[dict[str, Any]] | None, part: Part, restricted_games: list[str]) -> list[str]:
+    """The games played in ``part``, in order, each once (what ``chapter_lines`` lists, without the times)."""
+    names: list[str] = []
+    for ch in chapters or []:
+        s = float(ch.get("start") or 0)
+        e = s + float(ch.get("end") or 0)
+        name = str(ch.get("name") or "").strip()
+        if name and name not in names and s < part.end and e > part.start and not is_restricted(ch, restricted_games):
+            names.append(name)
+    return names
 
 
 def full_description(
@@ -473,34 +529,65 @@ _SEE_THROUGH = ("blur", "pixelate")
 @dataclass(frozen=True)
 class Cover:
     """One way a clip is covered: ``video`` over the whole frame, or only ``region`` (x, y, w, h fractions
-    of the frame from its top-left corner); ``color`` (#rrggbb) for a ``color`` fill."""
+    of the frame from its top-left corner); ``color`` (#rrggbb) for a ``color`` fill; ``text`` drawn over it."""
 
     video: str
     color: str | None = None
     region: tuple[float, float, float, float] | None = None
+    text: str | None = None
 
     def __str__(self) -> str:
         what = self.color if self.video == "color" and self.color else self.video
-        return f"{what} box" if self.region else what
+        return (f"{what} box" if self.region else what) + (" + text" if self.text else "")
 
 
 Covers = tuple[Cover, ...]
 
 
 @dataclass(frozen=True)
+class Sound:
+    """What a stretch of audio gets: ``mute`` (silence), ``muffle`` (a low-pass), or ``song`` (the
+    library song ``song`` looped over it at ``volume``, 0 to 1, the stream's own audio silenced)."""
+
+    audio: str
+    song: str | None = None
+    volume: float = 1.0
+
+    def __str__(self) -> str:
+        return f"song {self.song} at {self.volume:g}" if self.audio == "song" else self.audio
+
+
+# Where audio treatments overlap the strongest wins: silence, then a song, then muffling.
+SOUND_RANK = {"muffle": 1, "song": 2, "mute": 3}
+
+
+@dataclass(frozen=True)
 class CensorPlan:
     cover: list[tuple[float, float, Covers]]  # (start, end, how), sorted, not overlapping
-    mute: list[tuple[float, float]]
+    audio: list[tuple[float, float, Sound]]  # (start, end, what), sorted, not overlapping
 
     @property
     def empty(self) -> bool:
-        return not self.cover and not self.mute
+        return not self.cover and not self.audio
+
+    @property
+    def songs(self) -> list[str]:
+        """The library songs the plan plays, each once."""
+        return list(dict.fromkeys(s.song for _, _, s in self.audio if s.song))
 
 
 def _cover_of(r: dict[str, Any]) -> Cover:
     region = r.get("region")
     box = (float(region["x"]), float(region["y"]), float(region["w"]), float(region["h"])) if region else None
-    return Cover(r["video"], r.get("color") if r["video"] == "color" else None, box)
+    return Cover(r["video"], r.get("color") if r["video"] == "color" else None, box, r.get("text") or None)
+
+
+def _sound_of(r: dict[str, Any]) -> Sound:
+    """A muting range's sound: ``audio`` absent is silence (what ``mute`` always meant)."""
+    audio = r.get("audio") or "mute"
+    if audio == "song":
+        return Sound("song", str(r["song"]), float(r.get("volume", 1.0)))
+    return Sound(audio)
 
 
 def _covers_for(found: list[Cover]) -> Covers:
@@ -513,32 +600,40 @@ def _covers_for(found: list[Cover]) -> Covers:
     return tuple(sorted(boxes, key=lambda c: c.video not in _SEE_THROUGH))
 
 
+def _stretches[T](spans: list[tuple[float, float, T]], pick: Any) -> list[tuple[float, float, Any]]:
+    """Overlapping ``spans`` cut into stretches that don't overlap, each given ``pick(what is over it)``,
+    with neighbours that got the same joined."""
+    points = sorted({p for a, b, _ in spans for p in (a, b)})
+    out: list[tuple[float, float, Any]] = []
+    for a, b in zip(points, points[1:], strict=False):
+        found = [w for s, e, w in spans if s <= a and b <= e]
+        if not found:
+            continue
+        how = pick(found)
+        if out and out[-1][1] == a and out[-1][2] == how:
+            out[-1] = (out[-1][0], b, how)
+        else:
+            out.append((a, b, how))
+    return out
+
+
 def plan_censor(ranges: list[dict[str, Any]] | None) -> CensorPlan:
-    """``vods.censor`` ranges (on the file's timeline) -> what to cover and what to mute."""
-    marks: set[float] = set()
+    """``vods.censor`` ranges (on the file's timeline) -> what to cover and what to do to the audio.
+    Overlapping sounds: the strongest wins (``SOUND_RANK``), between two songs the earlier range's."""
     covers: list[tuple[float, float, Cover]] = []
-    mute: list[tuple[float, float]] = []
+    sounds: list[tuple[float, float, Sound]] = []
     for r in ranges or []:
         a, b = float(r["start"]), float(r["end"])
         if b <= a:
             continue
         if r.get("video") in COVER_RANK:
             covers.append((a, b, _cover_of(r)))
-            marks |= {a, b}
         if r.get("mute"):
-            mute.append((a, b))
-    cover: list[tuple[float, float, Covers]] = []
-    points = sorted(marks)
-    for a, b in zip(points, points[1:], strict=False):
-        found = [c[2] for c in covers if c[0] <= a and b <= c[1]]
-        if not found:
-            continue
-        how = _covers_for(found)
-        if cover and cover[-1][1] == a and cover[-1][2] == how:
-            cover[-1] = (cover[-1][0], b, how)
-        else:
-            cover.append((a, b, how))
-    return CensorPlan(cover, _merge(mute))
+            sounds.append((a, b, _sound_of(r)))
+    return CensorPlan(
+        _stretches(covers, _covers_for),
+        _stretches(sounds, lambda found: max(found, key=lambda s: SOUND_RANK[s.audio])),
+    )
 
 
 def censor_on_recording(

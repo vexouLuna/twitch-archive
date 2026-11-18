@@ -39,7 +39,7 @@ CMD ["archive-api"]
 
 FROM python:3.13-slim AS worker
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 # yt-dlp (seek-bar previews backfill) needs a JavaScript runtime for YouTube.
 COPY --from=denoland/deno:bin-2.5.6 /deno /usr/local/bin/deno
