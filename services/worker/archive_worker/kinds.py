@@ -66,6 +66,9 @@ KINDS: dict[str, list[str]] = {
     ],
     # /v2/live callback from an external recorder.
     "live_file": ["ensure_source", "chapters", "censor_check", "censor", "split", "upload", "describe", "previews"],
+    # A video sent from Manage (custom_upload.py): no Twitch VOD behind it. It pauses after upload_review for the
+    # censor editor and preview, then uploads with the form's title, description and privacy.
+    "custom_upload": ["upload_source", "upload_review", "censor", "split", "upload", "cleanup"],
     "dmca": [
         "ensure_source",
         "fetch_vod",

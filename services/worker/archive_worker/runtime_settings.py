@@ -212,6 +212,17 @@ ENTRIES = (
         720,
         requires="auto_merge",
     ),
+    # Manage's media tools (config.MediaToolSettings).
+    Entry("custom_upload_max_gb", "float", "Pipeline", "now", "Largest video a custom upload takes, in GB", 0.1, 1000),
+    Entry(
+        "custom_upload_abandon_hours",
+        "float",
+        "Pipeline",
+        "now",
+        "Hours after its last chunk an unfinished custom upload is deleted",
+        1,
+        720,
+    ),
     Entry("runner_concurrency", "int", "Runner", "now", "Jobs run at once", 1, 16),
     Entry("max_attempts", "int", "Runner", "now", "Tries of a failing step before its job fails", 1, 10),
 )

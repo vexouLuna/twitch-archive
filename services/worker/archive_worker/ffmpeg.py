@@ -141,6 +141,16 @@ async def hls_to_mp4(playlist: Path, out: Path, *, fmp4: bool = False) -> Path:
     )
 
 
+@_one_at_a_time("remux")
+async def remux(src: Path, out: Path) -> Path:
+    """The first video stream and the first audio stream (if any) of ``src`` into an MP4, stream-copied,
+    index in front (a custom upload's file, whatever container it came in)."""
+    return await _ffmpeg_to(
+        out,
+        ["-i", str(src), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-sn", "-dn", "-movflags", "+faststart"],
+    )
+
+
 # Input seeking (``-ss`` before ``-i``) jumps straight to a keyframe; output seeking
 # (``-ss`` after ``-i``) then trims exactly, but reads every packet before its target.
 # Seeking in two stages gets both: the jump lands SEEK_MARGIN seconds early, well

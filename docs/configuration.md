@@ -74,6 +74,8 @@ See [Troubleshooting](operations.md) for how to find new values.
 | `ARCHIVE_CENSOR_ALLOW_GAMES` † | `[]` | Games uploaded without the IGDB check (`RESTRICTED_GAMES` still wins: those are cut) |
 | `ARCHIVE_MANUAL_STEPS` † | `{}` | Steps a job pauses before until you resume it, per job kind, e.g. `{"archive":["upload"]}`; see [Manual steps](admin-api.md#manual-steps) |
 | `ARCHIVE_SPLIT_DURATION` † | `10800` | Maximum YouTube part length in seconds |
+| `ARCHIVE_CUSTOM_UPLOAD_MAX_GB` † | `64` | The largest file a custom upload takes; see [Custom uploads](admin-api.md#custom-uploads) |
+| `ARCHIVE_CUSTOM_UPLOAD_ABANDON_HOURS` † | `24` | An unfinished custom upload nothing was sent to for this long is deleted |
 | `ARCHIVE_KEEP_HLS` / `ARCHIVE_KEEP_MP4` † | `false` | Keep files after upload |
 | `ARCHIVE_KEEP_FILES_DAYS` † | `0` | Days to keep a job's files after upload: its cleanup step queues a `cleanup` job for then (0: clean up at once) |
 | `ARCHIVE_PREVIEWS` † | `true` | Make seek-bar previews of each uploaded part; see [Seek-bar previews](admin-api.md#seek-bar-previews) |

@@ -61,6 +61,7 @@ from .compose import ComposeError, Source
 from .job_rows import ALL_JOBS
 from .site_tags import vod_tags
 from .vod_edits import tags as check_tags
+from .vods import UPLOAD_PREFIX
 
 log = logging.getLogger(__name__)
 STALE_BATCH = 50
@@ -100,6 +101,9 @@ async def _segments(s: AsyncSession, vod_id: str) -> list[Segment]:
 
 
 async def _sources(s: AsyncSession, ids: set[str]) -> dict[str, Source]:
+    uploads = sorted(i for i in ids if i.startswith(UPLOAD_PREFIX))
+    if uploads:
+        raise SyntheticError(409, f"{', '.join(uploads)}: a custom upload can't be part of a synthetic VOD")
     return {v.id: source_of(v) for v in (await s.execute(select(Vod).where(Vod.id.in_(ids)))).scalars()}
 
 
@@ -552,6 +556,7 @@ async def merge_candidates(vod_id: str, minutes: int, hours: int | None = None) 
                 select(Vod)
                 .where(
                     Vod.id != a.id,
+                    ~Vod.id.startswith(UPLOAD_PREFIX),
                     Vod.merged_into.is_(None),
                     Vod.created_at < ends + within,
                     Vod.created_at > a.created_at - within - dt.timedelta(days=2),  # then by its end, below
@@ -569,6 +574,7 @@ async def merge_candidates(vod_id: str, minutes: int, hours: int | None = None) 
             select(Vod)
             .where(
                 Vod.id != a.id,
+                ~Vod.id.startswith(UPLOAD_PREFIX),
                 Vod.merged_into.is_(None),
                 Vod.created_at > a.created_at,
                 Vod.created_at <= ends + dt.timedelta(minutes=minutes),

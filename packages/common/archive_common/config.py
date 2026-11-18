@@ -201,6 +201,13 @@ class PipelineSettings(_Base):
     doomtp_api_key: SecretStr = SecretStr("")
 
 
+class MediaToolSettings(_Base):
+    """Manage's media tools: custom uploads (a video sent from the dashboard, archive_worker/custom_upload.py)."""
+
+    custom_upload_max_gb: float = 64.0  # the largest file a custom upload takes
+    custom_upload_abandon_hours: float = 24.0  # an upload nothing was sent to for this long is deleted
+
+
 class AdminSettings(_Base):
     """The worker's admin API: keys, the password, Twitch sign-in through vex-auth, proxies, sites."""
 
@@ -253,7 +260,7 @@ class ApiSettings(CoreSettings, TwitchSettings, PublicApiSettings, DataSettings)
     """What archive-api uses. Typing it against this, not ``Settings``, keeps the worker's settings out of it."""
 
 
-class Settings(ApiSettings, CaptureSettings, YouTubeSettings, PipelineSettings, AdminSettings):
+class Settings(ApiSettings, CaptureSettings, YouTubeSettings, PipelineSettings, MediaToolSettings, AdminSettings):
     """Every setting: the worker's, and the shared ones. The dashboard can override the ones listed in
     archive_worker/runtime_settings.py's ``ENTRIES``, and only those."""
 
