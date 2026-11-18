@@ -3,7 +3,7 @@
     GET    /api/v2/songs               {items}: every song, newest first
     POST   /api/v2/songs?name=         the raw audio file as the body (at most songs.MAX_BYTES): 201, the song
     GET    /api/v2/songs/{song_id}/audio  the stored file (audio/mp4), to listen to it
-    DELETE /api/v2/songs/{song_id}     refused (409 song_in_use) while a VOD's censor range plays it
+    DELETE /api/v2/songs/{song_id}     refused (409 file_in_use) while a VOD's censor range plays it
 
 The upload is audited as ``song.add``, the delete as ``song.delete``.
 """
@@ -107,11 +107,13 @@ def songs_router(auth: Auth, settings: Settings) -> APIRouter:
     async def delete_song(request: Request, song_id: str) -> Song:
         """Refused while a censor range plays it: change those ranges first (the error lists the VODs)."""
         if songs.is_id(song_id) and (using := await vods_playing(song_id)):
+            # file_in_use: one shape for any stored file something still uses (docs/admin-api.md, "Censor songs")
             raise ApiError(
                 409,
-                "song_in_use",
+                "file_in_use",
                 f"censor ranges of {', '.join(using)} play this song; give them another song first",
-                vods=using,
+                file={"kind": "song", "id": song_id},
+                used_by=[{"kind": "vod", "id": v} for v in using],
             )
         try:
             meta: dict[str, Any] = songs.delete(data_dir, song_id)

@@ -65,7 +65,10 @@ async def test_upload_list_play_use_and_delete_a_song(admin, mp3, monkeypatch): 
     assert r.status_code == 422 and "not in the song library" in r.json()["detail"]
 
     r = await admin.delete(f"/api/v2/songs/{song['id']}", headers=KEY)
-    assert r.status_code == 409 and r.json()["code"] == "song_in_use" and r.json()["vods"] == [VOD]
+    assert r.status_code == 409 and r.json()["code"] == "file_in_use"
+    assert r.json()["file"] == {"kind": "song", "id": song["id"]} and r.json()["used_by"] == [
+        {"kind": "vod", "id": VOD}
+    ]
     assert (await admin.put(f"/api/v2/vods/{VOD}/censor", json={"censor": []}, headers=KEY)).status_code == 200
     r = await admin.delete(f"/api/v2/songs/{song['id']}", headers=KEY)
     assert r.status_code == 200 and r.json()["id"] == song["id"]
