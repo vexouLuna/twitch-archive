@@ -112,17 +112,21 @@ async def thumbnail(ctx: JobContext) -> None:
     if not targets:
         ctx.log.info("no thumbnails to make")
         return
-    if not s.dry_run:
-        refusal = await _channel_refusal(ctx)
-        if refusal and again:
-            raise StepRefused(refusal)
-        if refusal:
-            ctx.log.warning("skipping thumbnails: %s", refusal)
-            ctx.payload["thumbnail_failed"] = {"all": refusal}
-            await ctx.save()
-            return
+    try:
+        refusal = None if s.dry_run else await _channel_refusal(ctx)
+        template = await thumbnails.load()
+    except Exception as exc:  # the channel lookup (quota, auth, YouTube) or the template: in an upload job, an extra
+        if again:
+            raise
+        refusal = f"the channel check failed: {type(exc).__name__}: {exc}"
+    if refusal and again:
+        raise StepRefused(refusal)
+    if refusal:
+        ctx.log.warning("skipping thumbnails: %s", refusal)
+        ctx.payload["thumbnail_failed"] = {"all": refusal[:500]}
+        await ctx.save()
+        return
 
-    template = await thumbnails.load()
     total = int(ctx.payload.get("total_parts") or 0) or max(
         [int(e.get("part") or 1) for e in vod.youtube or [] if e.get("type") == ctx.video_type] + [len(targets)]
     )

@@ -562,7 +562,7 @@ class YouTube:
     async def set_thumbnail(self, video_id: str, path: Path) -> None:
         """Make the JPEG at ``path`` (16:9, at most 2 MB) the video's thumbnail (50 quota units). YouTube allows it
         only on a verified channel: ``own_channel()``'s ``longUploadsStatus`` is ``allowed`` there."""
-        service = await self._service()  # type: ignore[no-untyped-call]
+        service = await self._service()  # type: ignore[no-untyped-call]  # googleapiclient's Resource is untyped
         media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
         await _counted("thumbnails.set", service.thumbnails().set(videoId=video_id, media_body=media).execute)
 

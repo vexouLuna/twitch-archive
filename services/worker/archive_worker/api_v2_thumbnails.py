@@ -141,7 +141,9 @@ def thumbnails_router(ctx: AdminContext, auth: Auth) -> APIRouter:
         if body.parts:
             payload["only_parts"] = sorted(set(body.parts))
         with _admin_refusals():
-            job = await ctx.enqueue("thumbnail", vod.id, ctx.type_payload(vod, payload))
+            # type_payload knows only vod/live (and keeps only its own keys): a compiled upload needs no stream_id.
+            base = {"type": "compiled", "manual": True} if body.type == "compiled" else ctx.type_payload(vod, payload)
+            job = await ctx.enqueue("thumbnail", vod.id, {**base, **payload})
         await _audit(request, "vod.thumbnails", vod.id, after={**payload, "job_id": job.id})
         parts = f"part {', '.join(map(str, body.parts))}" if body.parts else "every part"
         return JobQueued(job_id=job.id, message=f"Making the {body.type} thumbnails of {vod.id} again ({parts})")
