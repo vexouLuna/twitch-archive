@@ -21,7 +21,17 @@ from archive_common.models import Vod
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from vex_platform.api import ApiError, ApiModel, LimitQuery, Page, UtcDatetime, decode_cursor, page_of, request_id
+from vex_platform.api import (
+    ApiError,
+    ApiModel,
+    LimitQuery,
+    Page,
+    UtcDatetime,
+    decode_cursor,
+    file_in_use,
+    page_of,
+    request_id,
+)
 from vex_platform.audit import AuditEntry
 
 from . import songs
@@ -112,13 +122,11 @@ def songs_router(auth: Auth, settings: Settings) -> APIRouter:
     async def delete_song(request: Request, song_id: str) -> Song:
         """Refused while a censor range plays it: change those ranges first (the error lists the VODs)."""
         if songs.is_id(song_id) and (using := await vods_playing(song_id)):
-            # file_in_use: one shape for any stored file something still uses (docs/admin-api.md, "Censor songs")
-            raise ApiError(
-                409,
-                "file_in_use",
+            raise file_in_use(
+                "song",
+                song_id,
+                [("vod", v) for v in using],
                 f"censor ranges of {', '.join(using)} play this song; give them another song first",
-                file={"kind": "song", "id": song_id},
-                used_by=[{"kind": "vod", "id": v} for v in using],
             )
         try:
             meta: dict[str, Any] = songs.delete(data_dir, song_id)
