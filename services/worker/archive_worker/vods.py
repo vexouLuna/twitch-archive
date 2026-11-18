@@ -14,6 +14,8 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+UPLOAD_PREFIX = "upload-"  # custom_upload.PREFIX (imported from here: vods is a leaf module)
+
 
 async def upsert_vod(video: dict[str, Any]) -> None:
     """Create the vods row for a Helix video, or refresh its title. Duration and
@@ -37,7 +39,9 @@ async def upsert_vod(video: dict[str, Any]) -> None:
 async def splice_reason(vod_id: str) -> str | None:
     """Why ``vod_id`` does not match Twitch's VOD of that id (a synthetic VOD, or one merged away before
     merges became synthetic VODs), or None. The real VODs behind a synthetic one are untouched, so they
-    are never refused."""
+    are never refused. A custom upload (custom_upload.py) has no Twitch VOD at all."""
+    if vod_id.startswith(UPLOAD_PREFIX):
+        return f"vod {vod_id} is a custom upload, with no Twitch VOD behind it"
     async with get_sessionmaker()() as s:
         row = (await s.execute(select(Vod.merged_into, Vod.synthetic).where(Vod.id == vod_id))).one_or_none()
     merged_into, synthetic = row if row else (None, None)

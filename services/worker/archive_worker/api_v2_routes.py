@@ -60,7 +60,7 @@ from .job_rows import ACTIVE, ALL_JOBS
 from .runtime_settings import RuntimeSettings
 from .steps import content_check
 from .storage import Storage, StorageError
-from .vods import drop_youtube_entries, notify_rows_moved
+from .vods import UPLOAD_PREFIX, drop_youtube_entries, notify_rows_moved
 
 Auth = Callable[[Request], Any]
 VOD_LIST_MAX = 200
@@ -439,6 +439,7 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         uploaded: bool | None = None,
         busy: bool | None = None,
         fully_cut: bool | None = None,
+        custom: bool | None = None,
         cursor: str | None = None,
         limit: Annotated[int, Query(ge=1, le=VOD_LIST_MAX)] = 50,
     ) -> Page[VodRow]:
@@ -446,13 +447,17 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
         ``synthetic`` filter; ``tag`` keeps the VODs with that tag (``tag=`` empty: untagged ones);
         ``uploaded`` is whether any part is on YouTube, ``busy`` whether a job is queued, running or
         paused for it (``uploaded=false&busy=false``: the VODs nothing is archiving); ``fully_cut`` whether
-        it has chapters and every one is restricted, so there is nothing left to upload."""
+        it has chapters and every one is restricted, so there is nothing left to upload; ``custom`` whether
+        it is a custom upload (``upload-…``, no Twitch VOD behind it)."""
         stmt = select(Vod).order_by(Vod.created_at.desc(), Vod.id.desc()).limit(limit + 1)
         if term := q.strip():
             like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
             stmt = stmt.where(or_(Vod.id == term, Vod.title.ilike(like, escape="\\")))
         if hidden is not None:
             stmt = stmt.where(Vod.hidden.is_(hidden))
+        if custom is not None:
+            is_custom = Vod.id.startswith(UPLOAD_PREFIX)
+            stmt = stmt.where(is_custom if custom else ~is_custom)
         if tag is not None:
             stmt = stmt.where(tagged(tag or None))
         if is_synthetic is not None:
@@ -503,6 +508,12 @@ def vods_router(auth: Auth, settings: Settings) -> APIRouter:
                 values = vod_edits.vod_fields(v1, known)
             except ValueError as exc:
                 raise ApiError(422, "invalid_vod", str(exc)) from None
+            if vod.id.startswith(UPLOAD_PREFIX) and values.get("hidden") is False:
+                raise ApiError(
+                    409,
+                    "vod_custom",
+                    f"{vod.id} is a custom upload: it stays off the site (its YouTube video is its only copy)",
+                )
             if vod.merged_into is not None and set(v1) - vod_edits.MERGED_EDITABLE:
                 raise ApiError(
                     409,

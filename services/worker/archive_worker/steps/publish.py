@@ -43,7 +43,8 @@ def _publishing_disabled(ctx: JobContext) -> str | None:
         return "youtube_upload is off"
     if ctx.video_type == "compiled" and not s.compile_youtube_upload:
         return "compile_youtube_upload is off"
-    if ctx.video_type == "vod" and s.live_record and not s.multi_track and not _forced(ctx):
+    custom = ctx.kind == "custom_upload"  # no Twitch VOD behind it, so no live copy either
+    if ctx.video_type == "vod" and s.live_record and not s.multi_track and not _forced(ctx) and not custom:
         return "live_record is on without multi_track: only the live copy is uploaded"
     return None
 
@@ -97,6 +98,12 @@ async def _save_entry(vod_id: str, entry: dict[str, Any]) -> None:
 
 async def upload(ctx: JobContext) -> None:
     reason = _publishing_disabled(ctx)
+    if reason and ctx.kind == "custom_upload" and not ctx.settings.dry_run:
+        # Skipping would let cleanup delete the only copy: a custom upload has no Twitch VOD to fetch again.
+        raise StepRefused(
+            f"not uploading: {reason}, and a custom upload's files are its only copy, so the job stops here "
+            "rather than cleaning them up. Turn youtube_upload on, then retry the job."
+        )
     if reason:
         ctx.log.info("skipping upload: %s", reason)
         return
@@ -109,6 +116,9 @@ async def upload(ctx: JobContext) -> None:
     status = planning.privacy(
         ctx.video_type, s.youtube_public, s.live_record and (has_live or not _forced(ctx)), s.compile_youtube_public
     )
+    custom: dict[str, Any] | None = ctx.payload.get("custom") if ctx.kind == "custom_upload" else None
+    if custom is not None:  # the upload form's own (custom_upload.check_details)
+        description, status = str(custom.get("description") or ""), str(custom.get("privacy") or "private")
     if _forced(ctx):
         ctx.log.info("force_upload_manual: uploading the VOD copy of an archive started from the dashboard")
     uploaded: dict[str, dict[str, Any]] = ctx.payload.setdefault("uploaded", {})
@@ -133,8 +143,12 @@ async def upload(ctx: JobContext) -> None:
             continue
         path = Path(part["path"])
         template = s.youtube_title_compiled if ctx.video_type == "compiled" else s.youtube_title
-        title = planning.video_title(
-            template, s.channel, ctx.video_type, vod.created_at, s.timezone, part["number"], total, vod.title
+        title = (
+            planning.custom_title(vod.title, part["number"], total)
+            if custom is not None
+            else planning.video_title(
+                template, s.channel, ctx.video_type, vod.created_at, s.timezone, part["number"], total, vod.title
+            )
         )
         ctx.log.info("uploading %s as %r (%s)", path.name, title, status)
 

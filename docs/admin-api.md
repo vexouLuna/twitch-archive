@@ -118,6 +118,7 @@ Job kinds and their steps:
 | `reupload` | ensure_source → fetch_vod → finalize → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/reupload` |
 | `live` | live_record → resolve_vod → finalize → chapters → chat → emotes → censor_check → censor → split → upload → describe → previews → cleanup | monitor (when `LIVE_RECORD=true`) |
 | `live_file` | ensure_source → chapters → censor_check → censor → split → upload → describe → previews | `/v2/live` |
+| `custom_upload` | upload_source → upload_review → censor → split → upload → cleanup | `POST /api/v2/uploads/{id}/finish` ([Custom uploads](#custom-uploads)) |
 | `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
 | `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
@@ -201,6 +202,26 @@ curl -s "${H[@]}" -X DELETE "$A/api/v2/storage/vods/123" # delete a folder's fil
 - `GET` answers `{disk: {total, used, free}, folders: [{area, name, path, bytes, files, modifiedAt, vod, jobs: {active, last}, stale}], cacheSeconds}`. `vod` is the VOD the folder belongs to (`{id, title, hidden}`, or `null`); `jobs` are the jobs working in it. Sizes are cached for 30 seconds (and dropped after a delete).
 - A folder is **stale** when no job for it is queued, running or paused, and either no VOD belongs to it or its last job failed or was cancelled.
 - `DELETE` answers `{path, bytes, files}` (what it frees, as the last scan measured it) and is audited with it. The folder moves into its area's `.trash/` before the answer and its files are removed in the background, since removing a VOD's files can outlast a proxy's timeout; the disk's free space catches up once they are gone, and whatever a restart interrupted is removed when the worker starts. It is refused (`409`) while a job for the folder is queued, running or paused, and only takes a folder name directly under `vods/` or `live/` (no symlinks). Paths are always relative to the data directory.
+
+## Custom uploads
+
+A video that is not a Twitch VOD can go to YouTube through the censor step: Manage's **Upload** page sends the file in chunks, and it becomes a hidden VOD with the id `upload-` and 12 hex digits (`platform: "upload"`, the form's title, no Twitch metadata).
+
+```bash
+curl -s "${H[@]}" -X POST "$A/api/v2/uploads" -d '{"filename":"clip.mp4","size_bytes":302000000}'   # 201 {id, chunk_bytes, received_bytes, ...}
+curl -s "${H[@]}" -X PUT "$A/api/v2/uploads/upload-0123456789ab?offset=0" -H 'content-type: application/octet-stream' --data-binary @chunk0
+curl -s "${H[@]}" "$A/api/v2/uploads/upload-0123456789ab"                                          # received_bytes: where to go on from
+curl -s "${H[@]}" -X POST "$A/api/v2/uploads/upload-0123456789ab/finish" -d '{"title":"…","description":"…","privacy":"unlisted"}'   # 201 {vod_id, job_id, duration_seconds}
+curl -s "${H[@]}" -X DELETE "$A/api/v2/uploads/upload-0123456789ab"                                 # cancel
+```
+
+- **Start** (`POST /api/v2/uploads {filename, size_bytes}`) refuses a file over `custom_upload_max_gb` (413 `too_large`) and one the disk hasn't twice the room for (507 `disk_full`: the file, then its remuxed copy). `GET /api/v2/uploads` lists the unfinished ones (`{items: [{id, filename, size_bytes, received_bytes, chunk_bytes, created_at, updated_at, created_by}]}`), so a page that was reloaded finds its upload by name and size.
+- **Chunks** (`PUT …?offset=`) carry the raw bytes from `offset`, which must be `received_bytes` (409 `offset_mismatch` with `received_bytes` otherwise), at most `chunk_bytes` (8 MiB; 413 `chunk_too_large`) and not past `size_bytes`. A chunk is all or nothing: one cut off is dropped and sent again. One chunk at a time per upload (409 `upload_busy`). 8 MiB keeps each request well under the 100 MB a Cloudflare-proxied request may carry, and short enough for a proxy's response timeout.
+- **Finish** (`POST …/finish {title, description, privacy}`) needs every byte (409 `upload_incomplete`), checks the file with ffprobe (422 `not_video`: a known container — mp4/mov, matroska/webm, mpegts, flv, avi — with a video stream that is not a cover picture, at least a second long; a refused file stays, to cancel), takes a title of 1 to 100 characters, a description of at most 5000 and neither with `<` or `>` (YouTube's rules), and a `privacy` of `private` (default), `unlisted` or `public`. It moves the file into `vods/<id>/`, adds the VOD (hidden) and queues its `custom_upload` job with `{upload_file, custom: {description, privacy, filename}}`.
+- **The job**: `upload_source` remuxes the file into `vods/<id>/<id>.mp4` (stream copy, first video and audio stream; a codec an MP4 can't hold fails it with a message to convert first) and removes the upload. `upload_review` pauses the job before `censor`: set censor ranges on the VOD's page (the preview plays the server file), then resume it (the Upload page's **Upload to YouTube**, or `POST /api/v2/jobs/{id}/resume`). `censor`, `split` and `upload` run as for a VOD: the title is the VOD's (` (part n/N)` added when split), the description and privacy are the form's; the dry run and the YouTube daily limits apply as they are, but not the live_record rule (there is no live copy). With `youtube_upload` off the job stops at `upload` (failed, saying so) instead of skipping it, since `cleanup` would then delete the only copy of the video: turn it on and retry the job. `cleanup` removes the files after the upload, as for any job (`ARCHIVE_KEEP_MP4` and `KEEP_FILES_DAYS` keep them); a failed job keeps them, to retry.
+- **Staying apart**: the VOD is hidden and can't be shown (PATCH `hidden: false` is 409 `vod_custom`), so it stays off the public API, the site's lists, games-played and the status page. It can't be a synthetic VOD's source (409), isn't offered as a merge candidate, and jobs that fetch from Twitch (`chapters`, `chat`, `emotes`, `bot_chat`, `download` and so re-archiving) are refused for it like for a synthetic VOD. `GET /api/v2/vods?custom=true` lists the custom uploads (`false`: the others).
+- **Abandoned** uploads (nothing sent for `custom_upload_abandon_hours`, default 24) are deleted when another upload starts and when the worker starts. Unfinished uploads live in `<data_dir>/uploads/`, outside the storage view's areas; a finished one is the VOD's `vods/<id>/` folder.
+- Audited: `upload.start`, `upload.cancel`, `upload.finish` (chunks are not).
 
 ## Recipes
 

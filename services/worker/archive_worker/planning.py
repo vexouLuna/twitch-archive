@@ -379,6 +379,12 @@ def video_title(
     return title[:100]
 
 
+def custom_title(title: str | None, part: int, total_parts: int) -> str:
+    """A custom upload's title as typed, with " (part n/N)" when it is cut in several, within YouTube's 100."""
+    suffix = f" (part {part}/{total_parts})" if total_parts > 1 else ""
+    return (title or "Video").strip()[: 100 - len(suffix)].rstrip() + suffix
+
+
 def base_description(domain: str, vod_id: str, stream_title: str | None, extra: str) -> str:
     clean = (stream_title or "").replace("<", "").replace(">", "")
     return f"Chat Replay: https://{domain}/youtube/{vod_id}\nStream Title: {clean}\n{extra}"
