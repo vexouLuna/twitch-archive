@@ -530,6 +530,26 @@ async def encode(
     )
 
 
+@_one_at_a_time("still")
+async def still(src: Path | None, at: float, out: Path, vf: str, quality: int = 3) -> Path:
+    """One frame of ``src`` at ``at`` seconds through the filter graph ``vf``, as the JPEG ``out`` (``quality``:
+    ffmpeg's -q:v, 2 best to 31). No ``src``: a plain dark 1280x720 frame, for a template's preview."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".part")
+    tmp.unlink(missing_ok=True)
+    source = (
+        ["-f", "lavfi", "-i", "color=c=0x1b2130:s=1280x720:d=1"]
+        if src is None
+        else ["-ss", f"{max(0.0, at):.3f}", "-i", str(src)]
+    )
+    await _run(
+        [FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *source, "-frames:v", "1", "-vf", vf]
+        + ["-q:v", str(quality), "-c:v", "mjpeg", "-f", "image2", str(tmp)]
+    )
+    os.replace(tmp, out)
+    return out
+
+
 def concat_listing(paths: list[Path]) -> str:
     """A concat-demuxer list of ``paths``: each quoted, a ``'`` written as ``'\\''`` (ffmpeg's escape),
     so a path can't end its own line early and add directives. A newline can't be quoted at all."""

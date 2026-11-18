@@ -113,23 +113,24 @@ Job kinds and their steps:
 
 | Kind | Steps | Started by |
 |---|---|---|
-| `archive` | capture → finalize → chapters → chat → emotes → censor_check → censor → split → upload → describe → previews → cleanup | monitor (stream went live), `/admin/hls/download` |
-| `download` | ensure_source → fetch_vod → finalize → chapters → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/download` |
-| `reupload` | ensure_source → fetch_vod → finalize → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/reupload` |
-| `live` | live_record → resolve_vod → finalize → chapters → chat → emotes → censor_check → censor → split → upload → describe → previews → cleanup | monitor (when `LIVE_RECORD=true`) |
-| `live_file` | ensure_source → chapters → censor_check → censor → split → upload → describe → previews | `/v2/live` |
-| `custom_upload` | upload_source → upload_review → censor → split → upload → cleanup | `POST /api/v2/uploads/{id}/finish` ([Custom uploads](#custom-uploads)) |
-| `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → describe → previews → cleanup | `/admin/dmca` |
-| `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → describe → previews → cleanup | `/admin/part/dmca` |
+| `archive` | capture → finalize → chapters → chat → emotes → censor_check → censor → split → upload → thumbnail → describe → previews → cleanup | monitor (stream went live), `/admin/hls/download` |
+| `download` | ensure_source → fetch_vod → finalize → chapters → censor_check → censor → split → upload → thumbnail → describe → previews → cleanup | `/admin/download` |
+| `reupload` | ensure_source → fetch_vod → finalize → censor_check → censor → split → upload → thumbnail → describe → previews → cleanup | `/admin/reupload` |
+| `live` | live_record → resolve_vod → finalize → chapters → chat → emotes → censor_check → censor → split → upload → thumbnail → describe → previews → cleanup | monitor (when `LIVE_RECORD=true`) |
+| `live_file` | ensure_source → chapters → censor_check → censor → split → upload → thumbnail → describe → previews | `/v2/live` |
+| `custom_upload` | upload_source → upload_review → censor → split → upload → thumbnail → cleanup | `POST /api/v2/uploads/{id}/finish` ([Custom uploads](#custom-uploads)) |
+| `dmca` | ensure_source → fetch_vod → finalize → dmca_edit → censor_check → censor → split → upload → thumbnail → describe → previews → cleanup | `/admin/dmca` |
+| `part_dmca` | ensure_source → fetch_vod → finalize → censor_check → censor → split → dmca_edit → upload → thumbnail → describe → previews → cleanup | `/admin/part/dmca` |
 | `chat`, `logs_manual`, `chapters`, `emotes`, `describe` | one step each | the matching admin routes |
 | `cleanup` | one step | a pipeline's `cleanup` step, `ARCHIVE_KEEP_FILES_DAYS` later; a newer pipeline on the same folder cancels it, and it leaves files a run still needs (active, or failed since) |
 | `global_emotes_backfill` | one step | `/admin/emotes/backfill` |
 | `live_gaps_backfill` | one step | `/admin/live-gaps/backfill` |
 | `bot_chat` | one step | monitor (stream ended, `DOOMTP_URL` set; separate from `archive`), `/admin/bot-chat` |
 | `bot_chat_backfill` | one step: queues a `bot_chat` job per VOD | `/admin/bot-chat/backfill` |
+| `thumbnail` | one step | `POST /api/v2/vods/{id}/thumbnails` ([Thumbnails](#thumbnails)) |
 | `previews_fetch` | one step | `/admin/previews` |
 | `previews_backfill` | one step: queues a `previews_fetch` job per VOD | `/admin/previews/backfill` |
-| `compile` | compile_sources → compile → split → upload → describe → cleanup | `POST /api/v2/jobs` with `{"kind": "compile", "subject": "vod:<synthetic id>", "payload": {"type": "compiled"}}` (the synthetic page's Compile button) |
+| `compile` | compile_sources → compile → split → upload → thumbnail → describe → cleanup | `POST /api/v2/jobs` with `{"kind": "compile", "subject": "vod:<synthetic id>", "payload": {"type": "compiled"}}` (the synthetic page's Compile button) |
 
 When `split` finds nothing to upload (an empty VOD, or every chapter restricted), the job skips to `cleanup` and succeeds.
 
@@ -222,6 +223,33 @@ curl -s "${H[@]}" -X DELETE "$A/api/v2/uploads/upload-0123456789ab"             
 - **Staying apart**: the VOD is hidden and can't be shown (PATCH `hidden: false` is 409 `vod_custom`), so it stays off the public API, the site's lists, games-played and the status page. It can't be a synthetic VOD's source (409), isn't offered as a merge candidate, and jobs that fetch from Twitch (`chapters`, `chat`, `emotes`, `bot_chat`, `download` and so re-archiving) are refused for it like for a synthetic VOD. `GET /api/v2/vods?custom=true` lists the custom uploads (`false`: the others).
 - **Abandoned** uploads (nothing sent for `custom_upload_abandon_hours`, default 24) are deleted when another upload starts and when the worker starts. Unfinished uploads live in `<data_dir>/uploads/`, outside the storage view's areas; a finished one is the VOD's `vods/<id>/` folder.
 - Audited: `upload.start`, `upload.cancel`, `upload.finish` (chunks are not).
+
+## Thumbnails
+
+With `youtube_thumbnail` on (off by default; the dashboard's YouTube settings), the `thumbnail` step after `upload` sets a picture of its own on each part the job uploaded: a frame of the part with the template's text over it, 1280x720 JPEG of at most 2 MB. A re-upload is a new job, so its new videos get theirs too. YouTube takes custom thumbnails only from a verified channel, so the step first checks the channel (`channels.list`, 1 unit; `longUploadsStatus` must be `allowed`); `thumbnails.set` costs 50 units per part. In an upload job a thumbnail is an extra: an unverified channel or a failed part is a warning in the job's log and in `payload.thumbnail_failed`, never a failed job. The dry run draws them into `vods/<id>/thumbnails/` instead.
+
+The template is a contract between the worker (`archive_worker/thumbnails.py`) and Manage's thumbnail editor, stored as JSON in `app_state` (key `thumbnail_template`; the built-in default until one is saved):
+
+```json
+{
+  "at": 0.25,
+  "lines": [
+    {"text": "PART {part}/{total}", "x": 0.96, "y": 0.06, "align": "right", "size": 0.07, "color": "#ffffff", "box": "#000000"}
+  ]
+}
+```
+
+- `at`: where in the part the frame is taken, 0 to 1 of its length.
+- `lines`: at most 8, drawn in order. `text` is 1 to 120 characters on one line; `{field}`s are filled in and braces mean nothing else. Fields: `part`, `total`, `games` (the games played in this part, in order, `·` between, cut at 60 characters), `label` (`VOD`, `Live`, `Compilation`, or `Upload` for a custom upload), `title` (the VOD's), `date` (the VOD's, in `ARCHIVE_TIMEZONE`) and `channel`. A line that is empty once filled in is left out.
+- `x`, `y`: 0 to 1 of the frame; `y` is the text's top, `x` its left edge, centre or right edge as `align` (`left`, `center`, `right`) says. Text too wide for the room on its side of `x` is made smaller until it fits.
+- `size`: the text's height, 0.02 to 0.3 of the frame's. `color`: `#rrggbb`. `box`: a box behind the text in that colour (85% opaque), or `null` for a black outline instead. The font is DejaVu Sans Bold (`CENSOR_FONT`).
+
+Routes (behind /api/v2's auth):
+
+- `GET /api/v2/thumbnail/template`: `{template, saved, fields}`.
+- `PUT /api/v2/thumbnail/template {template}`: checks and saves it (422 `invalid_template` says what is wrong). Audited as `thumbnail.template`.
+- `POST /api/v2/thumbnail/preview {template, vod_id?}`: the template drawn as `image/jpeg`, with sample fields (the VOD's title and date when one is given) over a frame `at` into that VOD's file on the worker, or a plain frame when it has none.
+- `POST /api/v2/vods/{id}/thumbnails {type, parts?}`: 202 `{job_id, message}`, a `thumbnail` job that sets the template's picture again on the VOD's uploads of `type` (`vod`, `live` or `compiled`; only `parts`, if given), whether or not `youtube_thumbnail` is on. The part files are usually gone by then, so it downloads a few seconds of each upload with yt-dlp (720p or less, `ARCHIVE_PREVIEWS_YTDLP_ARGS` apply) from where the frame is taken. Unlike the step, it fails when the channel can't have custom thumbnails or no part worked. 409 `no_uploads` when the VOD has none of that type; audited as `vod.thumbnails`.
 
 ## Recipes
 

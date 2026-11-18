@@ -48,6 +48,7 @@ from . import (
     api_v2_media,
     api_v2_routes,
     api_v2_songs,
+    api_v2_thumbnails,
     api_v2_uploads,
     custom_upload,
     jobs,
@@ -603,6 +604,7 @@ def create_admin_app(
             api_v2_media.media_router(verify_v2, settings),
             api_v2_songs.songs_router(verify_v2, settings),
             api_v2_uploads.uploads_router(ctx, verify_v2),
+            api_v2_thumbnails.thumbnails_router(ctx, verify_v2),
             ctx.v2,  # what the /admin modules added: the site, Twitch and YouTube routes
         ],
     )
