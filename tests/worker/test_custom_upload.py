@@ -10,7 +10,7 @@ import pytest
 from archive_common.audit import AUDIT_LOG
 from archive_common.db import get_sessionmaker
 from archive_common.models import Vod
-from archive_worker import custom_upload, planning
+from archive_worker import custom_upload, ffmpeg, planning
 from archive_worker.context import StepRefused
 from archive_worker.custom_upload import UploadError
 from archive_worker.job_rows import RUNS
@@ -197,3 +197,48 @@ async def test_a_file_that_is_not_a_video_is_refused_and_kept_to_cancel(admin, s
     assert r.status_code == 422 and r.json()["code"] == "not_video"
     assert (await admin.delete(url, headers=KEY)).json()["id"] == up["id"]
     assert not (custom_upload.upload_dir(settings.data_dir) / up["id"]).exists()
+
+
+async def test_upload_source_re_runs_after_stopping_between_the_delete_and_the_save(make_ctx, tmp_path, monkeypatch):
+    """A worker stopped after the source was deleted keeps the payload of the save before it: duration set."""
+    src = tmp_path / "clip.mkv"
+    src.write_bytes(b"video")
+
+    async def remux(a, b):
+        b.parent.mkdir(parents=True, exist_ok=True)
+        b.write_bytes(a.read_bytes())
+
+    async def probe(_path):
+        return 3.0
+
+    monkeypatch.setattr(ffmpeg, "remux", remux)
+    monkeypatch.setattr(ffmpeg, "probe_duration", probe)
+    ctx = make_ctx("custom_upload", "upload-0123456789ab", {"upload_file": str(src)})
+    saved = []
+
+    async def update_vod(**values):
+        pass
+
+    async def save():
+        saved.append(dict(ctx.payload))
+
+    monkeypatch.setattr(ctx, "update_vod", update_vod)
+    monkeypatch.setattr(ctx, "save", save)
+    await custom.upload_source(ctx)
+    assert saved[0] == {"upload_file": str(src), "duration": 3.0}  # saved while the source was still there
+    assert not src.exists() and ctx.default_mp4.exists()
+
+    again = make_ctx("custom_upload", "upload-0123456789ab", saved[0])  # the payload the stopped worker left
+    monkeypatch.setattr(again, "save", save)
+    await custom.upload_source(again)  # the MP4 is done: no "upload the video again"
+    assert again.payload == {"duration": 3.0}
+
+
+async def test_a_custom_upload_never_skips_to_cleanup_when_publishing_is_off(make_ctx, settings):
+    from archive_worker.steps import publish
+
+    settings.youtube_upload, settings.dry_run = False, False
+    with pytest.raises(StepRefused, match="only copy"):
+        await publish.upload(make_ctx("custom_upload", "upload-0123456789ab", {}))
+    settings.dry_run = True  # a dry run keeps the files itself, so it just skips
+    await publish.upload(make_ctx("custom_upload", "upload-0123456789ab", {}))

@@ -17,6 +17,7 @@ async def upload_source(ctx: JobContext) -> None:
     out = ctx.default_mp4
     given = ctx.payload.get("upload_file")
     if out.exists() and ctx.payload.get("duration") and not (given and Path(given).exists()):
+        ctx.payload.pop("upload_file", None)  # stopped after the source went, before the last save
         return
     if not given or not Path(given).exists():
         raise StepRefused(f"the uploaded file {given or '(none)'} is gone; upload the video again")
@@ -31,6 +32,7 @@ async def upload_source(ctx: JobContext) -> None:
     seconds = await ffmpeg.probe_duration(out)
     ctx.payload["duration"] = seconds
     await ctx.update_vod(duration=format_hhmmss(seconds))
+    await ctx.save()  # before the source goes, so a re-run finds the MP4 done
     src.unlink(missing_ok=True)
     ctx.payload.pop("upload_file", None)
     await ctx.save()
