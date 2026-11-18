@@ -1,10 +1,11 @@
 """Censor ranges: validation, the plan the censor step runs and the move onto a live recording (pure functions)."""
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 from archive_worker import ffmpeg, planning, vod_edits
-from archive_worker.planning import Cover
+from archive_worker.planning import Cover, Sound
 
 
 def test_censor_ranges_are_checked_and_sorted():
@@ -83,7 +84,7 @@ def test_plan_censor_black_wins_and_same_modes_join():
     )
     blur, black = (Cover("blur"),), (Cover("black"),)
     assert plan.cover == [(0, 10, blur), (10, 20, black), (20, 40, blur), (100, 110, black)]
-    assert plan.mute == [(10, 25)]
+    assert plan.audio == [(10, 25, Sound("mute"))]
     assert not plan.empty
     assert planning.plan_censor([]).empty
     assert planning.plan_censor(None).empty
@@ -148,3 +149,109 @@ def test_cover_filter_graphs():
         pix == "split[b0][t0];[t0]crop=16:10:144:80,scale=4:3:flags=neighbor,"
         "scale=16:10:flags=neighbor[f0];[b0][f0]overlay=144:80"
     )
+
+
+def test_censor_text_and_audio_options_are_checked_and_stored_only_when_set():
+    out = vod_edits.censor(
+        [
+            {"start": 1, "end": 2, "video": "black", "text": "  Spoilers 	 ahead ", "mute": False},
+            {"start": 3, "end": 4, "mute": True, "audio": "muffle"},
+            {"start": 5, "end": 6, "mute": True, "audio": "song", "song": "song-0123456789ab", "volume": 0.333},
+            {"start": 7, "end": 8, "mute": True, "audio": "song", "song": "song-0123456789ab"},
+            {"start": 9, "end": 10, "mute": True, "audio": "mute"},
+        ],
+        7200,
+        {"song-0123456789ab"},
+    )
+    assert out == [
+        {"start": 1, "end": 2, "video": "black", "text": "Spoilers ahead", "mute": False},
+        {"start": 3, "end": 4, "video": None, "mute": True, "audio": "muffle"},
+        {
+            "start": 5,
+            "end": 6,
+            "video": None,
+            "mute": True,
+            "audio": "song",
+            "song": "song-0123456789ab",
+            "volume": 0.33,
+        },
+        {
+            "start": 7,
+            "end": 8,
+            "video": None,
+            "mute": True,
+            "audio": "song",
+            "song": "song-0123456789ab",
+            "volume": 1.0,
+        },
+        {"start": 9, "end": 10, "video": None, "mute": True},  # plain silence: stored as before
+    ]
+
+
+@pytest.mark.parametrize(
+    ("item", "error"),
+    [
+        ({"start": 5, "end": 6, "mute": True, "text": "hi"}, r"text needs a video"),
+        ({"start": 5, "end": 6, "video": "blur", "text": "x" * 61}, r"longer than 60"),
+        ({"start": 5, "end": 6, "video": "blur", "text": 5}, r"text must be a string"),
+        ({"start": 5, "end": 6, "video": "blur", "text": "ab"}, r"control character"),
+        ({"start": 5, "end": 6, "mute": True, "audio": "reverb"}, r"audio must be"),
+        ({"start": 5, "end": 6, "video": "blur", "audio": "muffle"}, r"needs mute: true"),
+        ({"start": 5, "end": 6, "mute": True, "audio": "muffle", "volume": 0.5}, r"only for audio 'song'"),
+        ({"start": 5, "end": 6, "mute": True, "song": "song-0123456789ab"}, r"only for audio 'song'"),
+        ({"start": 5, "end": 6, "mute": True, "audio": "song"}, r"song must be the id"),
+        (
+            {"start": 5, "end": 6, "mute": True, "audio": "song", "song": "song-ffffffffffff"},
+            r"not in the song library",
+        ),
+        ({"start": 5, "end": 6, "mute": True, "audio": "song", "song": "song-0123456789ab", "volume": 1.5}, r"0 to 1"),
+        ({"start": 5, "end": 6, "mute": True, "audio": "song", "song": "song-0123456789ab", "volume": True}, r"0 to 1"),
+    ],
+)
+def test_censor_refuses_bad_text_and_audio(item, error):
+    with pytest.raises(ValueError, match=error):
+        vod_edits.censor([item], 7200, {"song-0123456789ab"})
+
+
+def test_plan_censor_sounds_strongest_wins_and_text_rides_on_its_cover():
+    song = {"audio": "song", "song": "song-0123456789ab", "volume": 0.5}
+    plan = planning.plan_censor(
+        [
+            {"start": 0, "end": 20, "video": None, "mute": True, "audio": "muffle"},
+            {"start": 5, "end": 15, "video": None, "mute": True} | song,
+            {"start": 8, "end": 10, "video": None, "mute": True},
+            {"start": 30, "end": 31, "video": "black", "text": "Spoilers", "mute": False},
+        ]
+    )
+    played = Sound("song", "song-0123456789ab", 0.5)
+    assert plan.audio == [
+        (0, 5, Sound("muffle")),
+        (5, 8, played),
+        (8, 10, Sound("mute")),
+        (10, 15, played),
+        (15, 20, Sound("muffle")),
+    ]
+    assert plan.songs == ["song-0123456789ab"]
+    assert plan.cover == [(30, 31, (Cover("black", None, None, "Spoilers"),))]
+
+
+def test_sound_args_graphs():
+    played = Sound("song", "song-0123456789ab", 0.4)
+    inputs, graph = ffmpeg.sound_args(
+        [(1, 2, Sound("mute")), (3, 4.5, played), (5, 6, Sound("muffle"))], {"song-0123456789ab": Path("/s/a.m4a")}
+    )
+    assert inputs == ["-stream_loop", "-1", "-t", "1.500", "-i", str(Path("/s/a.m4a"))]
+    assert graph.startswith("[0:a]volume=0:enable='between(t,1,2)',volume=0:enable='between(t,3,4.5)',lowpass=f=400")
+    assert graph.endswith(
+        "[main];[1:a]volume=0.4,adelay=delays=3000:all=1[s0];[main][s0]amix=inputs=2:duration=first:normalize=0[aout]"
+    )
+    assert ffmpeg.sound_args([(1, 2, Sound("mute"))], {}) == ([], "[0:a]volume=0:enable='between(t,1,2)'[aout]")
+
+
+def test_text_filter_reads_the_text_from_a_file_and_refuses_odd_paths():
+    graph = ffmpeg.cover_filter((Cover("black", None, (0.5, 0.5, 0.5, 0.5), "Hi"),), 200, 100, [Path("/w/t.txt")])
+    assert graph.startswith("drawbox=x=100:y=50:w=100:h=50:color=black:t=fill[c1];[c1]drawtext=fontfile=")
+    assert r"textfile=\'/w/t.txt\':expansion=none:fontsize=25" in graph
+    assert graph.endswith(":x=100+(100-text_w)/2:y=50+(50-text_h)/2")
+    with pytest.raises(ValueError, match="quote"):
+        ffmpeg.text_filter(Path("/w/it's.txt"), (0, 0, 10, 10), 2)

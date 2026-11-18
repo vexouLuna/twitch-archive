@@ -47,6 +47,7 @@ from . import (
     api_v2,
     api_v2_media,
     api_v2_routes,
+    api_v2_songs,
     jobs,
     vod_edits,
 )
@@ -593,6 +594,7 @@ def create_admin_app(
             api_v2_routes.vods_router(verify_v2, settings),
             api_v2_routes.actions_router(ctx, verify_v2),
             api_v2_media.media_router(verify_v2, settings),
+            api_v2_songs.songs_router(verify_v2, settings),
             ctx.v2,  # what the /admin modules added: the site, Twitch and YouTube routes
         ],
     )
