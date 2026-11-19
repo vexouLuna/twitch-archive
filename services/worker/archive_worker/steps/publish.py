@@ -137,6 +137,8 @@ async def upload(ctx: JobContext) -> None:
         await ctx.save()
 
     parts = ctx.payload["parts"]
+    if await _forget_deleted(ctx, parts, uploaded):
+        await ctx.save()
     for part in parts:
         key = str(part["number"])
         if key in uploaded:
@@ -197,6 +199,32 @@ async def upload(ctx: JobContext) -> None:
         gone = extra & set(ctx.payload.get("removed") or [])  # one YouTube refused stays listed, to delete later
         if gone:
             await drop_youtube_entries(vod.id, gone)
+
+
+async def _forget_deleted(ctx: JobContext, parts: list[dict[str, Any]], uploaded: dict[str, dict[str, Any]]) -> bool:
+    """Drop from ``uploaded`` the parts whose video is gone from YouTube (deleted since), so a re-run uploads them
+    again; whether any went. One ``videos.list`` (1 quota unit) per 50 ids. When YouTube can't say (an error, the
+    daily limit), every part counts as still there: skipping one is safe, a second copy of it is not."""
+    keys = [str(p["number"]) for p in parts if str(p["number"]) in uploaded]
+    if not keys:
+        return False
+    ids = [str(uploaded[k]["id"]) for k in keys]
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        for i in range(0, len(ids), 50):
+            found |= await ctx.deps.youtube.videos(ids[i : i + 50])
+    except Exception as exc:
+        ctx.log.warning("could not ask YouTube whether parts %s are still there (%s); skipping them", keys, exc)
+        return False
+    gone = []
+    for k in keys:
+        video = found.get(str(uploaded[k]["id"]))
+        if video is None or (video.get("status") or {}).get("uploadStatus") == "deleted":
+            gone.append(k)
+    for k in gone:
+        ctx.log.info("part %s (https://youtu.be/%s) is no longer on YouTube: uploading it again", k, uploaded[k]["id"])
+        del uploaded[k]
+    return bool(gone)
 
 
 async def _delete_replaced(ctx: JobContext, video_id: str) -> None:
