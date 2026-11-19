@@ -32,7 +32,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from sqlalchemy.dialects.postgresql import insert
-from vex_platform.actor import SYSTEM, Actor
+from vex_platform.actor import Actor
 from vex_platform.audit import AuditEntry
 
 from . import youtube_quota
@@ -308,15 +308,13 @@ class YouTube:
         await asyncio.gather(*(asyncio.wrap_future(f) for f in list(self._recording)), return_exceptions=True)
 
     async def _record_refresh(self, state: Refreshed | None, reason: str, error: BaseException | None) -> None:
-        """Save what a refresh returned (as the old archive did on every refresh) and audit it as
-        ``youtube.token.refresh``. ``detail.changed`` names what Google sent back different: a new
-        refresh token ("refreshToken", also dated ``refreshTokenRotatedAt``) or other scopes."""
+        """Save what a refresh returned (as the old archive did on every refresh) and log it; a refresh is not
+        audited (it happens on every upload and check, so it drowned out the rest of the trail). A new refresh
+        token from Google is saved and dated ``refreshTokenRotatedAt``; new scopes are saved as ``grantedScopes``."""
         try:
             async with self._token_lock:
                 if state is None:
-                    detail = {"reason": reason, "error": f"{type(error).__name__}: {error}"}
-                    entry = AuditEntry("youtube.token.refresh", SYSTEM, AUDIT_TARGET, outcome="failed", detail=detail)
-                    await audit.write(entry)
+                    log.warning("YouTube token refresh (%s) failed: %s: %s", reason, type(error).__name__, error)
                     return
                 token = await load_token() or {}
                 now = dt.datetime.now(dt.UTC).isoformat()
@@ -334,19 +332,16 @@ class YouTube:
                         before["refreshToken"],
                         after["refreshToken"],
                     )
-                await save_token(saved)
-                await audit.write(
-                    AuditEntry(
-                        "youtube.token.refresh",
-                        SYSTEM,
-                        AUDIT_TARGET,
-                        before={k: before[k] for k in changed} or None,
-                        after={k: after[k] for k in changed} or None,
-                        detail={"reason": reason, "changed": changed, "accessTokenExpiry": state["expiry"]},
+                if "grantedScopes" in changed:
+                    log.warning(
+                        "YouTube granted scopes changed on refresh: %s -> %s",
+                        before["grantedScopes"],
+                        after["grantedScopes"],
                     )
-                )
+                await save_token(saved)
+                log.info("YouTube token refreshed (%s), access token until %s", reason, state["expiry"])
         except Exception:
-            log.exception("Could not save or audit a YouTube token refresh")
+            log.exception("Could not save a YouTube token refresh")
 
     async def _service(self):  # type: ignore[no-untyped-def]
         # Built per call: the service wraps an httplib2.Http, which is not safe to share
