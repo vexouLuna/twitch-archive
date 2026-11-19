@@ -184,13 +184,13 @@ def _region(value: Any, where: str) -> dict[str, float]:
 
 def censor(items: Any, duration: float, songs: Collection[str] | None = None) -> list[dict[str, Any]]:
     """Admin censor ranges -> ``vods.censor``: ``{start, end, video, color, region, text, mute, audio, song,
-    volume, note}`` in VOD seconds, sorted by start, each covering the video (``video``: blurred, blacked out,
+    volume, note}`` in VOD seconds, in the order given, each covering the video (``video``: blurred, blacked out,
     pixelated or filled with ``color``, the whole frame or only a ``region`` box, with ``text`` written over it),
     treating the audio (``mute``: silenced, or as ``audio`` says: ``muffle``d, or replaced by the library
     ``song`` looped at ``volume``) or both, and inside ``duration`` (unchecked when that is 0/unknown).
     ``songs``: the library's song ids, which a ``song`` must be one of (unchecked when None).
-    Ranges may overlap: the step merges them. The optional keys are stored only when set, so a range
-    saved before they existed reads the same."""
+    Ranges may overlap: the step applies them in this order, each over the ones before. The optional keys
+    are stored only when set, so a range saved before they existed reads the same."""
     out: list[dict[str, Any]] = []
     for i, item in enumerate(_list(items, "censor")):
         where = f"censor[{i}]"
@@ -241,7 +241,7 @@ def censor(items: Any, duration: float, songs: Collection[str] | None = None) ->
             | sound
             | ({"note": note} if note else {})
         )
-    return sorted(out, key=lambda r: (r["start"], r["end"]))
+    return out  # in the order given: the censor step applies them in this order
 
 
 def _censor_text(r: dict[str, Any], where: str) -> str | None:
