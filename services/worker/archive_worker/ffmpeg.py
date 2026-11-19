@@ -24,6 +24,7 @@ from typing import Any
 
 from archive_common import previews as pv
 
+from . import font
 from .planning import Cover, Covers, Sound
 
 log = logging.getLogger(__name__)
@@ -355,12 +356,21 @@ def _quoted(path: Path) -> str:
     return f"\\'{text}\\'"
 
 
-def text_filter(text_file: Path, box: tuple[int, int, int, int], chars: int) -> str:
-    """``drawtext`` of ``text_file`` (one line of ``chars`` characters) centred in ``box`` (x, y, w, h px):
-    white with a black outline, as large as fits (about half the box's height at most). The text is read
-    from the file with expansion off, so nothing in it is ffmpeg syntax."""
+def text_size(box: tuple[int, int, int, int], text: str) -> int:
+    """The font size (px) for one line of ``text`` in ``box`` (x, y, w, h px): half the box's height at most, and
+    narrow enough that the line, measured in ``CENSOR_FONT`` (``font.advance``) with its outline (a twelfth of the size
+    each side), takes at most 90% of the box's width; 10 at least. Integer maths, so vods-core's preview agrees."""
+    width, units = font.advance(CENSOR_FONT, text)
+    fits = 54 * box[2] * units // (10 * (6 * width + units))  # 0.9 * w / (width / units + 1 / 6)
+    return max(10, min(box[3] // 2, fits))
+
+
+def text_filter(text_file: Path, box: tuple[int, int, int, int], text: str) -> str:
+    """``drawtext`` of ``text_file`` (holding the one line ``text``) centred in ``box`` (x, y, w, h px): white with a
+    black outline, as large as fits (``text_size``). The text is read from the file with expansion off, so nothing
+    in it is ffmpeg syntax."""
     x, y, w, h = box
-    size = max(10, min(h // 2, int(w * 1.6 / max(chars, 1))))
+    size = text_size(box, text)
     return (
         f"drawtext=fontfile={_quoted(Path(CENSOR_FONT))}:textfile={_quoted(text_file)}:expansion=none"
         f":fontsize={size}:fontcolor=white:borderw={max(1, size // 12)}:bordercolor=black"
@@ -401,7 +411,7 @@ def cover_filter(covers: Covers, width: int, height: int, text_files: Sequence[P
             raise ValueError(f"unknown cover {c.video!r}")
         text_file = texts[i]
         if c.text and text_file is not None:
-            steps.append(f"[{out}]{text_filter(text_file, (x, y, w, h), len(c.text))}[{out}t]")
+            steps.append(f"[{out}]{text_filter(text_file, (x, y, w, h), c.text)}[{out}t]")
             out = f"{out}t"
         cur = out
     # A simple (-vf) graph: its input and output pads are the unlabelled ends, so drop the first and last label.

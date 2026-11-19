@@ -11,8 +11,15 @@ import pytest
 from archive_worker import ffmpeg, planning, vod_edits
 from archive_worker.planning import Cover, Sound
 
+FONT = Path(__file__).parent.parent / "fixtures" / "fonts" / "DejaVuSans-Bold.ttf"  # the worker image's CENSOR_FONT
 
-def test_censor_ranges_are_checked_and_sorted():
+
+@pytest.fixture(autouse=True)
+def censor_font(monkeypatch):
+    monkeypatch.setattr(ffmpeg, "CENSOR_FONT", str(FONT))
+
+
+def test_censor_ranges_are_checked_and_keep_their_order():
     out = vod_edits.censor(
         [
             {"start": 100, "end": 160.5, "mute": True},
@@ -21,10 +28,10 @@ def test_censor_ranges_are_checked_and_sorted():
         ],
         7200,
     )
-    assert out == [
-        {"start": 10, "end": 15, "video": "black", "mute": False},
-        {"start": 10, "end": 20, "video": "blur", "mute": False, "note": "in-game nudity"},
+    assert out == [  # the order sent: the censor step applies them in it
         {"start": 100, "end": 160.5, "video": None, "mute": True},
+        {"start": 10, "end": 20, "video": "blur", "mute": False, "note": "in-game nudity"},
+        {"start": 10, "end": 15, "video": "black", "mute": False},
     ]
     assert vod_edits.censor([], 7200) == []
 
@@ -253,7 +260,7 @@ def test_text_filter_reads_the_text_from_a_file_and_refuses_odd_paths():
     assert r"textfile=\'/w/t.txt\':expansion=none:fontsize=25" in graph
     assert graph.endswith(":x=100+(100-text_w)/2:y=50+(50-text_h)/2")
     with pytest.raises(ValueError, match="quote"):
-        ffmpeg.text_filter(Path("/w/it's.txt"), (0, 0, 10, 10), 2)
+        ffmpeg.text_filter(Path("/w/it's.txt"), (0, 0, 10, 10), "Hi")
 
 
 # Job 1068 (upload-9ef428e18032): three ranges over the same stretch, as saved.
@@ -340,3 +347,65 @@ def test_sound_args_run_in_list_order(tmp_path):
     inputs, graph = ffmpeg.sound_args([(1, 5, played), (1, 5, Sound("mute"))], {"s": song})
     assert _loudness(graph, inputs, tmp_path, 2, 4) < -80
     assert _loudness(graph, inputs, tmp_path, 0, 0.9) > -20  # the stream's own audio around it
+
+
+def test_job_1068_in_another_order_gives_another_result():
+    text_box, other_box, song = JOB_1068
+    plan = planning.plan_censor([song, other_box, text_box])
+    assert plan.audio == [
+        (864.5, 3022.543, Sound("song", "song-519bf838604b", 0.25)),
+        (864.5, 3022.543, Sound("mute")),  # after the song: silence
+    ]
+    _, graph = ffmpeg.sound_args(plan.audio, {"song-519bf838604b": Path("/s/a.m4a")})
+    assert graph.endswith("[x0]volume=0:enable='between(t,864.5,3022.54)'[aout]")
+    covers = plan.cover[0][2]
+    assert [c.text for c in covers] == [None, "outdoor boys DMCA"]  # the text now over the other blur, not under it
+
+
+@pytest.mark.parametrize(
+    ("box", "text", "size"),
+    [  # vods-core's tests/app/censorRender.test.ts pins its preview to these
+        ((0, 50, 1558, 928), "outdoor boys DMCA", 124),
+        ((1520, 52, 400, 742), "a", 371),
+        ((192, 108, 384, 216), "Spoilers", 72),
+        ((144, 80, 16, 10), "x" * 60, 10),
+        ((100, 50, 100, 50), "Hi", 25),
+        ((0, 0, 1280, 720), "Full", 360),
+        ((0, 0, 960, 216), "WWW MMM ÄÖÜ \U0001f3b5", 81),  # a character the font lacks: its box
+    ],
+)
+def test_text_size_measures_the_text_in_the_font(box, text, size):
+    assert ffmpeg.text_size(box, text) == size
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_job_1068_text_fits_inside_its_box(tmp_path):
+    """The line drawtext draws at text_size's size, outline and all, is inside 90% of the box's width."""
+    box = (0, 50, 1558, 928)
+    (tmp_path / "t.txt").write_text("outdoor boys DMCA", encoding="utf-8")
+    size = ffmpeg.text_size(box, "outdoor boys DMCA")
+    # White text and outline on black, measured by cropdetect (the bounding box of what isn't black).
+    graph = (
+        f"drawtext=fontfile={ffmpeg._quoted(FONT)}:textfile={ffmpeg._quoted(tmp_path / 't.txt')}:expansion=none"
+        f":fontsize={size}:fontcolor=white:borderw={max(1, size // 12)}:bordercolor=white:x=100:y=100,"
+        "cropdetect=limit=0.1:round=1:reset=1:skip=0"
+    )
+    run = [
+        "ffmpeg",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:s=1920x400:d=0.2",
+        "-vf",
+        graph,
+        "-frames:v",
+        "2",
+        "-f",
+        "null",
+        "-",
+    ]
+    err = subprocess.run(run, capture_output=True, text=True, check=True).stderr
+    found = re.findall(r"x1:(\d+) x2:(\d+)", err)
+    assert found, err
+    drawn = int(found[-1][1]) - int(found[-1][0]) + 1
+    assert box[2] * 0.75 < drawn <= box[2] * 0.9, (drawn, size)
