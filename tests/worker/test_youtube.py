@@ -65,9 +65,7 @@ async def test_check_reports_revoked_token(yt, monkeypatch):
         "valid": False,
         "error": "RefreshError: invalid_grant: Token has been expired or revoked.",
     }
-    [entry] = yt.audited
-    assert (entry.action, entry.outcome, entry.target) == ("youtube.token.refresh", "failed", "youtube")
-    assert entry.detail == {"reason": "check", "error": result["error"]}
+    assert yt.audited == []  # a refresh is logged, not audited
 
 
 async def test_check_always_refreshes_and_keeps_rotated_token(yt, monkeypatch):
@@ -97,12 +95,7 @@ async def test_check_always_refreshes_and_keeps_rotated_token(yt, monkeypatch):
     saved = yt.stored["token"]
     assert saved["refresh_token"] == "r2" and saved["token"] == "fresh"
     assert saved["refreshTokenRotatedAt"] == saved["refreshedAt"]
-    [entry] = yt.audited
-    expiry = result["accessTokenExpiry"]
-    assert entry.detail == {"reason": "check", "changed": ["refreshToken"], "accessTokenExpiry": expiry}
-    assert entry.before == {"refreshToken": youtube.fingerprint("r1")}
-    assert entry.after == {"refreshToken": youtube.fingerprint("r2")}
-    assert "'r1'" not in repr(entry) and "'r2'" not in repr(entry)  # never the token itself
+    assert yt.audited == []
 
 
 CHANNEL = {"id": "UC123", "title": "keeki", "url": "https://www.youtube.com/@keeki"}
@@ -124,18 +117,17 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(Credentials, "refresh", refresh)
 
 
-async def test_every_refresh_is_saved_and_audited(yt, monkeypatch, caplog):
+async def test_every_refresh_is_saved_and_logged_not_audited(yt, monkeypatch, caplog):
     yt.stored["token"] = {"refresh_token": "r1", "token": "stale", "scopes": None, "connectedAt": "then"}
     _fresh(monkeypatch)
     monkeypatch.setattr(yt, "own_channel", _returns(CHANNEL))
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         await yt.check()
     saved = yt.stored["token"]
     assert saved["token"] == "fresh" and saved["refresh_token"] == "r1" and saved["connectedAt"] == "then"
     assert "refreshedAt" in saved and "refreshTokenRotatedAt" not in saved
-    [entry] = yt.audited
-    assert entry.outcome == "ok" and entry.before is None and entry.after is None
-    assert entry.detail == {"reason": "check", "changed": [], "accessTokenExpiry": None}
+    assert yt.audited == []
+    assert "YouTube token refreshed (check)" in caplog.text
     assert "new YouTube refresh token" not in caplog.text
 
 
@@ -147,7 +139,7 @@ async def test_a_refresh_google_auth_makes_itself_is_saved_too(yt, monkeypatch):
     await asyncio.to_thread(creds.refresh, None)
     await yt._settle()
     assert yt.stored["token"]["token"] == "fresh"
-    assert [e.detail["reason"] for e in yt.audited] == ["expired"]
+    assert yt.audited == []
 
 
 async def test_a_check_during_a_refresh_does_not_leave_the_caller_without_credentials(yt, monkeypatch):
@@ -162,7 +154,7 @@ async def test_a_check_during_a_refresh_does_not_leave_the_caller_without_creden
     assert creds is not None and creds.token == "fresh"
 
 
-async def test_a_change_of_scopes_is_audited(yt, monkeypatch):
+async def test_a_change_of_scopes_is_saved_and_logged(yt, monkeypatch, caplog):
     yt.stored["token"] = {"refresh_token": "r1", "token": "stale", "scopes": None, "grantedScopes": ["a"]}
 
     def refresh(self, request):
@@ -171,10 +163,10 @@ async def test_a_change_of_scopes_is_audited(yt, monkeypatch):
 
     monkeypatch.setattr(Credentials, "refresh", refresh)
     monkeypatch.setattr(yt, "own_channel", _returns(CHANNEL))
-    await yt.check()
-    [entry] = yt.audited
-    assert entry.detail["changed"] == ["grantedScopes"]
-    assert (entry.before, entry.after) == ({"grantedScopes": ["a"]}, {"grantedScopes": ["a", "b"]})
+    with caplog.at_level(logging.WARNING):
+        await yt.check()
+    assert yt.audited == []
+    assert "granted scopes changed on refresh: ['a'] -> ['a', 'b']" in caplog.text
     assert yt.stored["token"]["grantedScopes"] == ["a", "b"]
 
 
