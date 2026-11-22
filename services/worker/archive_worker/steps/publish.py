@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -15,7 +16,7 @@ from .. import ffmpeg, planning
 from ..context import JobContext, StepDeferred, StepRefused
 from ..job_rows import ALL_JOBS
 from ..vods import drop_youtube_entries, splice_reason
-from ..youtube import YouTubeLimitError, error_reason, upload_standing
+from ..youtube import YouTubeLimitError, error_reason, load_token, upload_standing
 from .metadata import file_chapters, part_gaps, vod_duration
 
 # How many times a job waits for a YouTube daily limit to lift before it fails for good.
@@ -137,6 +138,8 @@ async def upload(ctx: JobContext) -> None:
         await ctx.save()
 
     parts = ctx.payload["parts"]
+    if await _forget_deleted(ctx, parts, uploaded):
+        await ctx.save()
     for part in parts:
         key = str(part["number"])
         if key in uploaded:
@@ -177,7 +180,8 @@ async def upload(ctx: JobContext) -> None:
         if gaps.get(part["number"]):
             entry["gaps"] = gaps[part["number"]]  # VOD time this part's recording missed (ad breaks)
         await _save_entry(vod.id, entry)
-        uploaded[key] = entry
+        # The channel it went to (videos.insert says, at no cost): a re-run re-uploads a missing part only to it.
+        uploaded[key] = {**entry, "channel": (res.get("snippet") or {}).get("channelId")}
         ctx.payload.pop("youtube_deferrals", None)
         await ctx.save()
         ctx.log.info("uploaded part %s -> https://youtu.be/%s", key, res["id"])
@@ -197,6 +201,63 @@ async def upload(ctx: JobContext) -> None:
         gone = extra & set(ctx.payload.get("removed") or [])  # one YouTube refused stays listed, to delete later
         if gone:
             await drop_youtube_entries(vod.id, gone)
+
+
+async def _forget_deleted(ctx: JobContext, parts: list[dict[str, Any]], uploaded: dict[str, dict[str, Any]]) -> bool:
+    """Drop from ``uploaded`` the parts whose video was deleted from the connected channel, so a re-run uploads them
+    again; whether any went. A video YouTube doesn't return is deleted only if it was uploaded to the channel now
+    connected (its own, so it would see it even private); one uploaded to another channel is just out of sight.
+    Cost: one ``videos.list`` (1 quota unit) per 50 ids, plus one ``channels.list`` (1 unit) when one is missing.
+    When it can't tell (an error, the daily limit, an unknown channel), a part counts as still there: skipping one
+    is safe, a second copy of it is not."""
+    keys = [str(p["number"]) for p in parts if str(p["number"]) in uploaded]
+    if not keys:
+        return False
+    ids = [str(uploaded[k]["id"]) for k in keys]
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        for i in range(0, len(ids), 50):
+            found |= await ctx.deps.youtube.videos(ids[i : i + 50])
+        # Only the owner sees an upload as "deleted"; one YouTube doesn't return at all needs the channel check.
+        missing = [k for k in keys if str(uploaded[k]["id"]) not in found]
+        channel = (await ctx.deps.youtube.own_channel() or {}).get("id") if missing else None
+    except Exception as exc:
+        ctx.log.warning("could not ask YouTube whether parts %s are still there (%s); skipping them", keys, exc)
+        return False
+    gone = [
+        k for k in keys if (found.get(str(uploaded[k]["id"])) or {}).get("status", {}).get("uploadStatus") == "deleted"
+    ]
+    for k in missing:
+        why = await _other_channel(ctx, uploaded[k], channel)
+        if why:
+            ctx.log.warning("part %s (%s) is not visible on YouTube, but %s; skipping it", k, uploaded[k]["id"], why)
+        else:
+            gone.append(k)
+    for k in gone:
+        ctx.log.info("part %s (https://youtu.be/%s) is no longer on YouTube: uploading it again", k, uploaded[k]["id"])
+        del uploaded[k]
+    return bool(gone)
+
+
+async def _other_channel(ctx: JobContext, entry: dict[str, Any], channel: str | None) -> str | None:
+    """Why ``entry``'s video may be on another channel than ``channel`` (the connected one), or None when it was
+    uploaded to that one. An entry from before uploads recorded their channel was uploaded during this run: to the
+    connected channel if the stored token was connected (the OAuth flow) before the run began, since only a new
+    connect changes the account. A token imported from the legacy config has no ``connectedAt``: can't tell."""
+    if channel is None:
+        return "the connected account has no channel"
+    if entry.get("channel"):
+        return None if entry["channel"] == channel else f"it was uploaded to channel {entry['channel']}, not {channel}"
+    token = await load_token() or {}
+    connected = token.get("connectedAt")
+    began = ctx.run.run.created_at if ctx.run else None
+    if connected and began and dt.datetime.fromisoformat(connected) < began:
+        return None
+    return (
+        "its upload recorded no channel and the YouTube account was connected "
+        + (f"after this job began ({connected})" if connected else "without the OAuth flow")
+        + ", so it may be on another channel"
+    )
 
 
 async def _delete_replaced(ctx: JobContext, video_id: str) -> None:
