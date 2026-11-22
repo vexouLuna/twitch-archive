@@ -44,7 +44,7 @@ def uploads(deps, settings, monkeypatch):
 
     async def upload(path, *, privacy_status: str, **_: Any) -> dict[str, Any]:
         made.append(privacy_status)
-        return {"id": f"new{len(made)}"}
+        return {"id": f"new{len(made)}", "snippet": {"channelId": "UC1"}}
 
     async def duration(path) -> float:
         return 3600.0
@@ -72,6 +72,11 @@ async def test_a_manual_archive_without_a_live_copy_is_the_main_one(vod, make_ct
     ctx = make_ctx("archive", VOD, _payload(manual=True))
     await publish.upload(ctx)
     assert uploads == ["public"] and ctx.payload["uploaded"]["1"]["id"] == "new1"
+    # The payload remembers the channel (a re-run's re-upload check); vods.youtube, which the sites read, doesn't.
+    assert ctx.payload["uploaded"]["1"]["channel"] == "UC1"
+    async with get_sessionmaker()() as s:
+        [entry] = (await s.get(Vod, VOD)).youtube
+    assert entry["id"] == "new1" and "channel" not in entry
 
 
 async def test_next_to_a_live_copy_it_stays_unlisted(vod, make_ctx, uploads, settings):
