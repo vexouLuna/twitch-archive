@@ -97,7 +97,7 @@ dependencies = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.0" },
     { name = "asyncpg", specifier = ">=0.29" },
-    { name = "cachetools", specifier = ">=7.2.2" },
+    { name = "cachetools", specifier = ">=7.3.4" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
@@ -317,11 +317,11 @@ wheels = [
 
 [[package]]
 name = "cachetools"
-version = "7.2.2"
+version = "8.0.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/85/e0/27b467a38de29583a68973edbf99eeeee5b105567bdbd7d208e5b07525a7/cachetools-7.2.2.tar.gz", hash = "sha256:d521dc98d501ba9efd8d2b1663bbf88163509c0c0a090eea6dc154b421ec5410", size = 42916, upload-time = "2026-10-15T20:46:15.833Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/4a/e1204e16df86b6381abdba73cde2e59cda5fbedb110400f335c5dd86fade/cachetools-8.0.3.tar.gz", hash = "sha256:79245d0d90464e29355f13658cd769e57d98ed06242d3c6fbd71796ca0938ef9", size = 52573, upload-time = "2026-11-25T20:20:22.608Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/d1/15cc3b3c07cfe11bf6fbe81a4a92ebb9d202d7d903aaa36b713c8f6eabda/cachetools-7.2.2-py3-none-any.whl", hash = "sha256:39b6c9291adde28c5de6622d25329375fadf3e8a678226e7872e2e72854e4549", size = 17819, upload-time = "2026-10-15T20:46:14.069Z" },
+    { url = "https://files.pythonhosted.org/packages/31/48/50e8de023394349623d6065fd4a8d2a52cc5cc06d9ac96d0e765a5bf556c/cachetools-8.0.3-py3-none-any.whl", hash = "sha256:08bc12eeb7c7ab68abbe2d64d07fd7923ff532e32ff04ae27d22add1c5e8a5f9", size = 19606, upload-time = "2026-11-25T20:20:21.354Z" },
 ]
 
 [[package]]
